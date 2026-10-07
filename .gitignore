@@ -1,0 +1,12 @@
+firmware/build/
+firmware/.vscode/
+firmware/.settings/
+firmware/.project
+firmware/.cproject
+firmware/.mxproject
+*.elf
+*.hex
+*.bin
+*.map
+*.o
+*.d
