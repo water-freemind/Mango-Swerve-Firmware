@@ -31,4 +31,4 @@
 
 ## 后续接入
 
-拟采用 WHEELTEC S21C 采集板配 STP23L 单点测距模块，数量和安装朝向待定。资料和赛题约束的逐项分析、推荐通信接法、导航分层与验证顺序见[赛题与 S21C/STP23L 技术分析](docs/competition-s21c-stp23l-analysis.md)；乐动传感器单独资料的规格、原始协议和 S21C 数据有效性风险见[STP-23L 资料详审](docs/stp23l-sensor-review.md)。本版尚未实现 S21C 接收、自主地图遍历或比赛起跑/出场状态机；比赛过程中不得依赖现有遥控手动控制。任何上车下载前，先核对 6220 的 CAN ID/控制模式、3508/C620 的 ID 与轮向，以及控制板实际接线。
+拟采用 WHEELTEC S21C 采集板配 STP23L 单点测距模块，数量和安装朝向待定。若实物是 DM-MC-Board02，建议 S21C 使用其独立 CAN3；[DM 板 CAN3 接入方案](docs/dm-board02-s21c-can3-plan.md)列出针脚、供电、终端与固件改动。资料和赛题约束的分析见[赛题与 S21C/STP23L 技术分析](docs/competition-s21c-stp23l-analysis.md)；传感器规格、原始协议和 S21C 数据有效性风险见[STP-23L 资料详审](docs/stp23l-sensor-review.md)。本版尚未实现 CAN3、S21C 接收、自主地图遍历或比赛起跑/出场状态机；比赛过程中不得依赖现有遥控手动控制。任何上车下载前，先核对 6220 的 CAN ID/控制模式、3508/C620 的 ID 与轮向，以及控制板实际接线。
