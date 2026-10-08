@@ -6,6 +6,8 @@
 
 本工程从 AgroTech-SCAU 的 `Steering-Wheel-Chassis` 仓库中 `Hephaestus/chassis_control_code` 提取，基线提交为 `65088f94be15c69ccfa647779d7f847b06b95735`。原仓库未被修改。`Core` 和 `Drivers` 是在原工程中由 STM32CubeMX 6.18.1、STM32Cube FW_H7 V1.13.0 生成的依赖，随本仓库保存以便独立编译；ST 许可文本保留在各 `Drivers` 子目录中。
 
+原 Hephaestus 的 MCU 与电机驱动文档是本项目理解和维护底盘的参考。当前车体已有变化，驱动硬件仍沿用原方案；[底盘驱动基线与本车差异](docs/hephaestus-chassis-baseline.md)列出可继承的代码、原文档与实际型号配置的区别，以及需要重新测量的几何参数。
+
 ## 实车与软件配置
 
 | 部分 | 当前信息 |
