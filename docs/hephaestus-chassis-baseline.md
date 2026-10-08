@@ -36,4 +36,4 @@
 
 S21C/STP23L 经 DM 板 CAN3 接入时，新增 FDCAN3 初始化和测距接收模块；保留 FDCAN1 转向、FDCAN2 驱动以及现有电机协议。地图遍历使用当前舵轮速度接口与里程计作为底层，不复制原 Atlas 的 ROS2/AutoPi 任务流。实现自主模式前，仍须验证电机反馈新鲜度、CAN 发送失败处理和实车制动效果；原有 `chassis.is_ready()` 表示曾收到反馈，不能单独证明当前电机在线。
 
-接线方案见 [S21C 与 DM 板 CAN3 接入](dm-board02-s21c-can3-plan.md)，场地导航约束见 [赛题技术分析](competition-s21c-stp23l-analysis.md)。
+新车参数请按 [车体参数确认清单](mechanical-chassis-parameters-request.md)向机械队友收集；接线方案见 [S21C 与 DM 板 CAN3 接入](dm-board02-s21c-can3-plan.md)，场地导航约束见 [赛题技术分析](competition-s21c-stp23l-analysis.md)。
