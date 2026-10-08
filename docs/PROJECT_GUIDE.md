@@ -7,6 +7,7 @@
 1. [项目范围与当前状态](#1-项目范围与当前状态)
 2. [赛题约束与总体方案](#2-赛题约束与总体方案)
 3. [底盘硬件与代码阅读路线](#3-底盘硬件与代码阅读路线)
+   - [电机与达妙开发板的接线](#电机与达妙开发板的接线)
 4. [机械尺寸、运动学与通行裕量](#4-机械尺寸运动学与通行裕量)
 5. [STP-23L 与 S21C 数据链](#5-stp-23l-与-s21c-数据链)
 6. [DM 控制板 CAN3 接入](#6-dm-控制板-can3-接入)
@@ -25,6 +26,8 @@
 | **有资料/设计，尚未实现** | WHEELTEC S21C + 乐动 STP-23L 测距、FDCAN3 接收、已知地图上的自主遍历、出场停靠、作业机构握手。 |
 | **实车尚需证明** | 新车几何与轮径标定、测距可靠性、CAN3 终端/收发器、地毯滑移、制动距离、比赛全流程。 |
 
+当前源码另有一处须在底盘联调前处理的映射不一致：FL/FR/RR/RL 驱动 ID 在底盘表中为 `0/1/2/3`，大疆驱动层只接受 `1–4`；接线和影响见[电机与达妙开发板的接线](#电机与达妙开发板的接线)。
+
 在 VS Code EIDE 中打开 `firmware`，选择 Debug/Release 编译；目标为 STM32H723VGT6，使用 ARM GNU GCC。`firmware/robot.ioc` 可由 STM32CubeMX 打开；`Core/` 和 `Drivers/` 含 CubeMX 6.18.1、STM32Cube FW_H7 V1.13.0 生成并随项目保存的依赖，第三方许可文件保留在 `Drivers/` 中。重新生成代码后应检查 `Core/Src/main.c` 的自定义入口与外设初始化，尤其是遗留的 UART7、UART8、USART10 和 PE9/PE13。编译通过只证明当前代码和工具链可构建，不证明新车参数或三路 CAN 已经上车验证。
 
 ## 2. 赛题约束与总体方案
@@ -41,10 +44,38 @@
 | --- | --- | --- |
 | 主控 | STM32H723VGT6；资料对应 DM-MC-Board02，实物修订仍待核对 | `firmware/robot.ioc`、`firmware/Core/Src/main.c` |
 | 转向 | 4 × 达妙 6220；FDCAN1，1 Mbps，ID 1–4；位置速度模式 | `firmware/src/service/assemble/assemble_chassis.c`、`src/device/bus_motor/dm_motor.c` |
-| 驱动 | 4 × 大疆 M3508/C620；FDCAN2，1 Mbps，ID 1–4 | `firmware/src/service/chassis.c`、`src/device/bus_motor/dji_motor.c` |
+| 驱动 | 4 × 大疆 M3508/C620；FDCAN2，1 Mbps；**当前映射表写 0–3，驱动层只接受 1–4，须修正** | `firmware/src/service/chassis.c`、`src/device/bus_motor/dji_motor.c` |
 | 运动学 | FL、FR、RR、RL 四轮；速度命令与轮位互算 | `firmware/src/domain/steer_wheel_kine.c` |
 | 遥控 | FS-iA10B i.BUS，UART5，115200 bit/s，RX 反相 | `firmware/src/app/entry.h`、`src/service/remote.c` |
 | 姿态/里程计 | BMI088，SPI2；使用底盘轮速与 IMU | `firmware/src/service/odom.c` |
+
+### 电机与达妙开发板的接线
+
+这里的“达妙开发板”是 **DM-MC-Board02 主控板**。它通过 CAN 发命令和收反馈；电机动力电源另经电源分配送达各电机/电调。按当前固件分为两条独立总线，不能把转向与驱动合到一个接口后仍按现有代码运行：
+
+```text
+主电源 ──配电/保护──┬── DM-MC-Board02（12–24 V 板载输入）
+                  ├── 4 × 达妙 6220 转向电机的动力输入（按实物型号额定电压）
+                  └── 4 × C620 电调的动力输入（C620 额定 24 V）
+
+DM 板 CAN1_H/L ── 4 × 达妙 6220 的 CAN_H/L      （转向总线，1 Mbps）
+DM 板 CAN2_H/L ── 4 × C620 的 CAN_H/L           （驱动总线，1 Mbps）
+每个 C620 ── 7-Pin 数据线 + 三相动力线 ── 对应 M3508 电机
+```
+
+达妙 DM-G6220（**若实物确为该型号**）是电机和驱动器一体化，CAN 接其电机驱动器的 CAN 口、动力电源接其电源口；无需再给它接 C620。M3508 则经**各自一只 C620**控制：DM 板的 CAN2 接 C620 的 CAN 口，C620 与 M3508 用原厂 7-Pin 数据线和三相动力线连接；M3508 不直接接 DM 板的 CAN 口。达妙 6220 有不同电压版本，供电电压以四只实物铭牌/型号手册为准，不凭控制板的 12–24 V 范围推断电机额定电压。[达妙 DM-G6220 产品页](https://www.mdmbot.com/index.php?c=show&id=119)、[DJI M3508 电机说明书](https://cdn-hz.robomaster.com/robomasters/public/document/RoboMaster%20M3508%20P19%20Brushless%20DC%20Gear%20Motor%20V1.0.pdf)、[DJI C620 电调说明书](https://cdn-hz.robomaster.com/robomasters/public/document/RoboMaster%20C620%20Brushless%20DC%20Motor%20Speed%20Controller%20V1.0.pdf)。
+
+| DM 板侧 | 连接对象 | 当前代码对应关系 |
+| --- | --- | --- |
+| CAN1：P2 的 `CAN1_H/CAN1_L` | 四个达妙转向电机同一条总线，H 对 H、L 对 L | FL/FR/RR/RL 转向 ID `1/2/3/4`；`assemble_chassis.c` 使用 `hfdcan1`，上电切至达妙位置速度模式。 |
+| CAN2：P3 的 `CAN2_H/CAN2_L` | 四只 C620 电调同一条总线，H 对 H、L 对 L | **计划对应** FL/FR/RR/RL 驱动 ID `1/2/3/4`；`assemble_chassis.c` 使用 `hfdcan2`。当前映射代码有下述 ID 错位。 |
+| CAN3：扩展口 10 脚 H、12 脚 L | 留给计划中的 S21C 测距板 | 当前固件未初始化 FDCAN3，不接底盘电机。 |
+
+板卡 V1.1 手册的两针 CAN 信号接口表为 **1 脚 CAN_L、2 脚 CAN_H**；原理图标出 CAN1 为 P2、CAN2 为 P3。制作线束仍应对照**手中板卡丝印和插座视角**核对针位，不按线色猜 H/L。主控芯片的 `PD0/PD1`、`PB5/PB6` 分别是 FDCAN1/2 的 MCU 侧 RX/TX，电机应接板载收发器后的 `CAN_H/CAN_L`，不能直接接 MCU 管脚。板卡手册还说明 CAN 收发器需要板载 5 V；只给电机供电而不给控制板上电，CAN 不会工作。本地依据：`D:/电赛资料/26电赛/dm/达妙科技DM-MC-Board02电机开发板使用说明书V1.1.pdf`，PDF 第 6–7 页。
+
+**总线与电源检查：**两条 CAN 各自按总线方式连接所有节点，终端 120 Ω 只放在各条总线的两个物理末端，中间节点不要重复开终端；C620 有 120 Ω 开关，DM 板端电阻是否装配需看实物。断电后分别测每条总线 H/L，两个 120 Ω 并联时约 60 Ω，只是初检。供电必须满足各电机/电调电流与电压需求；控制板 CAN 接口上的信号线不是四台电机的动力供电。各电源支路与 CAN 设备应有可靠的公共参考地，并在上电前核对电源极性与端子定义。
+
+**当前固件有一处 ID 不一致：**`chassis.h` 的 `CHASSIS_MODULE_TABLE` 将 FL/FR/RR/RL 的驱动 ID 写为 **0/1/2/3**，而 `dji_motor.c` 的 `dji_motor_get_slot()` 明确拒绝 ID 0，只接受 **1–4**；C620 的有效反馈 CAN ID 为 `0x201`–`0x204`。因此现在不能只靠把四只 C620 设为 1–4 就认为底盘程序可正常工作，FL 驱动准备会因 ID 0 失败，RL 的第 4 只也不会按映射使用。联调前需要将底盘映射统一到 1–4，再逐轮核对转向方向与驱动转向；本次仅记录发现，尚未改固件。
 
 建议按 `main.c → entry.h → assemble_chassis.c → chassis.c → steer_wheel_kine.c → dm_motor.c/dji_motor.c → odom.c` 顺序阅读。现有入口装配 delay、log、RGB、IMU、odom、chassis 和 remote。原驱动的 `driver_config == NULL` 分支可能默认 M2006，但本底盘在 `chassis.c` **显式选择 `DJI_MOTOR_MODEL_M3508`**；不能把通用默认值当成本车电机型号。现有驱动方向符号依 FL、FR、RR、RL 为 `+、−、−、+`，实车轮向需标定。
 
