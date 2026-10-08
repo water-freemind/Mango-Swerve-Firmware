@@ -8,7 +8,7 @@
 
 原 Hephaestus 的 MCU 与电机驱动文档是本项目理解和维护底盘的参考。当前车体已有变化，驱动硬件仍沿用原方案；[底盘驱动基线与本车差异](docs/hephaestus-chassis-baseline.md)列出可继承的代码、原文档与实际型号配置的区别，以及需要重新测量的几何参数。
 
-向机械队友收集新车尺寸、外廓和安装位置时，可直接使用[车体参数确认清单](docs/mechanical-chassis-parameters-request.md)。
+机械队友已提供左右轮中心距 220 mm、名义轮径 102 mm、最大通行外廓 352 mm，以及 STP23L 暂定安装尺寸；[当前车体尺寸与电控影响](docs/current-chassis-dimensions.md)记录数据、算术疑点和固件待标定项。其余待确认尺寸见[车体参数确认清单](docs/mechanical-chassis-parameters-request.md)。
 
 ## 实车与软件配置
 
