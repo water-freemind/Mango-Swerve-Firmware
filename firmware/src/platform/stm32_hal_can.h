@@ -16,6 +16,9 @@ extern FDCAN_HandleTypeDef hfdcan1;
  */
 extern FDCAN_HandleTypeDef hfdcan2;
 
+/** S21C 测距板所用 FDCAN3 句柄。 */
+extern FDCAN_HandleTypeDef hfdcan3;
+
 /**
  * @brief STM32 HAL CAN 抽象层状态码表
  */

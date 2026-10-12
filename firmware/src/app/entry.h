@@ -74,6 +74,7 @@ static inline void entry_init(void) {
        assemble_rgb() != SYSTEM_STATUS_OK ||
        assemble_imu() != SYSTEM_STATUS_OK ||
        assemble_odom() != SYSTEM_STATUS_OK ||
+       assemble_laser() != SYSTEM_STATUS_OK ||
        assemble_chassis() != SYSTEM_STATUS_OK ||
        assemble_remote() != SYSTEM_STATUS_OK) {
         return;
