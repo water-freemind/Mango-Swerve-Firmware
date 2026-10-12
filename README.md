@@ -28,4 +28,6 @@ FDCAN3 已写入 `firmware/robot.ioc` 和固件源文件，无需再手动在 Cu
 | 电机协议与里程计 | `firmware/src/device/bus_motor/`、`firmware/src/service/odom.c` |
 | S21C CAN3 接收与数据快照 | `firmware/src/service/assemble/assemble_laser.c`、`firmware/src/service/laser.h` |
 
+**测距接口维护边界：**当前仅按 S21C 接口 1–4 保存四路原始毫米值；`distance_mm[0]` 对应接口 1，依此类推。尚未确定各接口对应的车体方向，待用户提供实物接线/安装对应关系后再单独增加方向映射。不要在 CAN 解包层把接口号直接写成前、后、左、右；当前测距数据也未接入导航或底盘控制。接口定义、验证状态与后续接入步骤以[项目总览的 CAN3 小节](docs/PROJECT_GUIDE.md#h723-fdcan3-接收与解包)为准。
+
 本工程取自 [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`，基线提交 `65088f94be15c69ccfa647779d7f847b06b95735`；原仓库未修改。原 Hephaestus 文档可作为驱动代码参考，车体几何和赛题方案以本仓库的[项目总览](docs/PROJECT_GUIDE.md)为准。
