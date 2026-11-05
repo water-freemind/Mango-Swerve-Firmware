@@ -8,6 +8,8 @@
 #include "log.h"
 #include "stm32_hal_can.h"
 
+#include <stddef.h>
+
 // ! ========================= 私 有 函 数 声 明 ========================= ! //
 
 static bool chassis_steer_can_send(uint32_t id, const uint8_t* data, uint8_t len);
