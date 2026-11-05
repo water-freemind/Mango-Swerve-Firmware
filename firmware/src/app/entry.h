@@ -1,11 +1,31 @@
 #ifndef MANGO_SWERVE_APP_ENTRY_H
 #define MANGO_SWERVE_APP_ENTRY_H
 
+#include "app_config.h"
 #include "assemble/assemble.h"
+
+#if APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS
+
+#include "commissioning.h"
+
+static inline void entry_init(void) {
+    (void)assemble_delay();
+    (void)assemble_log();
+    commissioning_init();
+}
+
+static inline void entry_loop(void) {
+    commissioning_process();
+}
+
+#else
+
 #include "chassis.h"
 #include "delay.h"
 #include "odom.h"
 #include "remote.h"
+#include "stm32_hal_can.h"
+#include "thinning.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -26,8 +46,14 @@ static float app_channel_normalized(uint16_t value) {
 
 static void app_apply_remote(void) {
     RemoteState state;
+    ThinningSnapshot thinning_state;
     float max_linear;
     float max_angular;
+
+    if(thinning_get_snapshot(&thinning_state) && thinning_state.chassis_brake_required) {
+        (void)chassis.brake();
+        return;
+    }
 
     remote_process();
     if(!remote_get_state(&state) || !remote_is_online(100u) ||
@@ -75,11 +101,13 @@ static inline void entry_init(void) {
        assemble_imu() != SYSTEM_STATUS_OK ||
        assemble_odom() != SYSTEM_STATUS_OK ||
        assemble_laser() != SYSTEM_STATUS_OK ||
+       assemble_can3() != SYSTEM_STATUS_OK ||
        assemble_chassis() != SYSTEM_STATUS_OK ||
        assemble_remote() != SYSTEM_STATUS_OK) {
         return;
     }
     remote_init();
+    thinning_init();
     (void)chassis.brake();
     if(assemble_tim6_500hz() != SYSTEM_STATUS_OK) {
         return;
@@ -88,10 +116,14 @@ static inline void entry_init(void) {
 }
 
 static inline void entry_loop(void) {
+    if(app_initialized) {
+        can_poll_rx(&hfdcan3);
+    }
     if(!app_initialized || !tim6_500hz_flag) {
         return;
     }
     tim6_500hz_flag = false;
+    thinning_process(HAL_GetTick());
 
     if(++app_remote_tick >= 5u) {
         app_remote_tick = 0u;
@@ -103,5 +135,7 @@ static inline void entry_loop(void) {
         (void)odom.process();
     }
 }
+
+#endif /* APP_RUN_MODE */
 
 #endif

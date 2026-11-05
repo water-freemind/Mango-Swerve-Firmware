@@ -11,8 +11,9 @@
 /**
  * @brief 可注册的 CAN 接收回调槽位数量
  */
-#define CAN_RX_CALLBACK_SLOT_NUM 4u
+#define CAN_RX_CALLBACK_SLOT_NUM 8u
 #define CAN_RX_MAX_FRAMES_PER_IRQ 8u
+#define CAN_DIAGNOSTIC_SLOT_NUM 3u
 
 /**
  * @brief CAN 接收回调注册槽位
@@ -30,6 +31,17 @@ typedef struct {
  * @brief CAN 接收回调槽位表
  */
 static CanRxCallbackSlot s_rx_slots[CAN_RX_CALLBACK_SLOT_NUM];
+
+typedef struct {
+    FDCAN_HandleTypeDef* hcan;
+    volatile STM32HalCanDiagnostics value;
+} CanDiagnosticSlot;
+
+static CanDiagnosticSlot s_diagnostic_slots[CAN_DIAGNOSTIC_SLOT_NUM] = {
+    { &hfdcan1, {0} },
+    { &hfdcan2, {0} },
+    { &hfdcan3, {0} }
+};
 
 // ! ========================= 私 有 函 数 声 明 ========================= ! //
 
@@ -57,6 +69,8 @@ static void can_dispatch_rx(FDCAN_HandleTypeDef* hcan, const FDCAN_RxHeaderTypeD
  * @param hcan CAN 句柄
  */
 static void can_enable_transceiver(FDCAN_HandleTypeDef* hcan);
+static volatile STM32HalCanDiagnostics* can_diagnostics_for(FDCAN_HandleTypeDef* hcan);
+static void can_drain_fifo0(FDCAN_HandleTypeDef* hcan);
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
@@ -86,15 +100,30 @@ BspCanStatus can_filter_init(void) {
  * @return BspCanStatus 状态码
  */
 BspCanStatus can_start(FDCAN_HandleTypeDef* hcan) {
+    uint32_t notifications = FDCAN_IT_RX_FIFO0_NEW_MESSAGE |
+        FDCAN_IT_RX_FIFO0_FULL | FDCAN_IT_RX_FIFO0_MESSAGE_LOST |
+        FDCAN_IT_ERROR_PASSIVE | FDCAN_IT_BUS_OFF |
+        FDCAN_IT_ARB_PROTOCOL_ERROR | FDCAN_IT_DATA_PROTOCOL_ERROR;
+    uint32_t tx_buffer_indexes = 0u;
+
     if(hcan == NULL) {
         return STM32_HAL_CAN_INVALID_PARAM;
     }
 
-    if(HAL_FDCAN_ConfigInterruptLines(hcan, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, FDCAN_INTERRUPT_LINE0) != HAL_OK) {
+    if(hcan == &hfdcan3) {
+        uint32_t tx_element_count = hcan->Init.TxBuffersNbr + hcan->Init.TxFifoQueueElmtsNbr;
+
+        notifications |= FDCAN_IT_TX_COMPLETE;
+        tx_buffer_indexes = tx_element_count >= 32u
+            ? 0xFFFFFFFFu
+            : ((1u << tx_element_count) - 1u);
+    }
+
+    if(HAL_FDCAN_ConfigInterruptLines(hcan, notifications, FDCAN_INTERRUPT_LINE0) != HAL_OK) {
         return STM32_HAL_CAN_NOTIFICATION_FAILED;
     }
 
-    if(HAL_FDCAN_ActivateNotification(hcan, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0u) != HAL_OK) {
+    if(HAL_FDCAN_ActivateNotification(hcan, notifications, tx_buffer_indexes) != HAL_OK) {
         return STM32_HAL_CAN_NOTIFICATION_FAILED;
     }
 
@@ -107,6 +136,18 @@ BspCanStatus can_start(FDCAN_HandleTypeDef* hcan) {
     return STM32_HAL_CAN_OK;
 }
 
+void can_poll_rx(FDCAN_HandleTypeDef* hcan) {
+    uint32_t primask;
+
+    if(hcan == NULL || hcan->State != HAL_FDCAN_STATE_BUSY) {
+        return;
+    }
+    primask = __get_PRIMASK();
+    __disable_irq();
+    can_drain_fifo0(hcan);
+    __set_PRIMASK(primask);
+}
+
 /**
  * @brief 发送一帧经典 CAN 数据
  * @param hcan CAN 句柄
@@ -117,6 +158,7 @@ BspCanStatus can_start(FDCAN_HandleTypeDef* hcan) {
  */
 BspCanStatus can_send(FDCAN_HandleTypeDef* hcan, uint32_t id, const uint8_t* data, uint8_t len) {
     FDCAN_TxHeaderTypeDef tx_header = { 0 };
+    volatile STM32HalCanDiagnostics* diagnostics = can_diagnostics_for(hcan);
 
     if(hcan == NULL || data == NULL) {
         return STM32_HAL_CAN_INVALID_PARAM;
@@ -138,15 +180,26 @@ BspCanStatus can_send(FDCAN_HandleTypeDef* hcan, uint32_t id, const uint8_t* dat
     if(HAL_FDCAN_GetTxFifoFreeLevel(hcan) == 0u) {
         uint32_t pending = hcan->Instance->TXBRP;
 
-        if(pending != 0u) {
+        /* Shared CAN3 consumers must not cancel one another's queued frames. */
+        if(pending != 0u && hcan != &hfdcan3) {
             (void)HAL_FDCAN_AbortTxRequest(hcan, pending);
         }
 
+        if(diagnostics != NULL) {
+            ++diagnostics->tx_failed_count;
+        }
         return STM32_HAL_CAN_TX_MAILBOX_TIMEOUT;
     }
 
     if(HAL_FDCAN_AddMessageToTxFifoQ(hcan, &tx_header, (uint8_t*)data) != HAL_OK) {
+        if(diagnostics != NULL) {
+            ++diagnostics->tx_failed_count;
+        }
         return STM32_HAL_CAN_TX_FAILED;
+    }
+
+    if(diagnostics != NULL) {
+        ++diagnostics->tx_submit_count;
     }
 
     return STM32_HAL_CAN_OK;
@@ -185,6 +238,32 @@ BspCanStatus can_register_rx_callback(FDCAN_HandleTypeDef* hcan, STM32HalCanRxCa
     return STM32_HAL_CAN_NO_CALLBACK_SLOT;
 }
 
+bool can_get_diagnostics(FDCAN_HandleTypeDef* hcan, STM32HalCanDiagnostics* diagnostics) {
+    volatile STM32HalCanDiagnostics* source;
+    FDCAN_ProtocolStatusTypeDef protocol_status = {0};
+    uint32_t primask;
+
+    if(hcan == NULL || diagnostics == NULL) {
+        return false;
+    }
+    source = can_diagnostics_for(hcan);
+    if(source == NULL) {
+        return false;
+    }
+
+    primask = __get_PRIMASK();
+    __disable_irq();
+    memcpy(diagnostics, (const void*)source, sizeof(*diagnostics));
+    __set_PRIMASK(primask);
+    diagnostics->hal_error_code = hcan->ErrorCode;
+
+    if(HAL_FDCAN_GetProtocolStatus(hcan, &protocol_status) == HAL_OK) {
+        diagnostics->bus_off = protocol_status.BusOff != 0u;
+        diagnostics->error_passive = protocol_status.ErrorPassive != 0u;
+    }
+    return true;
+}
+
 /**
  * @brief 将 CAN 抽象层状态码转换为静态字符串
  * @param status 状态码
@@ -207,22 +286,87 @@ const char* can_error_code_to_str(BspCanStatus status) {
  * @param rx_fifo0_its FIFO0 中断标志
  */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef* hfdcan, uint32_t rx_fifo0_its) {
-    FDCAN_RxHeaderTypeDef rx_header;
-    uint8_t rx_data[8];
-    uint8_t frame_count = 0u;
+    volatile STM32HalCanDiagnostics* diagnostics = can_diagnostics_for(hfdcan);
+
+    if(diagnostics != NULL) {
+        if((rx_fifo0_its & FDCAN_IT_RX_FIFO0_FULL) != 0u) {
+            ++diagnostics->rx_fifo0_full_count;
+        }
+        if((rx_fifo0_its & FDCAN_IT_RX_FIFO0_MESSAGE_LOST) != 0u) {
+            ++diagnostics->rx_fifo0_lost_count;
+        }
+    }
 
     if((rx_fifo0_its & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) == 0u) {
         return;
     }
+    can_drain_fifo0(hfdcan);
+}
+
+static void can_drain_fifo0(FDCAN_HandleTypeDef* hfdcan) {
+    FDCAN_RxHeaderTypeDef rx_header;
+    uint8_t rx_data[64];
+    uint8_t frame_count = 0u;
+    volatile STM32HalCanDiagnostics* diagnostics = can_diagnostics_for(hfdcan);
 
     while(HAL_FDCAN_GetRxFifoFillLevel(hfdcan, FDCAN_RX_FIFO0) > 0u
         && frame_count < CAN_RX_MAX_FRAMES_PER_IRQ) {
         memset(rx_data, 0, sizeof(rx_data));
         if(HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK) {
+            if(diagnostics != NULL) {
+                ++diagnostics->rx_failed_count;
+            }
             return;
+        }
+        if(diagnostics != NULL) {
+            ++diagnostics->rx_count;
+            diagnostics->last_rx_ms = HAL_GetTick();
         }
         can_dispatch_rx(hfdcan, &rx_header, rx_data);
         ++frame_count;
+    }
+}
+
+void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef* hfdcan) {
+    volatile STM32HalCanDiagnostics* diagnostics = can_diagnostics_for(hfdcan);
+
+    if(diagnostics != NULL) {
+        ++diagnostics->error_callback_count;
+        diagnostics->hal_error_code = hfdcan->ErrorCode;
+    }
+}
+
+void HAL_FDCAN_TxBufferCompleteCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t buffer_indexes) {
+    volatile STM32HalCanDiagnostics* diagnostics = can_diagnostics_for(hfdcan);
+    uint32_t completed = buffer_indexes;
+
+    if(diagnostics == NULL) {
+        return;
+    }
+    while(completed != 0u) {
+        diagnostics->tx_complete_count += completed & 1u;
+        completed >>= 1u;
+    }
+    diagnostics->last_tx_ms = HAL_GetTick();
+}
+
+void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef* hfdcan, uint32_t error_status_its) {
+    volatile STM32HalCanDiagnostics* diagnostics = can_diagnostics_for(hfdcan);
+
+    if(diagnostics == NULL) {
+        return;
+    }
+    diagnostics->last_error_flags = error_status_its;
+    if((error_status_its & FDCAN_IT_BUS_OFF) != 0u) {
+        ++diagnostics->bus_off_count;
+        diagnostics->bus_off = true;
+    }
+    if((error_status_its & FDCAN_IT_ERROR_PASSIVE) != 0u) {
+        ++diagnostics->error_passive_count;
+        diagnostics->error_passive = true;
+    }
+    if((error_status_its & (FDCAN_IT_ARB_PROTOCOL_ERROR | FDCAN_IT_DATA_PROTOCOL_ERROR)) != 0u) {
+        ++diagnostics->protocol_error_count;
     }
 }
 
@@ -299,4 +443,15 @@ static void can_enable_transceiver(FDCAN_HandleTypeDef* hcan) {
     else if(hcan->Instance == FDCAN2) {
         HAL_GPIO_WritePin(CAN2_EN_GPIO_Port, CAN2_EN_Pin, GPIO_PIN_SET);
     }
+}
+
+static volatile STM32HalCanDiagnostics* can_diagnostics_for(FDCAN_HandleTypeDef* hcan) {
+    uint8_t i;
+
+    for(i = 0u; i < CAN_DIAGNOSTIC_SLOT_NUM; ++i) {
+        if(s_diagnostic_slots[i].hcan == hcan) {
+            return &s_diagnostic_slots[i].value;
+        }
+    }
+    return NULL;
 }

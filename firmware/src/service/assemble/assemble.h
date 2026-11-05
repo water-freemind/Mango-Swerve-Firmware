@@ -20,6 +20,7 @@ SystemStatus assemble_rgb(void);
 SystemStatus assemble_imu(void);
 SystemStatus assemble_chassis(void);
 SystemStatus assemble_laser(void);
+SystemStatus assemble_can3(void);
 SystemStatus assemble_odom(void);
 SystemStatus assemble_remote(void);
 SystemStatus assemble_tim6_500hz(void);

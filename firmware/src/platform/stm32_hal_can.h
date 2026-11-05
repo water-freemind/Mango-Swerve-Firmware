@@ -2,6 +2,7 @@
 #define _stm32_hal_can_h_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "main.h" // IWYU pragma: keep
 
@@ -16,7 +17,7 @@ extern FDCAN_HandleTypeDef hfdcan1;
  */
 extern FDCAN_HandleTypeDef hfdcan2;
 
-/** S21C 测距板所用 FDCAN3 句柄。 */
+/** S21C 测距板与疏果装置共享总线所用 FDCAN3 句柄。 */
 extern FDCAN_HandleTypeDef hfdcan3;
 
 /**
@@ -55,6 +56,26 @@ typedef void (*STM32HalCanRxCallback)(FDCAN_HandleTypeDef* hcan,
     const uint8_t data[8],
     void* user);
 
+typedef struct {
+    uint32_t rx_count;
+    uint32_t rx_failed_count;
+    uint32_t tx_submit_count;
+    uint32_t tx_complete_count;
+    uint32_t tx_failed_count;
+    uint32_t rx_fifo0_full_count;
+    uint32_t rx_fifo0_lost_count;
+    uint32_t bus_off_count;
+    uint32_t error_passive_count;
+    uint32_t protocol_error_count;
+    uint32_t last_rx_ms;
+    uint32_t last_tx_ms;
+    uint32_t last_error_flags;
+    uint32_t hal_error_code;
+    uint32_t error_callback_count;
+    bool bus_off;
+    bool error_passive;
+} STM32HalCanDiagnostics;
+
 // ! ========================= 接 口 函 数 声 明 ========================= ! //
 
 /**
@@ -69,6 +90,9 @@ BspCanStatus can_filter_init(void);
  * @return BspCanStatus 状态码
  */
 BspCanStatus can_start(FDCAN_HandleTypeDef* hcan);
+
+/* Main-loop fallback for frames left after the bounded RX interrupt handler. */
+void can_poll_rx(FDCAN_HandleTypeDef* hcan);
 
 /**
  * @brief 发送一帧经典 CAN 数据
@@ -88,6 +112,11 @@ BspCanStatus can_send(FDCAN_HandleTypeDef* hcan, uint32_t id, const uint8_t* dat
  * @return BspCanStatus 状态码
  */
 BspCanStatus can_register_rx_callback(FDCAN_HandleTypeDef* hcan, STM32HalCanRxCallback callback, void* user);
+
+/**
+ * @brief 读取指定 CAN 外设的运行诊断快照
+ */
+bool can_get_diagnostics(FDCAN_HandleTypeDef* hcan, STM32HalCanDiagnostics* diagnostics);
 
 /**
  * @brief 将 CAN 抽象层状态码转换为静态字符串

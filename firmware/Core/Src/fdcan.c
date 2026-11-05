@@ -124,10 +124,17 @@ void MX_FDCAN2_Init(void)
   /* USER CODE END FDCAN2_Init 2 */
 
 }
-
-/* FDCAN3 init function: S21C classic CAN, 1 Mbps, RX FIFO0 only. */
+/* FDCAN3 init function */
 void MX_FDCAN3_Init(void)
 {
+
+  /* USER CODE BEGIN FDCAN3_Init 0 */
+
+  /* USER CODE END FDCAN3_Init 0 */
+
+  /* USER CODE BEGIN FDCAN3_Init 1 */
+
+  /* USER CODE END FDCAN3_Init 1 */
   hfdcan3.Instance = FDCAN3;
   hfdcan3.Init.FrameFormat = FDCAN_FRAME_CLASSIC;
   hfdcan3.Init.Mode = FDCAN_MODE_NORMAL;
@@ -143,9 +150,9 @@ void MX_FDCAN3_Init(void)
   hfdcan3.Init.DataTimeSeg1 = 6;
   hfdcan3.Init.DataTimeSeg2 = 3;
   hfdcan3.Init.MessageRAMOffset = 384;
-  hfdcan3.Init.StdFiltersNbr = 1;
+  hfdcan3.Init.StdFiltersNbr = 8;
   hfdcan3.Init.ExtFiltersNbr = 0;
-  hfdcan3.Init.RxFifo0ElmtsNbr = 8;
+  hfdcan3.Init.RxFifo0ElmtsNbr = 16;
   hfdcan3.Init.RxFifo0ElmtSize = FDCAN_DATA_BYTES_8;
   hfdcan3.Init.RxFifo1ElmtsNbr = 0;
   hfdcan3.Init.RxFifo1ElmtSize = FDCAN_DATA_BYTES_8;
@@ -153,13 +160,17 @@ void MX_FDCAN3_Init(void)
   hfdcan3.Init.RxBufferSize = FDCAN_DATA_BYTES_8;
   hfdcan3.Init.TxEventsNbr = 0;
   hfdcan3.Init.TxBuffersNbr = 0;
-  hfdcan3.Init.TxFifoQueueElmtsNbr = 0;
+  hfdcan3.Init.TxFifoQueueElmtsNbr = 8;
   hfdcan3.Init.TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION;
   hfdcan3.Init.TxElmtSize = FDCAN_DATA_BYTES_8;
   if (HAL_FDCAN_Init(&hfdcan3) != HAL_OK)
   {
     Error_Handler();
   }
+  /* USER CODE BEGIN FDCAN3_Init 2 */
+
+  /* USER CODE END FDCAN3_Init 2 */
+
 }
 
 static uint32_t HAL_RCC_FDCAN_CLK_ENABLED=0;
@@ -253,25 +264,43 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef* fdcanHandle)
   }
   else if(fdcanHandle->Instance==FDCAN3)
   {
+  /* USER CODE BEGIN FDCAN3_MspInit 0 */
+
+  /* USER CODE END FDCAN3_MspInit 0 */
+
+  /** Initializes the peripherals clock
+  */
     PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
     PeriphClkInitStruct.FdcanClockSelection = RCC_FDCANCLKSOURCE_PLL;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
     {
       Error_Handler();
     }
+
+    /* FDCAN3 clock enable */
     HAL_RCC_FDCAN_CLK_ENABLED++;
     if(HAL_RCC_FDCAN_CLK_ENABLED==1){
       __HAL_RCC_FDCAN_CLK_ENABLE();
     }
+
     __HAL_RCC_GPIOD_CLK_ENABLE();
+    /**FDCAN3 GPIO Configuration
+    PD12     ------> FDCAN3_RX
+    PD13     ------> FDCAN3_TX
+    */
     GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF5_FDCAN3;
     HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+    /* FDCAN3 interrupt Init */
     HAL_NVIC_SetPriority(FDCAN3_IT0_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(FDCAN3_IT0_IRQn);
+  /* USER CODE BEGIN FDCAN3_MspInit 1 */
+
+  /* USER CODE END FDCAN3_MspInit 1 */
   }
 }
 
@@ -327,12 +356,26 @@ void HAL_FDCAN_MspDeInit(FDCAN_HandleTypeDef* fdcanHandle)
   }
   else if(fdcanHandle->Instance==FDCAN3)
   {
+  /* USER CODE BEGIN FDCAN3_MspDeInit 0 */
+
+  /* USER CODE END FDCAN3_MspDeInit 0 */
+    /* Peripheral clock disable */
     HAL_RCC_FDCAN_CLK_ENABLED--;
     if(HAL_RCC_FDCAN_CLK_ENABLED==0){
       __HAL_RCC_FDCAN_CLK_DISABLE();
     }
+
+    /**FDCAN3 GPIO Configuration
+    PD12     ------> FDCAN3_RX
+    PD13     ------> FDCAN3_TX
+    */
     HAL_GPIO_DeInit(GPIOD, GPIO_PIN_12|GPIO_PIN_13);
+
+    /* FDCAN3 interrupt Deinit */
     HAL_NVIC_DisableIRQ(FDCAN3_IT0_IRQn);
+  /* USER CODE BEGIN FDCAN3_MspDeInit 1 */
+
+  /* USER CODE END FDCAN3_MspDeInit 1 */
   }
 }
 

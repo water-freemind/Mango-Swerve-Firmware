@@ -3,6 +3,7 @@
 #include "bus_motor/dji_motor.h"
 #include "bus_motor/dm_motor.h"
 #include "chassis.h"
+#include "chassis_can_map.h"
 #include "delay.h"
 #include "log.h"
 #include "stm32_hal_can.h"
@@ -56,9 +57,9 @@ SystemStatus assemble_chassis(void) {
     };
 
     log_info("CHASSIS assemble begin");
-    if(can_register_rx_callback(&hfdcan1, chassis_steer_can_rx_callback, NULL) != STM32_HAL_CAN_OK)
+    if(can_register_rx_callback(CHASSIS_STEER_CAN, chassis_steer_can_rx_callback, NULL) != STM32_HAL_CAN_OK)
         return SYSTEM_STATUS_ERROR;
-    if(can_register_rx_callback(&hfdcan2, chassis_drive_can_rx_callback, NULL) != STM32_HAL_CAN_OK)
+    if(can_register_rx_callback(CHASSIS_DRIVE_CAN, chassis_drive_can_rx_callback, NULL) != STM32_HAL_CAN_OK)
         return SYSTEM_STATUS_ERROR;
 
     if(can_filter_init() != STM32_HAL_CAN_OK)
@@ -84,11 +85,11 @@ SystemStatus assemble_chassis(void) {
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
 static bool chassis_steer_can_send(uint32_t id, const uint8_t* data, uint8_t len) {
-    return can_send(&hfdcan1, id, data, len) == STM32_HAL_CAN_OK;
+    return can_send(CHASSIS_STEER_CAN, id, data, len) == STM32_HAL_CAN_OK;
 }
 
 static bool chassis_drive_can_send(uint32_t id, const uint8_t* data, uint8_t len) {
-    return can_send(&hfdcan2, id, data, len) == STM32_HAL_CAN_OK;
+    return can_send(CHASSIS_DRIVE_CAN, id, data, len) == STM32_HAL_CAN_OK;
 }
 
 static BusMotorStatus chassis_prepare_steer_motor(uint16_t id) {

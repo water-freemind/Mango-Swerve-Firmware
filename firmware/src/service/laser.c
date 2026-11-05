@@ -21,7 +21,21 @@ void laser_accept_frame(const uint8_t data[8], uint32_t rx_ms) {
     ++s_frame_count;
 }
 
+bool laser_accept_can3_frame(const Can3Frame* frame, void* user) {
+    (void)user;
+
+    if(frame == NULL || frame->id != 0x601u || frame->len != 8u) {
+        return false;
+    }
+    laser_accept_frame(frame->data, frame->rx_ms);
+    return true;
+}
+
 bool laser_get_snapshot(LaserSnapshot* snapshot) {
+    return laser_get_snapshot_at(snapshot, HAL_GetTick());
+}
+
+bool laser_get_snapshot_at(LaserSnapshot* snapshot, uint32_t now_ms) {
     uint32_t primask;
     uint32_t i;
 
@@ -38,6 +52,6 @@ bool laser_get_snapshot(LaserSnapshot* snapshot) {
     __set_PRIMASK(primask);
 
     snapshot->frame_fresh = snapshot->frame_count != 0u &&
-        (uint32_t)(HAL_GetTick() - snapshot->last_rx_ms) <= LASER_FRAME_TIMEOUT_MS;
+        (uint32_t)(now_ms - snapshot->last_rx_ms) <= LASER_FRAME_TIMEOUT_MS;
     return true;
 }

@@ -267,11 +267,6 @@ void FDCAN2_IT0_IRQHandler(void)
   /* USER CODE END FDCAN2_IT0_IRQn 1 */
 }
 
-void FDCAN3_IT0_IRQHandler(void)
-{
-  HAL_FDCAN_IRQHandler(&hfdcan3);
-}
-
 /**
   * @brief This function handles FDCAN1 interrupt 1.
   */
@@ -425,6 +420,20 @@ void USART10_IRQHandler(void)
   /* USER CODE BEGIN USART10_IRQn 1 */
 
   /* USER CODE END USART10_IRQn 1 */
+}
+
+/**
+  * @brief This function handles FDCAN3 interrupt 0.
+  */
+void FDCAN3_IT0_IRQHandler(void)
+{
+  /* USER CODE BEGIN FDCAN3_IT0_IRQn 0 */
+
+  /* USER CODE END FDCAN3_IT0_IRQn 0 */
+  HAL_FDCAN_IRQHandler(&hfdcan3);
+  /* USER CODE BEGIN FDCAN3_IT0_IRQn 1 */
+
+  /* USER CODE END FDCAN3_IT0_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
