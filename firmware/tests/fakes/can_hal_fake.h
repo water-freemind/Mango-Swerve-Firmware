@@ -3,7 +3,7 @@
 
 /* Host-only HAL boundary; the production build uses the STM32 vendor headers. */
 typedef enum { HAL_OK = 0, HAL_ERROR = 1 } HAL_StatusTypeDef;
-typedef struct { uint32_t TXBRP; } FDCAN_GlobalTypeDef;
+typedef struct { uint32_t TXBRP, PSR, ECR, TXBTO; } FDCAN_GlobalTypeDef;
 typedef struct {
     uint32_t StdFiltersNbr, TxBuffersNbr, TxFifoQueueElmtsNbr;
 } FDCAN_InitTypeDef;

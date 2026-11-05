@@ -65,10 +65,7 @@ extern SPI_HandleTypeDef hspi2;
 extern SPI_HandleTypeDef hspi6;
 extern TIM_HandleTypeDef htim6;
 extern UART_HandleTypeDef huart5;
-extern UART_HandleTypeDef huart7;
-extern UART_HandleTypeDef huart8;
 extern UART_HandleTypeDef huart1;
-extern UART_HandleTypeDef huart10;
 /* USER CODE BEGIN EV */
 
 /* USER CODE END EV */
@@ -352,33 +349,9 @@ void TIM6_DAC_IRQHandler(void)
   /* USER CODE END TIM6_DAC_IRQn 1 */
 }
 
-/**
-  * @brief This function handles UART7 global interrupt.
-  */
-void UART7_IRQHandler(void)
-{
-  /* USER CODE BEGIN UART7_IRQn 0 */
 
-  /* USER CODE END UART7_IRQn 0 */
-  HAL_UART_IRQHandler(&huart7);
-  /* USER CODE BEGIN UART7_IRQn 1 */
 
-  /* USER CODE END UART7_IRQn 1 */
-}
 
-/**
-  * @brief This function handles UART8 global interrupt.
-  */
-void UART8_IRQHandler(void)
-{
-  /* USER CODE BEGIN UART8_IRQn 0 */
-
-  /* USER CODE END UART8_IRQn 0 */
-  HAL_UART_IRQHandler(&huart8);
-  /* USER CODE BEGIN UART8_IRQn 1 */
-
-  /* USER CODE END UART8_IRQn 1 */
-}
 
 /**
   * @brief This function handles SPI6 global interrupt.
@@ -408,19 +381,7 @@ void BDMA_Channel0_IRQHandler(void)
   /* USER CODE END BDMA_Channel0_IRQn 1 */
 }
 
-/**
-  * @brief This function handles USART10 global interrupt.
-  */
-void USART10_IRQHandler(void)
-{
-  /* USER CODE BEGIN USART10_IRQn 0 */
 
-  /* USER CODE END USART10_IRQn 0 */
-  HAL_UART_IRQHandler(&huart10);
-  /* USER CODE BEGIN USART10_IRQn 1 */
-
-  /* USER CODE END USART10_IRQn 1 */
-}
 
 /**
   * @brief This function handles FDCAN3 interrupt 0.

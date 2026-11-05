@@ -1,6 +1,10 @@
 #include "entry.h"
 #include "chassis_can_map.h"
 #include "log.h"
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+#include "chassis.h"
+#include "bus_motor/dji_motor.h"
+#endif
 
 #include <assert.h>
 #include <stdio.h>
@@ -57,9 +61,37 @@ uint32_t HAL_FDCAN_GetTxFifoFreeLevel(FDCAN_HandleTypeDef* h) {
     (void)h; return s_tx_full ? 0u : 8u;
 }
 HAL_StatusTypeDef HAL_FDCAN_AbortTxRequest(FDCAN_HandleTypeDef* h, uint32_t pending) {
+#if APP_RUN_MODE == APP_MODE_CAN2_QUERY
+    assert(h == CHASSIS_STEER_CAN && pending == 1u);
+    h->Instance->TXBRP = 0u;
+#endif
     (void)h; (void)pending; ++s_abort_calls; return HAL_OK;
 }
 HAL_StatusTypeDef HAL_FDCAN_AddMessageToTxFifoQ(FDCAN_HandleTypeDef* h, FDCAN_TxHeaderTypeDef* header, uint8_t* data) {
+#if APP_RUN_MODE == APP_MODE_CAN2_QUERY
+    const uint8_t expected[8] = {(uint8_t)(s_tx_calls + 1u), 0u, 0x33u, 8u, 0u, 0u, 0u, 0u};
+    assert(h == CHASSIS_STEER_CAN && s_tx_calls < 4u);
+    assert(header->Identifier == 0x7FFu && header->DataLength == FDCAN_DLC_BYTES_8);
+    assert(memcmp(data, expected, 8u) == 0);
+    h->Instance->TXBRP = 1u;
+#endif
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+    const unsigned step = s_tx_calls % 6u;
+    const unsigned motor_id = s_tx_calls / 6u + 1u;
+    assert(h == CHASSIS_STEER_CAN && motor_id <= 4u);
+    assert(header->DataLength == FDCAN_DLC_BYTES_8);
+    if(step < 2u) {
+        assert(header->Identifier == motor_id);
+        for(unsigned i = 0u; i < 7u; ++i) assert(data[i] == 0xFFu);
+        assert(data[7] == (step == 0u ? 0xFBu : 0xFCu));
+    } else if(step == 2u) {
+        const uint8_t expected[8] = {(uint8_t)motor_id, 0u, 0x55u, 10u, 2u, 0u, 0u, 0u};
+        assert(header->Identifier == 0x7FFu && memcmp(data, expected, 8u) == 0);
+    } else {
+        assert(header->Identifier == 0x100u + motor_id);
+        for(unsigned i = 0u; i < 8u; ++i) assert(data[i] == 0u);
+    }
+#endif
     (void)h; (void)header; (void)data; ++s_tx_calls; return HAL_OK;
 }
 uint32_t HAL_FDCAN_GetRxFifoFillLevel(FDCAN_HandleTypeDef* h, uint32_t fifo) {
@@ -78,6 +110,21 @@ void HAL_GPIO_WritePin(uint32_t port, uint32_t pin, uint32_t state) {
     (void)port; (void)pin; (void)state;
 }
 LogStatus log_info(const char* format, ...) { (void)format; return LOG_STATUS_OK; }
+LogStatus log_warn(const char* format, ...) { (void)format; return LOG_STATUS_OK; }
+LogStatus log_error(const char* format, ...) { (void)format; return LOG_STATUS_OK; }
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+void delay_ms(uint32_t ms) { g_test_tick_ms += ms; }
+/* Windows links these unused assembly symbols. Any execution is a test failure. */
+__typeof__(chassis_interface) chassis_interface = {0};
+const BusMotorInterface dji_motor_instance = {0};
+ChassisErrorCode chassis_init(const ChassisConfig* config) {
+    (void)config; assert(!"Full chassis initialization reached"); return 0;
+}
+BusMotorStatus dji_motor_parse_feedback_frame(uint32_t id, const uint8_t data[8], BusMotorFeedback* feedback) {
+    (void)id; (void)data; (void)feedback;
+    assert(!"Drive motor parser reached"); return MOTOR_STATUS_ERROR;
+}
+#endif
 SystemStatus assemble_delay(void) { return SYSTEM_STATUS_OK; }
 SystemStatus assemble_log(void) { return SYSTEM_STATUS_OK; }
 
@@ -96,7 +143,7 @@ int main(int argc, char** argv) {
     unsigned i;
     const uint8_t payload[8] = {0};
     s_fail_can1 = argc > 1 && strcmp(argv[1], "fail-can1") == 0;
-    assert(APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS);
+    assert(APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_CAN2_QUERY);
 #if CHASSIS_CAN_BUSES_SWAPPED
     assert(CHASSIS_STEER_CAN == &hfdcan2 && CHASSIS_DRIVE_CAN == &hfdcan1);
 #else
@@ -106,6 +153,31 @@ int main(int argc, char** argv) {
     /* Real entry point is linked without IMU/chassis/remote implementations. */
     entry_init();
     commissioning_init();
+#if APP_RUN_MODE == APP_MODE_CAN2_QUERY
+    assert(s_tx_calls == 0u);
+    for(i = 1u; i <= 4u; ++i) {
+        g_test_tick_ms = i * 2000u;
+        entry_loop();
+        assert(s_tx_calls == i);
+        g_test_tick_ms += 100u;
+        entry_loop();
+        assert(s_abort_calls == i && s_tx_calls == i);
+    }
+    g_test_tick_ms = 20000u;
+    entry_loop();
+    assert(s_tx_calls == 4u);
+    puts("CAN2_READ_ONLY_QUERY_TEST_OK");
+    return 0;
+#endif
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+    assert(s_tx_calls == 24u);
+    assert(s_buses[0].starts == 1u && s_buses[1].starts == 1u && s_buses[2].starts == 1u);
+    entry_loop();
+    entry_loop();
+    assert(s_tx_calls == 24u);
+    puts("STEERING_INIT_TEST_OK");
+    return 0;
+#endif
     for(i = 0u; i < 3u; ++i) assert(s_buses[i].starts == 1u);
     assert(g_commissioning.bus[0].started == !s_fail_can1);
     assert(g_commissioning.bus[1].started && g_commissioning.bus[2].started);

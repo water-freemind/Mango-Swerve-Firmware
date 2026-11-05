@@ -11,10 +11,11 @@
 #define LASER_FRAME_TIMEOUT_MS 300u
 
 typedef struct {
+    /* Raw S21C millimetres in connector order. Range validity is established on the installed sensors. */
     uint16_t distance_mm[LASER_CHANNEL_COUNT];
     uint32_t last_rx_ms;
     uint32_t frame_count;
-    bool frame_fresh;
+    bool frame_fresh; /* Freshness of the board CAN frame, evaluated with the 300 ms timeout. */
 } LaserSnapshot;
 
 /* Called only after the complete 0x601 frame header has been validated. */
