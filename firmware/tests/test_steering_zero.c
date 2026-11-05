@@ -39,7 +39,7 @@ static BusMotorStatus update_motor(uint16_t id, BusMotorFeedback* out) {
 static BusMotorStatus command_motor(uint16_t id, float position, float speed) {
     const unsigned i = id - 1u;
     assert(s_enabled[i] && fabsf(position - s_last_command[i]) < 0.00401f);
-    assert(speed == 0.2f);
+    assert(fabsf(speed - 0.2f) < 0.000001f);
     s_last_command[i] = position;
     ++s_commands;
     if(s_send_failure) return MOTOR_STATUS_PORT_ERROR;

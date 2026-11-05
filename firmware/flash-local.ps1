@@ -1,14 +1,41 @@
 param(
-    [string]$OpenOcdRoot = 'E:\EmbeddedTools\xpack-openocd-0.12.0-7',
-    [string]$Toolchain = 'E:\EmbeddedTools\xpack-arm-none-eabi-gcc-15.2.1-1.1',
+    [string]$OpenOcdRoot = '',
+    [string]$Toolchain = '',
     [switch]$ProbeOnly,
     [ValidateSet('Diagnostics', 'Steering', 'ZeroTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
+if (!$OpenOcdRoot) {
+    $candidates = @($env:OPENOCD_ROOT, 'E:\EmbeddedTools\xpack-openocd-0.12.0-7')
+    $eideTools = Join-Path $env:USERPROFILE '.eide\tools'
+    if (Test-Path -LiteralPath $eideTools) {
+        $candidates += Get-ChildItem -LiteralPath $eideTools -Directory -Filter 'openocd*' |
+            Sort-Object Name | ForEach-Object { $_.FullName }
+    }
+    $pathOpenOcd = Get-Command openocd.exe -ErrorAction SilentlyContinue
+    if ($pathOpenOcd) { $candidates += Split-Path (Split-Path $pathOpenOcd.Source -Parent) -Parent }
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate 'bin\openocd.exe'))) {
+            $OpenOcdRoot = $candidate
+            break
+        }
+    }
+    if (!$OpenOcdRoot) { throw 'OpenOCD not found. Set OPENOCD_ROOT or pass -OpenOcdRoot <installation root>.' }
+}
 $openocd = Join-Path $OpenOcdRoot 'bin\openocd.exe'
-$scripts = Join-Path $OpenOcdRoot 'openocd\scripts'
 if (!(Test-Path -LiteralPath $openocd)) { throw "OpenOCD missing at $openocd" }
+$scripts = $null
+foreach ($relative in @('openocd\scripts', 'share\openocd\scripts', 'scripts')) {
+    $candidate = Join-Path $OpenOcdRoot $relative
+    if ((Test-Path -LiteralPath (Join-Path $candidate 'interface\cmsis-dap.cfg')) -and
+        (Test-Path -LiteralPath (Join-Path $candidate 'target\stm32h7x.cfg'))) {
+        $scripts = $candidate
+        break
+    }
+}
+if (!$scripts) { throw "OpenOCD CMSIS-DAP/STM32H7 scripts missing under $OpenOcdRoot" }
+Write-Host "OPENOCD_ROOT $OpenOcdRoot"
 Push-Location $PSScriptRoot
 try {
     $connection = @('-s', $scripts, '-f', 'interface/cmsis-dap.cfg',

@@ -1,55 +1,76 @@
 # Mango Swerve Firmware
 
-芒果疏果机器人舵轮底盘的独立 STM32H723 电控工程。当前范围为四舵轮电机、遥控手动控制、BMI088、轮式里程计、VOFA+ 日志和 S21C 的 FDCAN3 测距接收解包。底盘启动与状态检查已按这些设备独立组织。
+芒果疏果机器人四舵轮底盘的独立 STM32H723 裸机工程，转向使用达妙 DM6220，驱动使用大疆 M3508/C620。范围包括底盘电机、遥控、BMI088、轮式/IMU 里程计，以及 S21C 的 CAN3 四路测距接收。疏果装置仅预留共享总线接入边界，具体协议尚未确定。
 
-**从这里阅读：[底盘电控项目总览与目录](docs/PROJECT_GUIDE.md)。** 赛题、硬件连接、源代码阅读路线、机械尺寸、测距协议、CAN3 接入、导航方案、联调顺序及待机械队友确认的问题都集中在这一份文档维护。
+**技术文档统一维护在 [项目指南](docs/PROJECT_GUIDE.md)。**
 
 ## 当前进度（2026-11-05）
 
-**当前默认是通信诊断模式。** `firmware/src/app/app_config.h` 的 `APP_RUN_MODE` 默认为 `APP_MODE_CAN_DIAGNOSTICS`：三路 CAN 接收、USART1 日志和激光快照独立运行，不初始化底盘电机、IMU或遥控，也不发送应用层 CAN 命令。CAN 外设使用正常模式，会对正确帧提供 ACK。下午首轮使用 `firmware/build/Debug/robot.hex`，按[调车准备与现场检查](docs/PROJECT_GUIDE.md#调车准备与现场检查2026-11-05)先核对接线和真实收帧。
+默认 `APP_RUN_MODE=0` 为静态通信诊断：三路 CAN 接收、USART1 日志和激光快照，不初始化电机、IMU、遥控，不发送应用层 CAN 命令。CAN 外设使用正常模式，会提供 ACK。
 
-日志串口为 USART1（MCU PA9=TX、PA10=RX），921600 bit/s、8N1；外部接线按 DM 板实际串口插座丝印核对。每秒输出三路物理 CAN 的状态、轮询显示的报文 ID/数据和四路激光毫米值；SWD 可观察 `g_commissioning`。完整手动模式输出 `CHASSIS_BOOT` 分步启动日志和 `CHASSIS_CHECK` 底盘状态。
-
-| 状态 | 内容 |
+| 项目 | 已有证据与下一步 |
 | --- | --- |
-| 已有源码 | STM32H723 底盘固件与 EIDE/CubeMX 工程；CAN3 为经典 CAN 1 Mbps，具有 8 个标准 ID 端点槽位、16 帧 RX FIFO 和 8 帧 TX FIFO，接收标准 ID `0x601` 并解包四路毫米值。尚未按新车几何与电机配置完成实车联调。 |
-| 已验证的总线 | 接线修复后，CAN1上四个达妙转向电机均回应且初始化返回 `state=1`，用户确认指示灯转绿；CAN2持续收到四个C620反馈；CAN3持续收到约10Hz的 `0x601` 并完成四路解包。四只激光均已接入，独立遮挡测试确认接口1=左、2=右、3=后、4=前。 |
-| 已确认接口约定 | 原厂例程发送经典 CAN 标准数据帧 `0x601`、1 Mbps、8 字节；四路距离按 S21C 接口 1–4 顺序、每路大端 `uint16_t` 毫米。详见[CAN3 接收与解包](docs/PROJECT_GUIDE.md#h723-fdcan3-接收与解包)。 |
-| 当前待验证 | 四轮零位、新车几何与有效轮径；激光安装坐标、方位角与距离精度。 |
+| CAN1/2 | PR #1 的现场记录确认 CAN1=四个 DM6220，回复 ID `0x11–0x14`；CAN2=四个 C620，反馈 ID `0x201–0x204`。默认 `CHASSIS_CAN_BUSES_SWAPPED=0`。各 ID 对应的物理轮位仍需逐轮核对。 |
+| CAN3 激光 | 已记录约 10 Hz 的标准帧 `0x601` 和四路解包；遮挡测试确认 S21C 接口 1/2/3/4=左/右/后/前。原始 `distance_mm[0..3]` 维持接口顺序，上层前/后/左/右索引为 3/2/0/1。位置坐标、逐路健康与导航融合待完成。 |
+| 四轮零位 | 已采集 ID 1–4 的正前方读数，独立 `ZeroTest` 完成一次逐轮低速回位，用户确认轮向对齐。零位补偿尚未接入正常底盘运动学；重复性与转向/驱动符号仍待核验。 |
+| 直行准备 | 当前保留旧车几何、半径及经验偏航补偿；`chassis_yaw_hold.*` 尚无运行入口调用。先完成轮位、零位、符号与低速入口，再验证 IMU 航向保持和侧向测距纠偏。 |
+| 验证边界 | 合并维护阶段完成主机测试及 Diagnostics、Manual、Steering、Can2Query、ZeroTest 五种完整 ARM 构建（各 80 个源文件）。本次未烧录、点动或重新验证上述现场结果。 |
 
-**后续调试安排**见项目指南中的调零与参数标定计划。CAN1/2设备归属和四路激光方向已完成静态验证，四轮零位和新车参数仍待标定。加入疏果器节点时检查波特率、ID冲突、终端和错误计数。手动模式仍包含旧车几何和较高速度档，动作测试前需配置受限标定入口。
+明日按 [2026-11-06 调车与长距离直行计划](docs/PROJECT_GUIDE.md#明日调车与长距离直行计划2026-11-06) 执行。历史现场结果、日志索引和待办均在指南中保留；完整手动固件尚未具备新车首轮落地标定条件。
 
-2026-11-05 纯底盘裁剪后，79个源文件以Arm GNU 15.2.1通过静态诊断、手动、转向初始化与只读查询四种构建。CubeMX配置与生成代码同步清理了UART7、UART8、USART10及原吸盘输出。主机测试覆盖CAN诊断、转向初始化、只读查询、遥控许可和裁剪范围。实现依据与启动依赖详见[底盘裁剪分析](docs/PROJECT_GUIDE.md#纯底盘裁剪与自检边界2026-11-05)。
+## 目录与代码入口
 
-在安装 MinGW GCC 的 Windows PowerShell 中，可重复执行 CAN3 逻辑测试和 CubeMX/生成代码一致性检查：
-
-```powershell
-cd firmware
-powershell -ExecutionPolicy Bypass -File .\tests\run_host_tests.ps1
+```text
+README.md                  项目入口、当前状态、构建命令
+docs/PROJECT_GUIDE.md       唯一持续维护的技术指南与现场证据
+.vscode/tasks.json         仓库根目录的 VS Code 任务
+firmware/
+  robot.ioc                CubeMX 配置
+  .eide/                   EIDE 工程配置
+  Core/、Drivers/          CubeMX 生成代码及依赖
+  src/app/                 模式、裸机入口和调度
+  src/service/             底盘、装配、诊断、测距、里程计
+  src/domain/              四舵轮运动学、PID、融合算法
+  src/device/              电机、IMU、遥控等驱动
+  src/platform/            HAL 适配及 CAN1/2 映射
+  tests/                   主机逻辑及 CubeMX 一致性检查
+  build-local.ps1          离线构建
+  flash-local.ps1          SWD 探测、备份及烧录
+  monitor-local.ps1        串口日志采集
+  build/                   本机产物、日志及备份，Git 忽略
 ```
 
-成功时应输出 `CAN3_LOGIC_TEST_OK`、`COMMISSIONING_TEST_OK`、`COMMISSIONING_CAN1_FAILURE_TEST_OK` 和 `CAN3_CONFIG_TEST_OK`；两种 CAN1/2 映射各运行一遍诊断测试。该测试不访问硬件。
+建议阅读顺序：`Core/Src/main.c → src/app/entry.h → src/service/assemble/assemble_chassis.c → src/service/chassis.c → src/domain/steer_wheel_kine.c → src/device/bus_motor/ → src/service/odom.c`。
 
-激光接入的离线准备已补充初始状态、四接口顺序、全零/重复载荷、300ms边界和计时回绕测试，输出 `LASER_OFFLINE_PREPARATION_TEST_OK`。装车后按[激光接入准备与验收](docs/PROJECT_GUIDE.md#激光接入准备与验收2026-11-05)逐路验证。
+CAN3 从 `src/service/assemble/assemble_laser.c → can3_bus.* → can3_router.* → laser.*` 阅读；通信观察变量为 `g_commissioning`。构建和代码入口路径均相对于 `firmware/`。
 
-装车后的[调零与参数标定计划](docs/PROJECT_GUIDE.md#装车后调零与参数标定计划离线准备)已列出四轮身份核对、软件零位偏置、方向与复定位记录表、受限标定入口要求，以及几何/轮径/里程计的调整顺序。实测值待装车后采集。
+## 构建与模式
 
-2026-11-05已采集四轮正前方角度，独立 `ZeroTest` 模式完成四轮低速逐轮回位，用户确认机械轮向对齐，实测结果见[四轮零位回位验证](docs/PROJECT_GUIDE.md#四轮零位回位验证2026-11-05)。测试每次复位后等待5秒执行，完成后释放转向。完整运动学路径的零位补偿仍待接入。默认构建保持静态诊断模式。
+在仓库根目录运行；主机测试需要 MinGW GCC，固件需要 ARM GNU GCC。
 
-## 工程入口
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\tests\run_host_tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1
+```
 
-| 内容 | 位置 |
-| --- | --- |
-| EIDE 工程与 CubeMX 配置 | `firmware/`、`firmware/robot.ioc`；VS Code EIDE 选择 Debug/Release，目标 STM32H723VGT6、ARM GNU GCC |
-| 启动与调度 | `firmware/Core/Src/main.c`、`firmware/src/app/entry.h` |
-| 电机装配与底盘执行 | `firmware/src/service/assemble/assemble_chassis.c`、`firmware/src/service/chassis.c` |
-| 四舵轮运动学 | `firmware/src/domain/steer_wheel_kine.c` |
-| 电机协议与里程计 | `firmware/src/device/bus_motor/`、`firmware/src/service/odom.c` |
-| S21C CAN3 接收与数据快照 | `firmware/src/service/assemble/assemble_laser.c`、`firmware/src/service/laser.h` |
-| CAN3 共享总线与诊断 | `firmware/src/service/can3_bus.*`、`firmware/src/service/can3_router.*`、`firmware/src/platform/stm32_hal_can.*` |
-| 调车诊断入口与观察变量 | `firmware/src/app/app_config.h`、`firmware/src/service/commissioning.*`、`g_commissioning` |
-| 转向/驱动的总线映射 | `firmware/src/platform/chassis_can_map.h`；当前默认 `CHASSIS_CAN_BUSES_SWAPPED=0`，转向CAN1、驱动CAN2。四个转向回复ID为 `0x11–0x14`，四个驱动反馈ID为 `0x201–0x204`，均已收帧验证。开关同时交换收发绑定 |
+构建自动查找 `ARM_GCC_ROOT`、原开发机的 `E:\EmbeddedTools`、当前用户 EIDE 工具目录及 PATH。也可显式指定安装根目录：`-Toolchain 'C:\Users\Zhanglongsheng\.eide\tools\gcc_arm'`。输出位于下面各目录中的 `robot.elf/.hex/.bin`，失败构建会先移除该模式的旧固件产物。
 
-**测距接口维护边界**为按 S21C 接口1–4保存四路原始毫米值，`distance_mm[0]` 对应接口1，依此类推。2026-11-05静态遮挡测试确认数组顺序为左、右、后、前。上层按前、后、左、右读取时索引依次为3、2、0、1。方向映射在上层使用，当前测距数据尚待接入导航或底盘控制。接口定义、验证状态与后续接入步骤以[项目总览的 CAN3 小节](docs/PROJECT_GUIDE.md#h723-fdcan3-接收与解包)为准。
+| `-Mode` | 宏值 | 输出目录 | 上电行为 |
+| --- | --- | --- | --- |
+| Diagnostics（默认） | 0 | `firmware/build/Debug/` | 只接收和记录，无应用 CAN 发送 |
+| Manual | 1 | `firmware/build/Manual/` | 完整底盘初始化，电机使能、驻车及遥控动作 |
+| Steering | 2 | `firmware/build/Steering/` | 转向初始化，清错、使能并切换模式 |
+| Can2Query | 3 | `firmware/build/Can2Query/` | 发送只读 ESC_ID 查询，使用实际转向总线映射 |
+| ZeroTest | 4 | `firmware/build/ZeroTest/` | 转向初始化后等待 5 秒，按 ID 1–4 逐轮回位并释放 |
 
-本工程取自 [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`，基线提交 `65088f94be15c69ccfa647779d7f847b06b95735`；原仓库未修改。原 Hephaestus 文档可作为驱动代码参考，车体几何和赛题方案以本仓库的[项目总览](docs/PROJECT_GUIDE.md)为准。
+编译不执行硬件动作；烧录后行为取决于模式。VS Code 打开仓库根目录可用 `Ctrl+Shift+B` 构建诊断模式；EIDE 也可直接打开 `firmware/`。每次 CubeMX 重新生成后重新运行主机测试和完整构建。
+
+## 烧录、日志与维护
+
+`flash-local.ps1` 默认只选择 Diagnostics，写入前重新构建并备份、校验原 1 MB Flash。OpenOCD 自动查找 `OPENOCD_ROOT`、原 E 盘工具、EIDE 及 PATH，也支持 `-OpenOcdRoot`。具体硬件操作见 [开发命令](docs/PROJECT_GUIDE.md#本机开发命令2026-11-05)。
+
+日志使用 USART1（PA9=TX、PA10=RX），921600 bit/s、8N1；板侧插座以实物丝印为准。VS Code 的 `Firmware Monitor` 任务会询问串口，默认示例 COM12，采集 30 秒。主机测试不访问串口或调试器。
+
+维护时通过分支和 PR 更新 `main`，保留编译、测试及实车证据的区别。`build/` 中的二进制、串口日志与原板备份仅保存在本机，不提交 Git。修改固件时同步更新本页与项目指南，不另建零散进度文档。
+
+来源为 [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`，基线 `65088f94be15c69ccfa647779d7f847b06b95735`；原仓库未修改。原文档虽混用 Atlas 标题，其底盘驱动仍可参考，新车参数以本项目记录为准。

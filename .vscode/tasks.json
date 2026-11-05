@@ -2,10 +2,10 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Firmware Monitor COM12",
+            "label": "Firmware Monitor",
             "type": "process",
             "command": "powershell.exe",
-            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/monitor-local.ps1", "-Seconds", "30"],
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/monitor-local.ps1", "-Port", "${input:firmwareSerialPort}", "-Seconds", "30"],
             "problemMatcher": []
         },
         {
@@ -29,6 +29,14 @@
             "command": "powershell.exe",
             "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/flash-local.ps1", "-ProbeOnly"],
             "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "firmwareSerialPort",
+            "type": "promptString",
+            "description": "DM USART1 USB serial port",
+            "default": "COM12"
         }
     ]
 }

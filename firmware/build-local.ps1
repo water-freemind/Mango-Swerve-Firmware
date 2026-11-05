@@ -1,13 +1,30 @@
 param(
-    [string]$Toolchain = 'E:\EmbeddedTools\xpack-arm-none-eabi-gcc-15.2.1-1.1',
+    [string]$Toolchain = '',
     [ValidateSet('Diagnostics', 'Manual', 'Steering', 'Can2Query', 'ZeroTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
+if (!$Toolchain) {
+    $candidates = @($env:ARM_GCC_ROOT,
+        'E:\EmbeddedTools\xpack-arm-none-eabi-gcc-15.2.1-1.1',
+        (Join-Path $env:USERPROFILE '.eide\tools\gcc_arm'))
+    $pathCompiler = Get-Command arm-none-eabi-gcc.exe -ErrorAction SilentlyContinue
+    if ($pathCompiler) { $candidates += Split-Path (Split-Path $pathCompiler.Source -Parent) -Parent }
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate 'bin\arm-none-eabi-gcc.exe'))) {
+            $Toolchain = $candidate
+            break
+        }
+    }
+    if (!$Toolchain) { throw 'ARM GCC not found. Set ARM_GCC_ROOT or pass -Toolchain <installation root>.' }
+}
 $compiler = Join-Path $Toolchain 'bin\arm-none-eabi-gcc.exe'
 $objcopy = Join-Path $Toolchain 'bin\arm-none-eabi-objcopy.exe'
 $size = Join-Path $Toolchain 'bin\arm-none-eabi-size.exe'
-if (!(Test-Path -LiteralPath $compiler)) { throw "ARM GCC missing at $compiler" }
+foreach ($tool in @($compiler, $objcopy, $size)) {
+    if (!(Test-Path -LiteralPath $tool)) { throw "ARM tool missing at $tool" }
+}
+Write-Host "ARM_TOOLCHAIN $Toolchain"
 $output = 'build/Debug'
 if ($Mode -eq 'Manual') { $output = 'build/Manual' }
 if ($Mode -eq 'Steering') { $output = 'build/Steering' }
