@@ -1,6 +1,6 @@
 param(
     [string]$Toolchain = 'E:\EmbeddedTools\xpack-arm-none-eabi-gcc-15.2.1-1.1',
-    [ValidateSet('Diagnostics', 'Manual', 'Steering', 'Can2Query')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Manual', 'Steering', 'Can2Query', 'ZeroTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +12,7 @@ $output = 'build/Debug'
 if ($Mode -eq 'Manual') { $output = 'build/Manual' }
 if ($Mode -eq 'Steering') { $output = 'build/Steering' }
 if ($Mode -eq 'Can2Query') { $output = 'build/Can2Query' }
+if ($Mode -eq 'ZeroTest') { $output = 'build/ZeroTest' }
 
 Push-Location $PSScriptRoot
 try {
@@ -21,6 +22,7 @@ try {
     if ($Mode -eq 'Manual') { $runMode = 1 }
     if ($Mode -eq 'Steering') { $runMode = 2 }
     if ($Mode -eq 'Can2Query') { $runMode = 3 }
+    if ($Mode -eq 'ZeroTest') { $runMode = 4 }
     $flags = @('-mcpu=cortex-m7', '-mthumb', '-mfpu=fpv5-sp-d16', '-mfloat-abi=hard',
         '-g3', '-Og', '-ffunction-sections', '-fdata-sections', '-Wall',
         '-DDEBUG', '-DUSE_PWR_LDO_SUPPLY', '-DUSE_HAL_DRIVER', '-DSTM32H723xx', "-DAPP_RUN_MODE=$runMode")

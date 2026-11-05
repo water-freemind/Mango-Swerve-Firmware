@@ -4,9 +4,12 @@
 #include "app_config.h"
 #include "assemble/assemble.h"
 
-#if APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_CAN2_QUERY
+#if APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_CAN2_QUERY || APP_RUN_MODE == APP_MODE_STEERING_ZERO_TEST
 
 #include "commissioning.h"
+#if APP_RUN_MODE == APP_MODE_STEERING_ZERO_TEST
+#include "steering_zero_test.h"
+#endif
 
 static inline void entry_init(void) {
     (void)assemble_delay();
@@ -14,11 +17,16 @@ static inline void entry_init(void) {
     commissioning_init();
 #if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
     (void)assemble_steering_diagnostics();
+#elif APP_RUN_MODE == APP_MODE_STEERING_ZERO_TEST
+    steering_zero_test_init();
 #endif
 }
 
 static inline void entry_loop(void) {
     commissioning_process();
+#if APP_RUN_MODE == APP_MODE_STEERING_ZERO_TEST
+    steering_zero_test_process();
+#endif
 }
 
 #else

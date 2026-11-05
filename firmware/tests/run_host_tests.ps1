@@ -163,3 +163,16 @@ if ($entry -match 'arm\.h|pc_comms|pi_comms|asr_comms|thinning') {
     throw 'The chassis application depends on an unrelated device service.'
 }
 Write-Host 'CHASSIS_SCOPE_TEST_OK'
+
+$zeroExe = Join-Path $outputDir 'test_steering_zero.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `
+    "-I$(Join-Path $PSScriptRoot 'fakes')" `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    "-I$(Join-Path $firmwareRoot 'src\platform')" `
+    "-I$(Join-Path $firmwareRoot 'src\device')" `
+    "-I$(Join-Path $firmwareRoot 'src\infra')" `
+    (Join-Path $PSScriptRoot 'test_steering_zero.c') `
+    (Join-Path $firmwareRoot 'src\service\steering_zero_test.c') '-lm' '-o' $zeroExe
+if ($LASTEXITCODE -ne 0) { throw 'Steering zero test compilation failed.' }
+& $zeroExe
+if ($LASTEXITCODE -ne 0) { throw 'Steering zero test failed.' }

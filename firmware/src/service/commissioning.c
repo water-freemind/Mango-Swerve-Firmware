@@ -89,7 +89,9 @@ void commissioning_init(void) {
     }
     g_commissioning.bus[2].started = can3_bus_is_started();
 
-#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+#if APP_RUN_MODE == APP_MODE_STEERING_ZERO_TEST
+    log_info("ZERO_TEST: sequential steering return verification follows");
+#elif APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
     log_info("STEERING_DIAGNOSTICS: steering initialization enabled; CAN monitoring active");
 #elif APP_RUN_MODE == APP_MODE_CAN2_QUERY
     log_info("STEERING_QUERY CAN%u: read ESC_ID register 8, standard ID 0x7ff, opcode 0x33, motor IDs 1..4",
@@ -99,7 +101,7 @@ void commissioning_init(void) {
 #endif
     log_info("UART1 921600 8N1; physical CAN1/2/3 watch: g_commissioning; configured swap=%u",
              (unsigned)CHASSIS_CAN_BUSES_SWAPPED);
-#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_STEERING_ZERO_TEST
     log_info("Steering initialization follows; chassis-only firmware");
 #else
     log_info("Chassis-only firmware; passive IMU/remote/motor diagnostics");

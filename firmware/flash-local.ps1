@@ -2,7 +2,7 @@ param(
     [string]$OpenOcdRoot = 'E:\EmbeddedTools\xpack-openocd-0.12.0-7',
     [string]$Toolchain = 'E:\EmbeddedTools\xpack-arm-none-eabi-gcc-15.2.1-1.1',
     [switch]$ProbeOnly,
-    [ValidateSet('Diagnostics', 'Steering')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Steering', 'ZeroTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +27,7 @@ try {
     if ((Get-Item -LiteralPath $backup).Length -ne 0x100000) { throw 'Incomplete backup' }
     $image = 'build/Debug/robot.hex'
     if ($Mode -eq 'Steering') { $image = 'build/Steering/robot.hex' }
+    if ($Mode -eq 'ZeroTest') { $image = 'build/ZeroTest/robot.hex' }
     & $openocd @connection -c "program $image verify reset exit"
     if ($LASTEXITCODE -ne 0) { throw 'Flash or verification failed' }
     Write-Host "FLASH_OK mode=$Mode backup=$backup"
