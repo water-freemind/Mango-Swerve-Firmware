@@ -21,7 +21,6 @@ $compileArgs = @(
     (Join-Path $PSScriptRoot 'test_can3_logic.c'),
     (Join-Path $firmwareRoot 'src\service\can3_router.c'),
     (Join-Path $firmwareRoot 'src\service\laser.c'),
-    (Join-Path $firmwareRoot 'src\service\thinning.c'),
     '-o',
     $testExe
 )
@@ -64,6 +63,33 @@ foreach ($swap in @(0, 1)) {
 }
 
 $ioc = Get-Content -Raw (Join-Path $firmwareRoot 'robot.ioc')
+$queryArgs = $commissioningArgs + @('-DAPP_RUN_MODE=3')
+& $compiler.Source @queryArgs
+if ($LASTEXITCODE -ne 0) { throw 'CAN2 query test compilation failed.' }
+& $commissioningExe
+if ($LASTEXITCODE -ne 0) { throw 'CAN2 query test failed.' }
+$steeringSources = $commissioningSources + @(
+    (Join-Path $firmwareRoot 'src\service\assemble\assemble_chassis.c'),
+    (Join-Path $firmwareRoot 'src\device\bus_motor\dm_motor.c'),
+    (Join-Path $firmwareRoot 'src\device\bus_motor\agv_motor.c')
+)
+foreach ($swap in @(0, 1)) {
+    $steeringArgs = @(
+        '-std=c11', '-Wall', '-Wextra', '-Werror', '-DTEST_CAN_HAL', '-DAPP_RUN_MODE=2',
+        "-DCHASSIS_CAN_BUSES_SWAPPED=$swap", '-ffunction-sections', '-fdata-sections', '-Wl,--gc-sections',
+        "-I$(Join-Path $PSScriptRoot 'fakes')",
+        "-I$(Join-Path $firmwareRoot 'src\app')",
+        "-I$(Join-Path $firmwareRoot 'src\service')",
+        "-I$(Join-Path $firmwareRoot 'src\platform')",
+        "-I$(Join-Path $firmwareRoot 'src\infra')",
+        "-I$(Join-Path $firmwareRoot 'src\device')",
+        "-I$(Join-Path $firmwareRoot 'src\domain')"
+    ) + $steeringSources + @('-o', $commissioningExe)
+    & $compiler.Source @steeringArgs
+    if ($LASTEXITCODE -ne 0) { throw "Steering test compilation failed (swap=$swap)." }
+    & $commissioningExe
+    if ($LASTEXITCODE -ne 0) { throw "Steering test failed (swap=$swap)." }
+}
 $fdcan = Get-Content -Raw (Join-Path $firmwareRoot 'Core\Src\fdcan.c')
 $expectedIoc = @(
     'FDCAN3.MessageRAMOffset=384',
@@ -100,3 +126,40 @@ if ($can1Words -ne 192 -or (192 + $can2Words) -ne 384 -or $can3End -gt 2560) {
 }
 
 Write-Host "CAN3_CONFIG_TEST_OK (CAN3 words 384..$($can3End - 1), total capacity 2560)"
+
+$remoteExe = Join-Path $outputDir 'test_remote_chassis.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src\device')" `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    "-I$(Join-Path $firmwareRoot 'src\infra')" `
+    (Join-Path $PSScriptRoot 'test_remote_chassis.c') `
+    (Join-Path $firmwareRoot 'src\service\remote.c') '-o' $remoteExe
+if ($LASTEXITCODE -ne 0) { throw 'Chassis remote compilation failed.' }
+& $remoteExe
+if ($LASTEXITCODE -ne 0) { throw 'Chassis remote test failed.' }
+
+$removedPeripherals = 'UART7|UART8|USART10'
+$generatedUart = Get-Content -Raw (Join-Path $firmwareRoot 'Core\Src\usart.c')
+$main = Get-Content -Raw (Join-Path $firmwareRoot 'Core\Src\main.c')
+if ($ioc -match "(?m)^($removedPeripherals)\." -or
+    $ioc -match "(?m)^Mcu\.IP\d+=($removedPeripherals)$" -or
+    $generatedUart -match 'huart7|huart8|huart10' -or
+    $main -match 'MX_(UART7|UART8|USART10).*Init') {
+    throw 'A removed device peripheral remains in CubeMX or generated startup code.'
+}
+$ipCount = [regex]::Matches($ioc, '(?m)^Mcu\.IP\d+=').Count
+$pinCount = [regex]::Matches($ioc, '(?m)^Mcu\.Pin\d+=').Count
+if ($ioc -notmatch "(?m)^Mcu\.IPNb=$ipCount\r?$" -or
+    $ioc -notmatch "(?m)^Mcu\.PinsNb=$pinCount\r?$") {
+    throw 'CubeMX peripheral or pin count is inconsistent.'
+}
+foreach ($required in @('UART5', 'USART1', 'FDCAN1', 'FDCAN2', 'FDCAN3')) {
+    if ($ioc -notmatch "(?m)^Mcu\.IP\d+=$required\r?$") {
+        throw "Chassis peripheral $required is missing."
+    }
+}
+$entry = Get-Content -Raw (Join-Path $firmwareRoot 'src\app\entry.h')
+if ($entry -match 'arm\.h|pc_comms|pi_comms|asr_comms|thinning') {
+    throw 'The chassis application depends on an unrelated device service.'
+}
+Write-Host 'CHASSIS_SCOPE_TEST_OK'

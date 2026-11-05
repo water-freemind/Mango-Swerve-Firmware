@@ -4,7 +4,7 @@
 #include "app_config.h"
 #include "assemble/assemble.h"
 
-#if APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS
+#if APP_RUN_MODE == APP_MODE_CAN_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS || APP_RUN_MODE == APP_MODE_CAN2_QUERY
 
 #include "commissioning.h"
 
@@ -12,6 +12,9 @@ static inline void entry_init(void) {
     (void)assemble_delay();
     (void)assemble_log();
     commissioning_init();
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+    (void)assemble_steering_diagnostics();
+#endif
 }
 
 static inline void entry_loop(void) {
@@ -25,7 +28,7 @@ static inline void entry_loop(void) {
 #include "odom.h"
 #include "remote.h"
 #include "stm32_hal_can.h"
-#include "thinning.h"
+#include "log.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -46,14 +49,8 @@ static float app_channel_normalized(uint16_t value) {
 
 static void app_apply_remote(void) {
     RemoteState state;
-    ThinningSnapshot thinning_state;
     float max_linear;
     float max_angular;
-
-    if(thinning_get_snapshot(&thinning_state) && thinning_state.chassis_brake_required) {
-        (void)chassis.brake();
-        return;
-    }
 
     remote_process();
     if(!remote_get_state(&state) || !remote_is_online(100u) ||
@@ -95,27 +92,56 @@ static void app_apply_remote(void) {
 }
 
 static inline void entry_init(void) {
-    if(assemble_delay() != SYSTEM_STATUS_OK ||
-       assemble_log() != SYSTEM_STATUS_OK ||
-       assemble_rgb() != SYSTEM_STATUS_OK ||
-       assemble_imu() != SYSTEM_STATUS_OK ||
-       assemble_odom() != SYSTEM_STATUS_OK ||
-       assemble_laser() != SYSTEM_STATUS_OK ||
-       assemble_can3() != SYSTEM_STATUS_OK ||
-       assemble_chassis() != SYSTEM_STATUS_OK ||
-       assemble_remote() != SYSTEM_STATUS_OK) {
+    if(assemble_delay() != SYSTEM_STATUS_OK || assemble_log() != SYSTEM_STATUS_OK) {
+        return;
+    }
+    log_info("CHASSIS_BOOT log ready");
+    if(assemble_rgb() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT rgb failed");
+        return;
+    }
+    if(assemble_imu() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT imu failed");
+        return;
+    }
+    log_info("CHASSIS_BOOT imu ready");
+    if(assemble_odom() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT odom failed");
+        return;
+    }
+    if(assemble_laser() != SYSTEM_STATUS_OK || assemble_can3() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT range sensor bus failed");
+        return;
+    }
+    if(assemble_chassis() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT motor assembly failed");
+        return;
+    }
+    if(assemble_remote() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT remote receiver failed");
         return;
     }
     remote_init();
-    thinning_init();
     (void)chassis.brake();
     if(assemble_tim6_500hz() != SYSTEM_STATUS_OK) {
+        log_error("CHASSIS_BOOT 500 Hz timer failed");
         return;
     }
     app_initialized = true;
+    log_info("CHASSIS_BOOT initialized; waiting for motor feedback and manual remote request");
 }
 
 static inline void entry_loop(void) {
+    static uint32_t last_status_ms;
+    const uint32_t now_ms = HAL_GetTick();
+    if((uint32_t)(now_ms - last_status_ms) >= 1000u) {
+        const Chassis* state = chassis.get_chassis();
+        last_status_ms = now_ms;
+        log_info("CHASSIS_CHECK boot=%u steer=%u drive=%u remote=%u odom=%u",
+                 (unsigned)app_initialized, (unsigned)state->steer_motor_ready,
+                 (unsigned)state->drive_motor_ready, (unsigned)remote_is_online(100u),
+                 (unsigned)odom.is_ready());
+    }
     if(app_initialized) {
         can_poll_rx(&hfdcan3);
     }
@@ -123,7 +149,6 @@ static inline void entry_loop(void) {
         return;
     }
     tim6_500hz_flag = false;
-    thinning_process(HAL_GetTick());
 
     if(++app_remote_tick >= 5u) {
         app_remote_tick = 0u;

@@ -9,15 +9,15 @@
 // ! ========================= 接 口 变 量 / Typedef 声 明 ========================= ! //
 
 /**
- * @brief 底盘转向电机所用 FDCAN1 句柄
+ * @brief 物理 FDCAN1 句柄，业务映射见 chassis_can_map.h
  */
 extern FDCAN_HandleTypeDef hfdcan1;
 /**
- * @brief 底盘驱动电机所用 FDCAN2 句柄
+ * @brief 物理 FDCAN2 句柄，业务映射见 chassis_can_map.h
  */
 extern FDCAN_HandleTypeDef hfdcan2;
 
-/** S21C 测距板与疏果装置共享总线所用 FDCAN3 句柄。 */
+/** S21C 四路测距板所用 FDCAN3 句柄。 */
 extern FDCAN_HandleTypeDef hfdcan3;
 
 /**

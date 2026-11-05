@@ -3,7 +3,9 @@
 
 #include "stm32_hal_can.h"
 
-/* Set only after physical bus identification. This changes both RX and TX. */
+/* Wiring exchanged on 2026-11-05: C620 feedback verified on CAN2.
+ * Steering is connected to CAN1 according to the user's wiring check.
+ * This changes both RX and TX. */
 #ifndef CHASSIS_CAN_BUSES_SWAPPED
 #define CHASSIS_CAN_BUSES_SWAPPED 0
 #endif

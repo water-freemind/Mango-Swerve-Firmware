@@ -1,6 +1,6 @@
 # Mango Swerve Firmware
 
-芒果疏果机器人舵轮底盘的独立 STM32H723 电控工程。当前固件包含四舵轮驱动、遥控手动控制、BMI088、轮式里程计和 S21C 的 FDCAN3 测距接收解包；FDCAN3 已整理为供 DM 主控、S21C 测距板和独立疏果装置共享的总线基础设施，实物 CAN 联调仍待完成。
+芒果疏果机器人舵轮底盘的独立 STM32H723 电控工程。当前范围为四舵轮电机、遥控手动控制、BMI088、轮式里程计、VOFA+ 日志和 S21C 的 FDCAN3 测距接收解包。底盘启动与状态检查已按这些设备独立组织。
 
 **从这里阅读：[底盘电控项目总览与目录](docs/PROJECT_GUIDE.md)。** 赛题、硬件连接、源代码阅读路线、机械尺寸、测距协议、CAN3 接入、导航方案、联调顺序及待机械队友确认的问题都集中在这一份文档维护。
 
@@ -8,18 +8,18 @@
 
 **当前默认是通信诊断模式。** `firmware/src/app/app_config.h` 的 `APP_RUN_MODE` 默认为 `APP_MODE_CAN_DIAGNOSTICS`：三路 CAN 接收、USART1 日志和激光快照独立运行，不初始化底盘电机、IMU或遥控，也不发送应用层 CAN 命令。CAN 外设使用正常模式，会对正确帧提供 ACK。下午首轮使用 `firmware/build/Debug/robot.hex`，按[调车准备与现场检查](docs/PROJECT_GUIDE.md#调车准备与现场检查2026-11-05)先核对接线和真实收帧。
 
-日志串口为 USART1（MCU PA9=TX、PA10=RX），921600 bit/s、8N1；外部接线按 DM 板实际串口插座丝印核对。每秒输出三路物理 CAN 的状态、轮询显示的报文 ID/数据和四路激光毫米值；SWD 可观察 `g_commissioning`。疏果器协议尚为 `TBD`，当前只能观察其主动上报，不能控制作业动作。
+日志串口为 USART1（MCU PA9=TX、PA10=RX），921600 bit/s、8N1；外部接线按 DM 板实际串口插座丝印核对。每秒输出三路物理 CAN 的状态、轮询显示的报文 ID/数据和四路激光毫米值；SWD 可观察 `g_commissioning`。完整手动模式输出 `CHASSIS_BOOT` 分步启动日志和 `CHASSIS_CHECK` 底盘状态。
 
 | 状态 | 内容 |
 | --- | --- |
 | 已有源码 | STM32H723 底盘固件与 EIDE/CubeMX 工程；CAN3 为经典 CAN 1 Mbps，具有 8 个标准 ID 端点槽位、16 帧 RX FIFO 和 8 帧 TX FIFO，接收标准 ID `0x601` 并解包四路毫米值。尚未按新车几何与电机配置完成实车联调。 |
-| 用户已反馈 | S21C 板上的 STP23L 例程可以正常运行；实测在 0–7 cm 范围内仍能得到距离读数，但相对误差较大；CAN 线上是否实际收到数据仍待抓包。 |
+| 已验证的总线 | 接线修复后，CAN1上四个达妙转向电机均回应且初始化返回 `state=1`，用户确认指示灯转绿；CAN2持续收到四个C620反馈；CAN3持续收到约10Hz的 `0x601` 并完成四路解包。四只激光均已接入，独立遮挡测试确认接口1=左、2=右、3=后、4=前。 |
 | 已确认接口约定 | 原厂例程发送经典 CAN 标准数据帧 `0x601`、1 Mbps、8 字节；四路距离按 S21C 接口 1–4 顺序、每路大端 `uint16_t` 毫米。详见[CAN3 接收与解包](docs/PROJECT_GUIDE.md#h723-fdcan3-接收与解包)。 |
-| 尚未实现/验证 | 疏果装置 CAN ID、载荷和周期仍为 `TBD`，未发送占位协议；逐路测距有效性处理和自主遍历尚未实现；CAN3 三节点接线、终端和实物收发仍未验证。 |
+| 当前待验证 | 四轮零位、新车几何与有效轮径；激光安装坐标、方位角与距离精度。 |
 
-**下一步：**先用诊断固件确定 CAN1/2 实际接了哪组电机，再核对 S21C `0x601` 快照与超时；加入疏果器节点时检查波特率、ID 冲突、终端和错误计数。只有接线、四轮零位和几何参数确认后，才切换 `APP_RUN_MODE=1` 开始架空逐轮测试；该手动模式仍包含旧车几何和较高速度档，不适合直接落地试车。
+**后续调试安排**见项目指南中的调零与参数标定计划。CAN1/2设备归属和四路激光方向已完成静态验证，四轮零位和新车参数仍待标定。加入疏果器节点时检查波特率、ID冲突、终端和错误计数。手动模式仍包含旧车几何和较高速度档，动作测试前需配置受限标定入口。
 
-FDCAN3 配置已同时写入 `firmware/robot.ioc` 和生成文件，无需再手动在 CubeMX 配置。2026-11-05 本机以 EIDE 构建器与 Arm GNU 15.2 对当前80个源文件清理编译和链接，诊断模式、手动模式与 CAN1/2 交换映射的手动模式均通过；供首轮烧录的诊断产物是 `firmware/build/Debug/robot.elf` 和 `robot.hex`。主机测试同时覆盖不发电机命令、CAN1故障不阻断CAN3、FIFO积压继续处理与共享队列满不撤销其他报文；实物收发仍待现场验证。
+2026-11-05 纯底盘裁剪后，79个源文件以Arm GNU 15.2.1通过静态诊断、手动、转向初始化与只读查询四种构建。CubeMX配置与生成代码同步清理了UART7、UART8、USART10及原吸盘输出。主机测试覆盖CAN诊断、转向初始化、只读查询、遥控许可和裁剪范围。实现依据与启动依赖详见[底盘裁剪分析](docs/PROJECT_GUIDE.md#纯底盘裁剪与自检边界2026-11-05)。
 
 在安装 MinGW GCC 的 Windows PowerShell 中，可重复执行 CAN3 逻辑测试和 CubeMX/生成代码一致性检查：
 
@@ -29,6 +29,10 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_host_tests.ps1
 ```
 
 成功时应输出 `CAN3_LOGIC_TEST_OK`、`COMMISSIONING_TEST_OK`、`COMMISSIONING_CAN1_FAILURE_TEST_OK` 和 `CAN3_CONFIG_TEST_OK`；两种 CAN1/2 映射各运行一遍诊断测试。该测试不访问硬件。
+
+激光接入的离线准备已补充初始状态、四接口顺序、全零/重复载荷、300ms边界和计时回绕测试，输出 `LASER_OFFLINE_PREPARATION_TEST_OK`。装车后按[激光接入准备与验收](docs/PROJECT_GUIDE.md#激光接入准备与验收2026-11-05)逐路验证。
+
+装车后的[调零与参数标定计划](docs/PROJECT_GUIDE.md#装车后调零与参数标定计划离线准备)已列出四轮身份核对、软件零位偏置、方向与复定位记录表、受限标定入口要求，以及几何/轮径/里程计的调整顺序。实测值待装车后采集。
 
 ## 工程入口
 
@@ -41,10 +45,9 @@ powershell -ExecutionPolicy Bypass -File .\tests\run_host_tests.ps1
 | 电机协议与里程计 | `firmware/src/device/bus_motor/`、`firmware/src/service/odom.c` |
 | S21C CAN3 接收与数据快照 | `firmware/src/service/assemble/assemble_laser.c`、`firmware/src/service/laser.h` |
 | CAN3 共享总线与诊断 | `firmware/src/service/can3_bus.*`、`firmware/src/service/can3_router.*`、`firmware/src/platform/stm32_hal_can.*` |
-| 协议无关的疏果作业状态 | `firmware/src/service/thinning.*`；实际 CAN ID/字段仍为 `TBD` |
 | 调车诊断入口与观察变量 | `firmware/src/app/app_config.h`、`firmware/src/service/commissioning.*`、`g_commissioning` |
-| 转向/驱动的总线映射 | `firmware/src/platform/chassis_can_map.h`；`CHASSIS_CAN_BUSES_SWAPPED=0` 为转向CAN1/驱动CAN2，`=1` 同时交换收发绑定；收发器使能仍跟随物理外设 |
+| 转向/驱动的总线映射 | `firmware/src/platform/chassis_can_map.h`；当前默认 `CHASSIS_CAN_BUSES_SWAPPED=0`，转向CAN1、驱动CAN2。四个转向回复ID为 `0x11–0x14`，四个驱动反馈ID为 `0x201–0x204`，均已收帧验证。开关同时交换收发绑定 |
 
-**测距接口维护边界：**当前仅按 S21C 接口 1–4 保存四路原始毫米值；`distance_mm[0]` 对应接口 1，依此类推。尚未确定各接口对应的车体方向，待用户提供实物接线/安装对应关系后再单独增加方向映射。不要在 CAN 解包层把接口号直接写成前、后、左、右；当前测距数据也未接入导航或底盘控制。接口定义、验证状态与后续接入步骤以[项目总览的 CAN3 小节](docs/PROJECT_GUIDE.md#h723-fdcan3-接收与解包)为准。
+**测距接口维护边界**为按 S21C 接口1–4保存四路原始毫米值，`distance_mm[0]` 对应接口1，依此类推。2026-11-05静态遮挡测试确认数组顺序为左、右、后、前。上层按前、后、左、右读取时索引依次为3、2、0、1。方向映射在上层使用，当前测距数据尚待接入导航或底盘控制。接口定义、验证状态与后续接入步骤以[项目总览的 CAN3 小节](docs/PROJECT_GUIDE.md#h723-fdcan3-接收与解包)为准。
 
 本工程取自 [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`，基线提交 `65088f94be15c69ccfa647779d7f847b06b95735`；原仓库未修改。原 Hephaestus 文档可作为驱动代码参考，车体几何和赛题方案以本仓库的[项目总览](docs/PROJECT_GUIDE.md)为准。

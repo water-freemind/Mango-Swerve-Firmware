@@ -1,0 +1,34 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Firmware Monitor COM12",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/monitor-local.ps1", "-Seconds", "30"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Firmware Build Diagnostics",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/build-local.ps1"],
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Firmware Flash Diagnostics",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/flash-local.ps1"],
+            "problemMatcher": "$gcc"
+        },
+        {
+            "label": "Firmware Probe SWD",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware/flash-local.ps1", "-ProbeOnly"],
+            "problemMatcher": []
+        }
+    ]
+}

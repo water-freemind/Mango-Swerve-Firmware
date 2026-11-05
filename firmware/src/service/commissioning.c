@@ -1,4 +1,5 @@
 #include "commissioning.h"
+#include "app_config.h"
 
 #include "chassis_can_map.h"
 #include "log.h"
@@ -88,11 +89,52 @@ void commissioning_init(void) {
     }
     g_commissioning.bus[2].started = can3_bus_is_started();
 
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+    log_info("STEERING_DIAGNOSTICS: steering initialization enabled; CAN monitoring active");
+#elif APP_RUN_MODE == APP_MODE_CAN2_QUERY
+    log_info("STEERING_QUERY CAN%u: read ESC_ID register 8, standard ID 0x7ff, opcode 0x33, motor IDs 1..4",
+             CHASSIS_STEER_CAN == &hfdcan1 ? 1u : 2u);
+#else
     log_info("CAN_DIAGNOSTICS: application TX disabled; normal CAN mode provides ACK");
+#endif
     log_info("UART1 921600 8N1; physical CAN1/2/3 watch: g_commissioning; configured swap=%u",
              (unsigned)CHASSIS_CAN_BUSES_SWAPPED);
-    log_info("No IMU/remote/motor initialization required; thinner protocol remains TBD");
+#if APP_RUN_MODE == APP_MODE_STEERING_DIAGNOSTICS
+    log_info("Steering initialization follows; chassis-only firmware");
+#else
+    log_info("Chassis-only firmware; passive IMU/remote/motor diagnostics");
+#endif
 }
+
+#if APP_RUN_MODE == APP_MODE_CAN2_QUERY
+/* Manufacturer read_motor_param format. This diagnostic only reads ESC_ID.
+ * Reference: dmBots/motor-control-routine damiao.cpp, read_motor_param(). */
+static void commissioning_query_steering(uint32_t now_ms) {
+    static uint32_t last_query_ms;
+    static uint8_t next_id = 1u;
+    static bool awaiting_tx;
+    if(awaiting_tx && (uint32_t)(now_ms - last_query_ms) >= 100u) {
+        uint32_t psr = CHASSIS_STEER_CAN->Instance->PSR;
+        uint32_t ecr = CHASSIS_STEER_CAN->Instance->ECR;
+        uint32_t pending = CHASSIS_STEER_CAN->Instance->TXBRP;
+        log_info("STEERING_QUERY motor=%u PSR=0x%lx ECR=0x%lx pending=0x%lx transmitted=0x%lx",
+                 (unsigned)(next_id - 1u), (unsigned long)psr, (unsigned long)ecr,
+                 (unsigned long)pending, (unsigned long)CHASSIS_STEER_CAN->Instance->TXBTO);
+        if(pending != 0u) {
+            (void)HAL_FDCAN_AbortTxRequest(CHASSIS_STEER_CAN, pending);
+        }
+        awaiting_tx = false;
+    }
+    if(next_id <= 4u && (uint32_t)(now_ms - last_query_ms) >= 2000u) {
+        const uint8_t query[8] = {next_id, 0u, 0x33u, 8u, 0u, 0u, 0u, 0u};
+        BspCanStatus status = can_send(CHASSIS_STEER_CAN, 0x7FFu, query, 8u);
+        log_info("STEERING_QUERY motor=%u read_ESC_ID submit=%u", (unsigned)next_id, (unsigned)status);
+        ++next_id;
+        last_query_ms = now_ms;
+        awaiting_tx = status == STM32_HAL_CAN_OK;
+    }
+}
+#endif
 
 static void commissioning_log_frame(uint32_t b) {
     CommissioningFrame frame;
@@ -133,6 +175,9 @@ void commissioning_process(void) {
         }
     }
     now_ms = HAL_GetTick();
+#if APP_RUN_MODE == APP_MODE_CAN2_QUERY
+    commissioning_query_steering(now_ms);
+#endif
     if((uint32_t)(now_ms - s_last_log_ms) < 1000u) {
         return;
     }
