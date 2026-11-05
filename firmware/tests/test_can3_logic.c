@@ -1,6 +1,5 @@
 #include "can3_router.h"
 #include "laser.h"
-#include "thinning.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -27,6 +26,18 @@ static Can3Frame make_laser_frame(uint32_t id, uint8_t len, uint32_t rx_ms) {
         .rx_ms = rx_ms
     };
     return frame;
+}
+
+static void test_laser_boot_snapshot(void) {
+    LaserSnapshot snapshot;
+
+    assert(laser_get_snapshot_at(&snapshot, 0u));
+    assert(snapshot.frame_count == 0u && !snapshot.frame_fresh);
+    assert(!laser_get_snapshot_at(NULL, 0u));
+    assert(!laser_accept_can3_frame(NULL, NULL));
+    laser_accept_frame(NULL, 100u);
+    assert(laser_get_snapshot_at(&snapshot, 100u));
+    assert(snapshot.frame_count == 0u && !snapshot.frame_fresh);
 }
 
 static void test_registry(void) {
@@ -85,33 +96,66 @@ static void test_laser_routing_and_timeout(void) {
     assert(!can3_router_dispatch(&router, &frame));
     assert(router.rejected_count == 4u);
 
+    assert(laser_get_snapshot_at(&snapshot, 1300u) && snapshot.frame_fresh);
     assert(laser_get_snapshot_at(&snapshot, 1301u));
     assert(snapshot.frame_count == valid_frame_count);
     assert(snapshot.last_rx_ms == 1000u);
     assert(!snapshot.frame_fresh);
 }
 
-static void test_thinning_safety_contract(void) {
-    ThinningSnapshot snapshot;
+static void test_laser_ports_and_raw_values(void) {
+    uint8_t data[8] = {0};
+    const uint16_t expected[LASER_CHANNEL_COUNT] = {1u, 256u, 1000u, 65535u};
+    LaserSnapshot snapshot;
+    uint32_t port;
+    uint32_t channel;
+    uint32_t previous_count;
 
-    thinning_init();
-    assert(!thinning_permit(false, 10u, 100u));
-    assert(thinning_permit(true, 10u, 100u));
-    assert(thinning_mark_busy(20u));
-    thinning_process(109u);
-    assert(thinning_get_snapshot(&snapshot) && snapshot.state == THINNING_BUSY);
-    thinning_process(110u);
-    assert(thinning_get_snapshot(&snapshot) && snapshot.state == THINNING_TIMED_OUT);
-    assert(snapshot.chassis_brake_required);
-    thinning_reset(120u);
-    assert(thinning_get_snapshot(&snapshot) && snapshot.state == THINNING_IDLE);
-    assert(!snapshot.chassis_brake_required);
+    assert(laser_get_snapshot_at(&snapshot, 2000u));
+    previous_count = snapshot.frame_count;
+    laser_accept_frame(data, 2000u);
+    assert(laser_get_snapshot_at(&snapshot, 2001u));
+    assert(snapshot.frame_fresh && snapshot.frame_count == previous_count + 1u);
+    for(channel = 0u; channel < LASER_CHANNEL_COUNT; ++channel) {
+        assert(snapshot.distance_mm[channel] == 0u);
+    }
+
+    /* Sequential sensor connection must update exactly its S21C port slot. */
+    for(port = 0u; port < LASER_CHANNEL_COUNT; ++port) {
+        data[2u * port] = (uint8_t)(expected[port] >> 8u);
+        data[2u * port + 1u] = (uint8_t)expected[port];
+        laser_accept_frame(data, 2100u + port * 100u);
+        assert(laser_get_snapshot_at(&snapshot, 2100u + port * 100u));
+        for(channel = 0u; channel < LASER_CHANNEL_COUNT; ++channel) {
+            assert(snapshot.distance_mm[channel] == (channel <= port ? expected[channel] : 0u));
+        }
+    }
+    assert(snapshot.frame_count == previous_count + 5u);
+
+    /* A repeated payload still represents a new board frame. */
+    laser_accept_frame(data, 3000u);
+    assert(laser_get_snapshot_at(&snapshot, 3000u) && snapshot.frame_fresh);
+    assert(snapshot.frame_count == previous_count + 6u);
+    assert(snapshot.distance_mm[3] == 65535u);
+}
+
+static void test_laser_tick_wraparound(void) {
+    const uint8_t data[8] = {0, 100, 0, 200, 0, 250, 1, 0};
+    LaserSnapshot snapshot;
+
+    laser_accept_frame(data, UINT32_MAX - 100u);
+    assert(laser_get_snapshot_at(&snapshot, 199u) && snapshot.frame_fresh);
+    assert(laser_get_snapshot_at(&snapshot, 200u) && !snapshot.frame_fresh);
+    assert(snapshot.distance_mm[0] == 100u && snapshot.distance_mm[3] == 256u);
 }
 
 int main(void) {
+    test_laser_boot_snapshot();
     test_registry();
     test_laser_routing_and_timeout();
-    test_thinning_safety_contract();
+    test_laser_ports_and_raw_values();
+    test_laser_tick_wraparound();
+    puts("LASER_OFFLINE_PREPARATION_TEST_OK");
     puts("CAN3_LOGIC_TEST_OK");
     return 0;
 }

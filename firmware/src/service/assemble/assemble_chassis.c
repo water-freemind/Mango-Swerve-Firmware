@@ -86,6 +86,38 @@ SystemStatus assemble_chassis(void) {
 
 // ! ========================= 私 有 函 数 实 现 ========================= ! //
 
+SystemStatus assemble_steering_diagnostics(void) {
+    const BusMotorConfig config = { .ops = &chassis_steer_motor_ops };
+    uint16_t id;
+
+    log_info("STEERING_DIAGNOSTICS: restoring steering initialization, IDs 1..4, CAN%u",
+             CHASSIS_STEER_CAN == &hfdcan1 ? 1u : 2u);
+    if(steer_motor_set_instance(&dm_motor_instance) != MOTOR_STATUS_OK ||
+       dm_motor_instance.init(&config) != MOTOR_STATUS_OK ||
+       can_register_rx_callback(CHASSIS_STEER_CAN, chassis_steer_can_rx_callback, NULL) != STM32_HAL_CAN_OK) {
+        log_error("STEERING_DIAGNOSTICS driver initialization failed");
+        return SYSTEM_STATUS_ERROR;
+    }
+    for(id = 1u; id <= 4u; ++id) {
+        BusMotorFeedback feedback;
+        log_info("STEERING_INIT id=%u begin", (unsigned)id);
+        if(chassis_prepare_steer_motor(id) != MOTOR_STATUS_OK) {
+            log_error("STEERING_INIT id=%u command transmission failed", (unsigned)id);
+            return SYSTEM_STATUS_ERROR;
+        }
+        can_poll_rx(CHASSIS_STEER_CAN);
+        if(dm_motor_instance.update_feedback(id, &feedback) == MOTOR_STATUS_OK) {
+            log_info("STEERING_INIT id=%u feedback state=%u pos=%f speed=%f torque=%f",
+                     (unsigned)id, (unsigned)feedback.error_code,
+                     (double)feedback.position, (double)feedback.speed, (double)feedback.torque);
+        } else {
+            log_warn("STEERING_INIT id=%u commands submitted; feedback pending", (unsigned)id);
+        }
+    }
+    log_info("STEERING_DIAGNOSTICS initialization finished; CAN monitoring active");
+    return SYSTEM_STATUS_OK;
+}
+
 static bool chassis_steer_can_send(uint32_t id, const uint8_t* data, uint8_t len) {
     return can_send(CHASSIS_STEER_CAN, id, data, len) == STM32_HAL_CAN_OK;
 }

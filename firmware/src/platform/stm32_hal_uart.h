@@ -13,16 +13,10 @@
  */
 #define UART_TIMEOUT 100u
 
-typedef enum {
-    PI_TX_HAL_OK = 0,
-    PI_TX_HAL_BUSY,
-    PI_TX_HAL_TIMEOUT,
-    PI_TX_HAL_ERROR
-} PiTxHalResult;
 
 /**
  * @brief USART1 句柄
- * @details 同时用于日志发送和 PC 链路接收
+ * @details 用于底盘日志和 VOFA+ 文本输出
  */
 extern UART_HandleTypeDef huart1;
 
@@ -32,23 +26,8 @@ extern UART_HandleTypeDef huart1;
  */
 extern UART_HandleTypeDef huart5;
 
-/**
- * @brief UART7 句柄
- * @details 当前用于机械臂串口设备
- */
-extern UART_HandleTypeDef huart7;
 
-/**
- * @brief UART8 句柄
- * @details 当前用于树莓派链路
- */
-extern UART_HandleTypeDef huart8;
 
-/**
- * @brief USART10 句柄
- * @details 当前用于 ASRPro 双向链路
- */
-extern UART_HandleTypeDef huart10;
 
 // ! ========================= 接 口 函 数 声 明 ========================= ! //
 
@@ -68,30 +47,8 @@ bool uart1_write(const char* data, uint32_t len);
  */
 bool uart1_write_blocking(const char* data, uint32_t len);
 
-/**
- * @brief 通过 UART7 阻塞发送一段字符串数据
- * @param data 数据缓冲区
- * @param len 数据长度, 单位 byte
- * @return bool `true` 表示发送完成
- */
-bool uart7_write_blocking(const char* data, uint32_t len);
 
-/**
- * @brief 通过 UART8 阻塞发送一段字符串数据
- * @param data 数据缓冲区
- * @param len 数据长度, 单位 byte
- * @return bool `true` 表示发送完成
- */
-bool uart8_write_blocking(const char* data, uint32_t len);
-PiTxHalResult uart8_get_last_tx_result(void);
 
-/**
- * @brief 通过 USART10 阻塞发送一段字符串数据
- * @param data 数据缓冲区
- * @param len 数据长度, 单位 byte
- * @return bool `true` 表示发送完成
- */
-bool uart10_write_blocking(const char* data, uint32_t len);
 
 /**
  * @brief 启动 UART 中断接收
