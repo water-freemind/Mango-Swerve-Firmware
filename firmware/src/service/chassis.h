@@ -106,6 +106,7 @@ typedef struct {
     float wheel_drive_ratio;
     ChassisSteerTargetMode steer_target_mode;
     ChassisYawBiasConfig yaw_bias;
+    float steer_zero_rad[CHASSIS_MODULE_COUNT]; /**< Raw motor angle at mechanical forward, per module. */
 } ChassisConfig;
 
 /**

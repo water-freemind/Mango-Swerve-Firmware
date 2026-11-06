@@ -176,3 +176,61 @@ $zeroExe = Join-Path $outputDir 'test_steering_zero.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Steering zero test compilation failed.' }
 & $zeroExe
 if ($LASTEXITCODE -ne 0) { throw 'Steering zero test failed.' }
+
+$standaloneExe = Join-Path $outputDir 'test_work_link_standalone.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' '-DAPP_RUN_MODE=5' `
+    "-I$(Join-Path $PSScriptRoot 'fakes')" `
+    "-I$(Join-Path $firmwareRoot 'src\app')" `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    "-I$(Join-Path $firmwareRoot 'src\platform')" `
+    (Join-Path $PSScriptRoot 'test_work_link_standalone.c') `
+    (Join-Path $firmwareRoot 'src\service\work_link.c') '-lm' '-o' $standaloneExe
+if ($LASTEXITCODE -ne 0) { throw 'Standalone work link compilation failed.' }
+& $standaloneExe
+if ($LASTEXITCODE -ne 0) { throw 'Standalone work link test failed.' }
+
+$offsetExe = Join-Path $outputDir 'test_chassis_zero_offsets.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    "-I$(Join-Path $firmwareRoot 'src\device')" `
+    "-I$(Join-Path $firmwareRoot 'src\domain')" `
+    "-I$(Join-Path $firmwareRoot 'src\infra')" `
+    "-I$(Join-Path $PSScriptRoot 'fakes')" `
+    "-I$(Join-Path $firmwareRoot 'src\platform')" `
+    (Join-Path $PSScriptRoot 'test_chassis_zero_offsets.c') `
+    (Join-Path $firmwareRoot 'src\service\chassis.c') `
+    (Join-Path $firmwareRoot 'src\device\bus_motor\agv_motor.c') `
+    (Join-Path $firmwareRoot 'src\domain\steer_wheel_kine.c') '-lm' '-o' $offsetExe
+if ($LASTEXITCODE -ne 0) { throw 'Chassis zero offset compilation failed.' }
+& $offsetExe
+if ($LASTEXITCODE -ne 0) { throw 'Chassis zero offset test failed.' }
+
+$yawExe = Join-Path $outputDir 'test_yaw_hold.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src\app')" `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    "-I$(Join-Path $firmwareRoot 'src\infra')" `
+    (Join-Path $PSScriptRoot 'test_yaw_hold.c') `
+    (Join-Path $firmwareRoot 'src\service\chassis_yaw_hold.c') `
+    (Join-Path $firmwareRoot 'src\infra\pid.c') '-lm' '-o' $yawExe
+if ($LASTEXITCODE -ne 0) { throw 'Yaw hold compilation failed.' }
+& $yawExe
+if ($LASTEXITCODE -ne 0) { throw 'Yaw hold test failed.' }
+
+$gearsExe = Join-Path $outputDir 'test_manual_speed_gears.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' '-DAPP_RUN_MODE=5' `
+    '-ffunction-sections' '-fdata-sections' '-Wl,--gc-sections' `
+    "-I$(Join-Path $PSScriptRoot 'fakes')" `
+    "-I$(Join-Path $firmwareRoot 'src\app')" `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    "-I$(Join-Path $firmwareRoot 'src\device')" `
+    "-I$(Join-Path $firmwareRoot 'src\domain')" `
+    "-I$(Join-Path $firmwareRoot 'src\infra')" `
+    "-I$(Join-Path $firmwareRoot 'src\platform')" `
+    (Join-Path $PSScriptRoot 'test_manual_speed_gears.c') `
+    (Join-Path $firmwareRoot 'src\service\remote.c') `
+    (Join-Path $firmwareRoot 'src\service\chassis_yaw_hold.c') `
+    (Join-Path $firmwareRoot 'src\infra\pid.c') '-lm' '-o' $gearsExe
+if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear compilation failed.' }
+& $gearsExe
+if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear test failed.' }

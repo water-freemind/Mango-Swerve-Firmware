@@ -3,6 +3,7 @@
 #include "bus_motor/agv_motor.h"
 #include "bus_motor/dji_motor.h"
 #include "log.h"
+#include "work_link.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -630,6 +631,7 @@ ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz) {
         return ch.NOT_INITIALIZED;
     }
 
+    work_link_limit_velocity(&vx, &vy, &wz);
     s_chassis.brake_requested = false;
     s_chassis.brake_latched = false;
     wz_for_ik = wz - chassis_calc_yaw_bias_ext(vx, vy);
@@ -667,6 +669,14 @@ ChassisErrorCode chassis_process(void) {
         return ch.NOT_INITIALIZED;
     }
 
+    /* Apply the task interlock to cached commands as well as newly set ones. */
+    if(work_link_hold()) {
+        (void)chassis_stop();
+    }
+    work_link_limit_velocity(&s_chassis.kine.control.vx,
+                             &s_chassis.kine.control.vy,
+                             &s_chassis.kine.control.wz);
+
     for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
         const ChassisModuleMap* map = &s_module_map[i];
 
@@ -697,7 +707,8 @@ ChassisErrorCode chassis_process(void) {
         s_module_fb[map->module].drive_omega = drive_omega;
         s_module_fb[map->module].steer_abs_angle = steer_abs_angle;
         s_chassis.kine.state.cur_wheels[map->module].wheel_omega = chassis_drive_omega_to_wheel_omega(drive_omega);
-        s_chassis.kine.state.cur_wheels[map->module].steer_angle = chassis_wrap_pi(steer_abs_angle);
+        s_chassis.kine.state.cur_wheels[map->module].steer_angle =
+            chassis_wrap_pi(steer_abs_angle - s_chassis.config.steer_zero_rad[map->module]);
     }
 
     if(s_chassis.brake_requested) {
@@ -889,6 +900,11 @@ static ChassisErrorCode chassis_check_config(const ChassisConfig* config) {
     }
     if(config->steer_target_mode != CHASSIS_STEER_TARGET_ABS_NEAREST && config->steer_target_mode != CHASSIS_STEER_TARGET_WRAP_PI) {
         return ch.INVALID_PARAM;
+    }
+    for(uint8_t i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
+        if(!isfinite(config->steer_zero_rad[i]) || fabsf(config->steer_zero_rad[i]) > CHASSIS_STEER_POS_LIMIT_RAD) {
+            return ch.INVALID_PARAM;
+        }
     }
 
     return ch.OK;
@@ -1118,6 +1134,7 @@ static void chassis_resolve_brake_module_command(ChassisModule module, float tar
     }
 
     current_angle = s_module_fb[module].steer_abs_angle;
+    target_angle += s_chassis.config.steer_zero_rad[module];
     option_a = chassis_select_nearest_heading_angle(current_angle, target_angle);
     option_b = chassis_select_nearest_heading_angle(current_angle, target_angle + CHASSIS_PI);
     option_prev = s_module_cmd[module].steer_target_abs_angle;
@@ -1155,7 +1172,8 @@ static void chassis_resolve_drive_module_command(ChassisModule module) {
     }
 
     current_angle = s_module_fb[module].steer_abs_angle;
-    target_angle = s_chassis.kine.control.wheels[module].steer_angle;
+    target_angle = s_chassis.kine.control.wheels[module].steer_angle +
+                   s_chassis.config.steer_zero_rad[module];
     target_omega = s_chassis.kine.control.wheels[module].wheel_omega;
 
     option_a = chassis_select_nearest_heading_angle(current_angle, target_angle);

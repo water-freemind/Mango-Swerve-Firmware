@@ -7,6 +7,7 @@
 #include "delay.h"
 #include "log.h"
 #include "stm32_hal_can.h"
+#include "steering_calibration.h"
 
 #include <stddef.h>
 
@@ -50,8 +51,10 @@ SystemStatus assemble_chassis(void) {
             .max_wheel_linear_speed = 2.0f },
         .wheel_drive_ratio = 1.0f,
         .steer_target_mode = CHASSIS_STEER_TARGET_ABS_NEAREST,
+        .steer_zero_rad = STEERING_FORWARD_ZERO_RAD,
         .yaw_bias = {
-            .enabled = true,
+            /* Historical chassis fit. Recalibrate after wheel/geometry checks. */
+            .enabled = false,
             .k_vx = -0.049f,
             .k_vy = 0.055f,
             .v_deadband = 0.01f,

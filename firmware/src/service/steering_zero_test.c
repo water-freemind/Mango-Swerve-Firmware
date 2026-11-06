@@ -5,6 +5,7 @@
 #include "chassis_can_map.h"
 #include "commissioning.h"
 #include "log.h"
+#include "steering_calibration.h"
 
 #include <math.h>
 
@@ -14,7 +15,7 @@
 #define ZERO_TEST_TIMEOUT_MS 30000u
 
 /* Mechanical forward positions recorded separately on 2026-11-05. */
-static const float s_zero[4] = {0.001335164f, -3.131723507f, 3.127908751f, 2.075799191f};
+static const float s_zero[4] = STEERING_FORWARD_ZERO_RAD;
 typedef enum { ZERO_DELAY, ZERO_WAIT, ZERO_MOVE, ZERO_DONE, ZERO_FAULT } ZeroPhase;
 static ZeroPhase s_phase = ZERO_FAULT;
 static unsigned s_wheel;
