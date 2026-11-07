@@ -32,45 +32,48 @@ Assert (!$motion.Command('UI ARM', 1)) 'Legacy firmware without target was allow
 $motion.Observe('[INFO] TEST_STATUS phase=0 token=0 healthy=1 stopped=1 target_m=2.00', 0)
 Assert (!$motion.Command('UI ARM', 1)) 'Two-meter firmware was allowed under the one-meter panel'
 $motion.Observe($idle, 0)
+$motion.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',0)
 Assert ($motion.Command('UI ARM', 1)) 'ARM failed'
 Assert (!$motion.Command('UI GO', 2)) 'GO before ARM ACK accepted'
-$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=37 reason=ARMED', 10)
+$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=37 reason=ARMED plan=FWD target_m=1.00', 10)
 $motion.Observe('[INFO] TEST_STATUS phase=1 token=37 healthy=1 stopped=1 target_m=1.00', 20)
 Assert ($motion.Command('UI GO', 30)) 'GO failed'
 Assert ($tx[-1] -eq 'GO 37') 'Dynamic token not used'
 $count = $tx.Count
 $motion.Tick(35)
 Assert ($tx.Count -eq $count) 'Heartbeat began before GO confirmation'
-$motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=37 reason=RUNNING', 40)
+$motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=37 reason=RUNNING plan=FWD target_m=1.00', 40)
 $motion.Tick(40)
-Assert ($tx[-1] -eq 'HB 37') 'Heartbeat missing after confirmed GO'
+Assert ($tx.Count -eq $count) 'Confirmed GO unexpectedly started host heartbeats'
 $motion.Observe('[INFO] TEST_STATUS phase=2 token=37 healthy=1 stopped=0 target_m=1.00', 220)
 $motion.Tick(240)
-Assert ($tx[-1] -eq 'HB 37') 'Heartbeat did not renew at 200ms'
+Assert ($tx.Count -eq $count) 'Running session sent continuing commands'
 $motion.Tick(621)
-Assert ($tx[-1] -eq 'STOP') 'Stale status did not stop the session'
-Assert ($messages[-1] -eq 'stop_requested=STATUS_TIMEOUT status_age_ms=401') 'State timeout diagnostic is ambiguous'
+Assert ($tx.Count -eq $count) 'Stale status interrupted autonomous MCU execution'
 $count = $tx.Count
 $motion.Tick(900)
 Assert ($tx.Count -eq $count) 'Heartbeat resumed after timeout'
 $motion.Observe($idle, 1000)
+$motion.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',1000)
 Assert ($motion.Command('UI ARM', 1001)) 'Second ARM failed'
-$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=38 reason=ARMED', 1010)
+$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=38 reason=ARMED plan=FWD target_m=1.00', 1010)
 $motion.Observe('[INFO] TEST_STATUS phase=1 token=38 healthy=1 stopped=1 target_m=1.00', 1020)
 Assert ($motion.Command('UI GO', 1030)) 'Second GO failed'
 Assert ($tx[-1] -eq 'GO 38') 'Previous token reused'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=999 reason=RUNNING', 1040)
-Assert ($tx[-1] -eq 'STOP') 'Wrong GO ACK did not stop'
+Assert ($tx[-1] -eq 'GO 38') 'Wrong GO ACK sent an automatic stop'
 $motion.Observe($idle, 2000)
+$motion.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',2000)
 Assert ($motion.Command('UI ARM', 2001)) 'ARM for reset test failed'
 $motion.Observe('[INFO] TEST_READY mode=6', 2010)
 Assert (!$motion.Command('UI GO', 2020)) 'Reset reused a pre-reset token'
 $motion.Observe($idle, 3000)
+$motion.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',3000)
 Assert ($motion.Command('UI ARM', 3001)) 'ARM for banner-loss test failed'
-$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=41 reason=ARMED', 3010)
+$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=41 reason=ARMED plan=FWD target_m=1.00', 3010)
 $motion.Observe('[INFO] TEST_STATUS phase=1 token=41 healthy=1 stopped=1 target_m=1.00', 3020)
 Assert ($motion.Command('UI GO', 3030)) 'GO for banner-loss test failed'
-$motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=41 reason=RUNNING', 3040)
+$motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=41 reason=RUNNING plan=FWD target_m=1.00', 3040)
 $motion.Observe($idle, 3050)
 $count = $tx.Count
 $motion.Tick(3060)
@@ -83,7 +86,7 @@ foreach ($previousPhase in @(4,5)) {
     $retry = [VofaTestSession]::new($true,$send,$report)
     $previous = "[INFO] TEST_STATUS phase=$previousPhase token=7 healthy=1 stopped=1 target_m=1.00"
     $retry.Observe($previous,0)
-    $retry.Observe('[INFO] TEST_PLAN proto=2 plan=WALL leg=OUT target_m=1.00',0)
+    $retry.Observe('[INFO] TEST_PLAN proto=2 plan=WALL leg=OUT target_m=1.00 hb_required=0',0)
     Assert ($retry.Command('UI ARM WALL 1',1)) 'Retry ARM rejected'
     $retry.Observe($previous,2)
     $retry.Observe('[INFO] TEST_ACK ok=1 phase=1 token=8 reason=ARMED plan=WALL target_m=1.00 cmd=ARM',10)
@@ -97,6 +100,33 @@ foreach ($previousPhase in @(4,5)) {
     $retry.Tick(60)
     Assert ($tx.Count -eq $afterFault) 'A confirmed running fault failed to clear heartbeat'
 }
+
+# Runtime owner changes invalidate old starts without emitting a stop into
+# manual driving. Fresh ARM is required after returning to HOST.
+$owner = [VofaTestSession]::new($true,$send,$report)
+$owner.Observe($idle,0)
+$owner.Observe('[INFO] TEST_PLAN proto=2 plan=FWD target_m=1.00 hb_required=0',0)
+$owner.Observe('[INFO] TEST_CONTROL source=HOST',0)
+Assert ($owner.Command('UI ARM',1)) 'Host owner ARM failed'
+$owner.Observe('[INFO] TEST_ACK ok=1 phase=1 token=81 plan=FWD target_m=1.00',2)
+$owner.Observe('[INFO] TEST_CONTROL source=MANUAL',3)
+$count=$tx.Count
+Assert (!$owner.Command('UI GO',4)) 'Manual owner accepted old host GO'
+$owner.Tick(5000)
+Assert ($tx.Count -eq $count) 'Host timeout affected manual owner'
+$owner.Observe($idle,5000)
+$owner.Observe('[INFO] TEST_PLAN proto=2 plan=FWD target_m=1.00 hb_required=0',5000)
+$owner.Observe('[INFO] TEST_CONTROL source=HOST',5000)
+Assert (!$owner.Command('UI GO',5001)) 'Switch back reused pre-switch ARM'
+Assert ($owner.Command('UI ARM',5002)) 'Fresh ARM after switch rejected'
+$owner.Observe('[INFO] TEST_ACK ok=1 phase=1 token=82 plan=FWD target_m=1.00',5003)
+Assert ($owner.Command('UI GO',5004)) 'GO fixture failed'
+$count=$tx.Count
+$owner.Tick(5600)
+Assert ($tx.Count -eq $count) 'Missing GO confirmation sent automatic STOP'
+Assert ($messages[-1] -match 'go_confirmation=TIMEOUT.*motion_state=UNKNOWN.*auto_stop=0') 'Unknown start outcome misreported'
+Assert ($owner.Command('UI STOP',5601)) 'Explicit STOP must always be available'
+Assert ($tx[-1] -eq 'STOP') 'Explicit STOP was suppressed'
 
 $json = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '../vofa/vofa+.cmds.json') | ConvertFrom-Json
 Assert ($json.type -eq 'cmds' -and $json.vnumber -eq 100) 'Not a native VOFA command file'
@@ -136,7 +166,7 @@ foreach ($plan in @('ROUND','WALL','APPROACH')) {
     foreach ($distance in $(if($plan -eq 'APPROACH'){@(1)}else{@(1,2,4)})) {
         $extended = [VofaTestSession]::new($true,$send,$report)
         $extended.Observe($idle,0)
-        $extended.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00',0)
+        $extended.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',0)
         $suffix = if($plan -eq 'APPROACH'){$plan}else{"$plan $distance"}
         Assert ($extended.Command("UI ARM $suffix",1)) 'New ARM rejected'
         Assert ($tx[-1] -eq "ARM $suffix") 'Wrong program or distance sent to firmware'
@@ -148,10 +178,10 @@ foreach ($plan in @('ROUND','WALL','APPROACH')) {
         Assert ($extended.Command("UI GO $suffix",30)) 'Matching program GO rejected'
         $extended.Observe("[INFO] TEST_ACK ok=1 phase=2 token=71 reason=RUNNING plan=$plan target_m=$distance cmd=GO",40)
         $extended.Tick(40)
-        Assert ($tx[-1] -eq 'HB 71') 'New plan heartbeat missing'
+        Assert ($tx[-1] -eq 'GO 71') 'New plan emitted a periodic heartbeat'
         $extended.Observe("[INFO] TEST_STATUS phase=2 token=71 healthy=1 stopped=1 target_m=$distance result=TURNAROUND",210)
         $extended.Tick(240)
-        Assert ($tx[-1] -eq 'HB 71') 'Dwell stopped heartbeats before the reverse leg'
+        Assert ($tx[-1] -eq 'GO 71') 'Dwell caused an unsolicited host command'
         Assert (!$extended.Command('UI SPEED 0.05',250)) 'Speed changed during a running plan'
         Assert (!$extended.Command('UI EDGE LEFT',250)) 'Contact reference changed during a running plan'
         Assert ($extended.Command('UI STOP',260)) 'Stop rejected during new plan'
@@ -159,7 +189,7 @@ foreach ($plan in @('ROUND','WALL','APPROACH')) {
 }
 $extended = [VofaTestSession]::new($true,$send,$report)
 $extended.Observe($idle,0)
-$extended.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00',0)
+$extended.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',0)
 Assert ($extended.Command('UI ARM ROUND 4',1)) 'Mismatch fixture ARM failed'
 $extended.Observe('[INFO] TEST_ACK ok=1 phase=1 token=72 reason=ARMED plan=ROUND target_m=2 cmd=ARM',10)
 $extended.Observe('[INFO] TEST_STATUS phase=1 token=72 healthy=1 stopped=1 target_m=4',20)
@@ -169,7 +199,7 @@ Assert (!$extended.Command('UI GO ROUND 4',30)) 'Wrong-distance ARM ACK was acce
 $tx.Clear()
 $config = [VofaTestSession]::new($false,$send,$report)
 $config.Observe($idle,0)
-$config.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00',0)
+$config.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',0)
 $config.Observe('[INFO] TEST_RANGE fresh=1 age_ms=80 left_mm=109 right_mm=600 rear_mm=800 front_mm=1000',0)
 Assert ($config.Command('UI EDGE LEFT',1)) 'Stopped left contact record rejected'
 Assert ($tx[-1] -eq 'EDGE ALL 110') 'Contact boundary was not rounded conservatively'
@@ -226,4 +256,4 @@ try {
     Assert ($reply -eq "[INFO] TEST_PANEL stop_requested=1`n") 'UDP reply bytes changed'
     Assert ($peer.Port -eq $server.Client.LocalEndPoint.Port) 'Replies did not come from the command socket'
 } finally { $server.Dispose(); $client.Dispose() }
-'VOFA_PANEL_TEST_OK (74 commands, 1/2/4m plans, fast speeds, matching ACK/GO, dwell HB, edge/speed locks, detailed log filters, legacy/static gates, UDP)'
+'VOFA_PANEL_TEST_OK (74 commands, 1/2/4m plans, fast speeds, matching ACK/GO, no HB or stale-status stop, mode switch isolation, edge/speed locks, detailed log filters, legacy/static gates, UDP)'

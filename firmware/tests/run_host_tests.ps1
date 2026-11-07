@@ -274,9 +274,17 @@ foreach ($logMode in @(6,5)) {
     if ($LASTEXITCODE -ne 0) { throw "Log transport test failed (mode=$logMode)." }
 }
 $diagnosticExe = Join-Path $outputDir 'test_straight_diagnostics.exe'
+$sourceExe = Join-Path $outputDir 'test_drive_source.exe'
+& $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
+    (Join-Path $PSScriptRoot 'test_drive_source.c') `
+    (Join-Path $firmwareRoot 'src/service/drive_source.c') '-lm' '-o' $sourceExe
+if ($LASTEXITCODE -ne 0) { throw 'Drive source compilation failed.' }
+& $sourceExe
+if ($LASTEXITCODE -ne 0) { throw 'Drive source test failed.' }
 & $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
     (Join-Path $PSScriptRoot 'test_straight_diagnostics.c') `
     (Join-Path $firmwareRoot 'src/service/straight_test.c') `
+    (Join-Path $firmwareRoot 'src/service/drive_source.c') `
     (Join-Path $firmwareRoot 'src/service/chassis_yaw_hold.c') `
     (Join-Path $firmwareRoot 'src/infra/pid.c') '-lm' '-o' $diagnosticExe
 if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics compilation failed.' }

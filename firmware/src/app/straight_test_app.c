@@ -13,6 +13,7 @@
 #include "imu/imu.h"
 #include "imu/bmi088.h"
 #include "remote.h"
+#include "drive_source.h"
 #include "work_link.h"
 #include "laser.h"
 #include "log.h"
@@ -33,6 +34,9 @@ static char line[48];
 static unsigned line_len;
 static const float zeros[4] = STEERING_FORWARD_ZERO_RAD;
 static bool tx_fault;
+static DriveSource control_source;
+static DriveVelocity manual_velocity;
+static uint32_t last_manual_process;
 
 /* Capture each sensor frame once. BMI088 get_sample() consumes its NEW flags. */
 static ImuSample imu_sample;
@@ -80,6 +84,9 @@ static void update_imu_sample(void) {
 }
 
 static void stop_outputs(void) {
+    /* Clear the cached chassis command as well as the physical motor outputs,
+     * so the next owner cannot process the previous owner's velocity. */
+    (void)chassis.set_velocity(0.0f, 0.0f, 0.0f);
     for(uint16_t id = 1u; id <= 4u; ++id) {
         BusMotorFeedback f;
         if(drive_motor.stop(id) != MOTOR_STATUS_OK) tx_fault = true;
@@ -116,8 +123,9 @@ static void motor_received(FDCAN_HandleTypeDef* bus, const FDCAN_RxHeaderTypeDef
 static bool remote_permit(void) {
     remote_process();
     rc_online = remote_get_state(&rc_state) && remote_is_online(100u);
+    rc_state.online = rc_online;
     rc_switches = rc_state.manual_request && rc_state.manual_source == REMOTE_MANUAL_SOURCE_CHASSIS &&
-        rc_state.rc_data.channel[REMOTE_CH_SWC] != REMOTE_SW_HIGH &&
+        drive_source_requested(&rc_state) != DRIVE_SOURCE_STOP &&
         rc_state.rc_data.channel[REMOTE_CH_VRA] > REMOTE_VR_LOW_THRESHOLD;
     /* Mode 6 uses the latching SWD switch as permit/stop. The FS-i6S VRB
      * wheel springs back to centre; normal manual mode keeps its own VRB gate. */
@@ -129,7 +137,7 @@ static bool remote_permit(void) {
     if(!rc_online) blockers |= BLOCK_RC_OFFLINE;
     else {
         if(!rc_switches) blockers |= BLOCK_RC_SWITCH;
-        if(!rc_centered) blockers |= BLOCK_RC_STICK;
+        if(!rc_centered && drive_source_requested(&rc_state) == DRIVE_SOURCE_HOST) blockers |= BLOCK_RC_STICK;
     }
     return rc_online && rc_switches && rc_centered;
 }
@@ -154,7 +162,7 @@ static StraightInput input(uint32_t now) {
             blockers |= i < 4u ? BLOCK_STEER_RX : BLOCK_DRIVE_RX;
     if(enabled_mask != 15u) blockers |= BLOCK_STEER_STATE;
     (void)remote_permit(); /* Evaluate all conditions, even when another one fails. */
-    if(rx_fault) blockers |= BLOCK_UART;
+    if(rx_fault && drive_source_requested(&rc_state) == DRIVE_SOURCE_HOST) blockers |= BLOCK_UART;
     if(tx_fault) blockers |= BLOCK_TX;
     imu_age_us = imu_seen ? (uint32_t)(dwt_get_us() - imu_sample.gyro_timestamp_us) : UINT32_MAX;
     if(!imu_seen || imu_update_status != IMU_STATUS_OK) blockers |= BLOCK_IMU_SAMPLE;
@@ -204,7 +212,22 @@ static void commands(uint32_t now, StraightInput in) {
             if(line_len == 0u) continue;
             line[line_len] = '\0';
             const StraightPhase before = test.phase;
-            const bool ok = straight_command(&test, line, now, in);
+            bool ok;
+            if(!strcmp(line, "STOP")) {
+                drive_source_stop_manual(&control_source);
+                manual_velocity = (DriveVelocity){0};
+                chassis_yaw_hold_disable();
+                stop_outputs();
+            }
+            if(control_source.mode != DRIVE_SOURCE_HOST &&
+               (!strncmp(line, "ARM", 3u) || !strncmp(line, "GO ", 3u) || !strncmp(line, "HB ", 3u))) {
+                ok = false;
+                test.result = "HOST_NOT_SELECTED";
+            } else if(control_source.manual_armed &&
+                      (!strncmp(line, "SPEED ", 6u) || !strncmp(line, "EDGE ", 5u))) {
+                ok = false;
+                test.result = "MANUAL_ACTIVE";
+            } else ok = straight_command(&test, line, now, in);
             if(before == ST_ARMED && test.phase == ST_RUNNING) {
                 const ImuAngle a = imu.get_angle();
                 chassis_yaw_hold_set_target(a.yaw);
@@ -219,6 +242,50 @@ static void commands(uint32_t now, StraightInput in) {
             rx_fault = true;
             break;
         } else line[line_len++] = (char)ch;
+    }
+}
+static bool hardware_healthy(void) {
+    return (blockers & ~(BLOCK_RC_OFFLINE | BLOCK_RC_SWITCH | BLOCK_RC_STICK | BLOCK_UART)) == 0u;
+}
+static void log_control(uint32_t now) {
+    log_info("TEST_CONTROL t_ms=%lu source=%s manual_armed=%u release_seen=%u centered=%u hw_ok=%u vx=%.3f vy=%.3f wz=%.3f hb_required=0",
+        (unsigned long)now, drive_source_name(control_source.mode), (unsigned)control_source.manual_armed,
+        (unsigned)control_source.release_seen, (unsigned)rc_centered, (unsigned)hardware_healthy(),
+        (double)manual_velocity.vx, (double)manual_velocity.vy, (double)manual_velocity.wz);
+}
+static void update_control_source(uint32_t now, StraightInput in) {
+    const bool was_manual = control_source.manual_armed;
+    if(drive_source_update(&control_source, &rc_state, hardware_healthy(), in.stationary)) {
+        /* Invalidate the previous owner's task and queued bytes before the
+         * next owner can write motor outputs. No task resumes on switching. */
+        if(test.phase == ST_ARMED || test.phase == ST_RUNNING || test.phase == ST_STOPPING)
+            straight_fault(&test, "CONTROL_MODE_CHANGED");
+        rx_tail = rx_head;
+        line_len = 0u;
+        manual_velocity = (DriveVelocity){0};
+        last_manual_process = now;
+        chassis_yaw_hold_disable();
+        stop_outputs();
+        log_control(now);
+    } else if(was_manual && !control_source.manual_armed) {
+        manual_velocity = (DriveVelocity){0};
+        chassis_yaw_hold_disable();
+        stop_outputs();
+    }
+}
+static void apply_manual(void) {
+    manual_velocity = drive_source_velocity(&rc_state);
+    const ImuAngle a = imu.get_angle();
+    const ImuGyro g = imu_get_gyro_corrected();
+    if(manual_velocity.wz != 0.0f || (fabsf(manual_velocity.vx) <= 0.01f && fabsf(manual_velocity.vy) <= 0.01f))
+        chassis_yaw_hold_disable();
+    else {
+        if(!chassis_yaw_hold_is_active()) chassis_yaw_hold_set_target(a.yaw);
+        manual_velocity.wz = chassis_yaw_hold_apply(manual_velocity.vx, manual_velocity.vy, 0.0f, a.yaw, g.z, 0.01f);
+    }
+    if(chassis.set_velocity(manual_velocity.vx, manual_velocity.vy, manual_velocity.wz) != chassis.OK) {
+        drive_source_stop_manual(&control_source);
+        straight_fault(&test, "MANUAL_CONTROL");
     }
 }
 static bool can_healthy(void) {
@@ -266,11 +333,12 @@ static void update_drift(StraightInput in) {
 static void log_detail(uint32_t now, StraightInput in) {
     /* One bounded line per 100 ms, rather than a burst that blocks the controller.
      * All formats fit the existing 256-byte logger at documented sensor ranges. */
-    const unsigned slot = detail_slot++ % 15u;
+    const unsigned slot = detail_slot++ % 16u;
     if(slot == 0u) {
         log_info("TEST_HEALTH t_ms=%lu blocked=0x%04lx first=%s seen=0x%02x steer_enabled=0x%x rc_ok=%u imu_ok=%u uart_fault=%u tx_fault=%u",
             (unsigned long)now, (unsigned long)blockers, first_blocker(), (unsigned)feedback_seen,
-            (unsigned)enabled_mask, (unsigned)(rc_online && rc_switches && rc_centered),
+            (unsigned)enabled_mask, (unsigned)(rc_online && rc_switches &&
+                (control_source.mode == DRIVE_SOURCE_MANUAL || rc_centered)),
             (unsigned)((blockers & (BLOCK_IMU_SAMPLE | BLOCK_IMU_STALE | BLOCK_IMU_CAL)) == 0u),
             (unsigned)rx_fault, (unsigned)tx_fault);
     } else if(slot == 1u) {
@@ -327,19 +395,18 @@ static void log_detail(uint32_t now, StraightInput in) {
             laser.distance_mm[2], laser.distance_mm[3], test.plan == ST_PLAN_WALL ? "RIGHT_HOLD" :
                 test.plan == ST_PLAN_APPROACH ? "FRONT_STOP" : test.plan == ST_PLAN_ROUND ? "COLLISION_GUARD" : "OBSERVE_ONLY");
     } else if(slot == 13u) {
-        log_info("TEST_TIMING t_ms=%lu control_dt_ms=%lu max_ms=%lu imu_dt_us=%lu imu_max_us=%lu imu_frames=%lu imu_errors=%lu update=%s HB_age_ms=%lu lease_ms=750",
+        log_info("TEST_TIMING t_ms=%lu control_dt_ms=%lu max_ms=%lu imu_dt_us=%lu imu_max_us=%lu imu_frames=%lu imu_errors=%lu update=%s hb_required=0",
             (unsigned long)now, (unsigned long)control_dt_ms, (unsigned long)control_dt_max_ms,
             (unsigned long)imu_dt_us, (unsigned long)imu_dt_max_us, (unsigned long)imu_samples,
-            (unsigned long)imu_errors, imu.status_str(imu_update_status),
-            (unsigned long)(test.phase == ST_RUNNING ? now - test.heartbeat_ms : 0u));
-    } else {
+            (unsigned long)imu_errors, imu.status_str(imu_update_status));
+    } else if(slot == 14u) {
         log_info("TEST_DRIFT t_ms=%lu valid=%u wheel_still=%u window_ms=%lu yaw_deg_s=%.6f gyro_deg_s=%.6f yaw_deg_min=%.3f body_static=USER_CONFIRM auto_zero=0",
             (unsigned long)now, (unsigned)drift_valid, (unsigned)in.stationary, (unsigned long)drift_window_ms,
             (double)drift_yaw_rate, (double)drift_gyro_rate, (double)drift_yaw_rate * 60.0);
-    }
+    } else log_control(now);
 }
 static void log_plan(StraightInput in) {
-    log_info("TEST_PLAN proto=2 plan=%s leg=%s target_m=%.2f x=%.3f out=%.3f vy=%.4f right_ref_mm=%.1f laser_ok=%u body_edge_mm=%u front_target_mm=%u vmax=%.2f",
+    log_info("TEST_PLAN proto=2 plan=%s leg=%s target_m=%.2f x=%.3f out=%.3f vy=%.4f right_ref_mm=%.1f laser_ok=%u body_edge_mm=%u front_target_mm=%u vmax=%.2f hb_required=0",
         straight_plan_name(test.plan), straight_leg_name(test.leg), (double)test.target_m,
         (double)test.distance_m, (double)test.outbound_m, (double)test.lateral_mps,
         (double)test.right_ref_mm, (unsigned)straight_laser_ready(test.plan, in), test.body_edge_mm,
@@ -349,10 +416,12 @@ static void log_plan(StraightInput in) {
     uint16_t guards[4];
     straight_guard_limits(&test, in, guards);
     log_info("TEST_BRAKE left_mm=%u right_mm=%u rear_mm=%u front_mm=%u decel_mps2=0.10 delay_ms=300 active=%u",
-        guards[0], guards[1], guards[2], guards[3], (unsigned)(test.plan != ST_PLAN_FWD));
+        guards[0], guards[1], guards[2], guards[3],
+        (unsigned)(control_source.mode == DRIVE_SOURCE_HOST && test.plan != ST_PLAN_FWD));
 }
 void straight_test_app_init(void) {
     initialized = false;
+    control_source = (DriveSource){0};
     (void)assemble_delay();
     if(assemble_log() != SYSTEM_STATUS_OK) return;
     straight_init(&test, HAL_GetTick());
@@ -379,9 +448,10 @@ void straight_test_app_init(void) {
     last_step = last_imu = HAL_GetTick();
     log_info("TEST_READY mode=6 target=%.2fm default_speed=0.10 ceiling=0.50 radius=0.051 NOMINAL FWD_laser_limit=0; PING ARM GO <token> HB <token> STOP",
         (double)STRAIGHT_TEST_TARGET_M);
-    log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1500 FW_period_ms=100");
+    log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1600 FW_period_ms=100");
     log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 vrb_required=0");
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
+    log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
 }
 void straight_test_app_loop(void) {
     const uint32_t now = HAL_GetTick();
@@ -396,10 +466,12 @@ void straight_test_app_loop(void) {
     StraightInput in = input(now);
     if(!can_healthy()) blockers |= BLOCK_CAN;
     in.healthy = blockers == 0u;
+    update_control_source(now, in);
+    if(control_source.mode != DRIVE_SOURCE_HOST) in.healthy = false;
     commands(now, in);
     update_drift(in);
     if(rx_fault) straight_fault(&test, "UART_ERROR_OR_OVERFLOW");
-    if(test.phase == ST_RUNNING) {
+    if(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING) {
         const ImuAngle a = imu.get_angle();
         const float error = remainderf(chassis_yaw_hold_get_yaw_ref() - a.yaw, 6.283185307f);
         if(!isfinite(error) || fabsf(error) > 0.15f) straight_fault(&test, "HEADING_DEVIATION");
@@ -408,28 +480,41 @@ void straight_test_app_loop(void) {
         control_dt_ms = now - last_step;
         if(control_dt_ms > control_dt_max_ms) control_dt_max_ms = control_dt_ms;
         last_step = now;
-        straight_step(&test, now, in);
-        if(test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
+        if(control_source.mode == DRIVE_SOURCE_HOST) straight_step(&test, now, in);
+        if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) apply_manual();
+        else if(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
             const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, 0.01f);
             if(chassis.set_velocity(test.speed_mps, test.lateral_mps, wz) != chassis.OK || chassis.process() != chassis.OK)
                 straight_fault(&test, "CHASSIS_CONTROL");
-        } else if(test.phase != ST_RUNNING) chassis_yaw_hold_disable();
-        if(test.phase != ST_RUNNING || test.leg == ST_LEG_WAIT) {
+        } else chassis_yaw_hold_disable();
+        if(!(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) &&
+           !(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT)) {
+            manual_velocity = (DriveVelocity){0};
             stop_outputs();
         }
         if(tx_fault || !can_healthy()) straight_fault(&test, "CAN_TX_OR_BUS");
     }
+    if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed && now - last_manual_process >= 2u) {
+        if(now - last_manual_process > 50u || chassis.process() != chassis.OK) {
+            drive_source_stop_manual(&control_source);
+            straight_fault(&test, "MANUAL_CONTROL_TIMING_OR_OUTPUT");
+            manual_velocity = (DriveVelocity){0};
+            stop_outputs();
+        }
+        last_manual_process = now;
+    } else if(!control_source.manual_armed) last_manual_process = now;
     if(now - last_log >= 100u) {
         last_log = now;
         const ImuAngle a = imu.get_angle();
-        log_info("TEST_STATUS phase=%u token=%lu healthy=%u stopped=%u target_m=%.2f s=%.3f vx=%.3f cmd=%.3f yaw_deg=%.2f ref_deg=%.2f wz=%.4f blocked=%s result=%s",
+        log_info("TEST_STATUS phase=%u token=%lu healthy=%u stopped=%u target_m=%.2f s=%.3f vx=%.3f cmd=%.3f yaw_deg=%.2f ref_deg=%.2f wz=%.4f blocked=%s result=%s control=%s",
             (unsigned)test.phase, (unsigned long)test.token, (unsigned)in.healthy, (unsigned)in.stationary,
             (double)test.target_m,
             (double)test.distance_m, (double)in.vx_mps, (double)test.speed_mps, (double)a.yaw * 57.295779513,
             (double)chassis_yaw_hold_get_yaw_ref() * 57.295779513, (double)chassis_yaw_hold_get_output_wz(),
-            first_blocker(), test.result);
+            control_source.mode == DRIVE_SOURCE_HOST ? first_blocker() : "HOST_NOT_SELECTED", test.result,
+            drive_source_name(control_source.mode));
         /* Dedicated numeric frame; human-readable status is not a FireWater channel. */
         const LogVofaValue wave[4] = {
             log_vofa_value_f64((double)a.yaw * 57.295779513),

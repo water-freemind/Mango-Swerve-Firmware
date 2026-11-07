@@ -15,13 +15,6 @@ static void begin(StraightTest* t, const char* arm, StraightInput in) {
     snprintf(go, sizeof(go), "GO %lu", (unsigned long)t->token);
     assert(straight_command(t, go, 0u, in));
 }
-static void hb(StraightTest* t, uint32_t now, StraightInput in) {
-    char command[32];
-    if(t->phase == ST_RUNNING && now % 200u == 0u) {
-        snprintf(command, sizeof(command), "HB %lu", (unsigned long)t->token);
-        assert(straight_command(t, command, now, in));
-    }
-}
 static uint32_t complete(StraightTest* t, StraightInput in, bool approach) {
     float plant_vx = 0.0f;
     uint32_t first_wait = 0u, first_back = 0u, now;
@@ -30,7 +23,6 @@ static uint32_t complete(StraightTest* t, StraightInput in, bool approach) {
         in.vx_mps = plant_vx; in.stationary = fabsf(plant_vx) < 0.002f;
         if(now % 100u == 0u) ++in.laser_frame;
         if(approach) in.front_mm = (uint16_t)(1000.0f - t->distance_m * 1000.0f);
-        hb(t, now, in);
         straight_step(t, now, in);
         assert(fabsf(t->speed_mps) <= (approach ? 0.05001f : t->max_speed_mps + 0.00001f));
         assert(fabsf(t->lateral_mps) <= 0.02001f);
@@ -53,7 +45,7 @@ int main(void) {
         const uint32_t elapsed = complete(&t, in, false);
         assert(!strcmp(t.result, "ROUND_COMPLETE") && fabsf(t.distance_m) < 0.02f);
         assert(t.outbound_m >= t.target_m - 0.02f && t.outbound_m < t.target_m + 0.03f);
-        if(t.target_m == 4.0f) assert(elapsed > 80000u); /* Must survive >60 s and keep reverse-leg HB. */
+        if(t.target_m == 4.0f) assert(elapsed > 80000u); /* Entire round trip without host traffic. */
         straight_step(&t, elapsed + 10000u, in);
         assert(t.phase == ST_DONE && t.speed_mps == 0.0f);
     }
@@ -96,7 +88,7 @@ int main(void) {
     t.distance_m = 0.995f;
     straight_step(&t, 10u, in);
     for(unsigned now = 20; now <= 760; now += 10) straight_step(&t, now, in);
-    assert(t.phase == ST_FAULT && !strcmp(t.result, "LINK_TIMEOUT"));
+    assert(t.phase == ST_RUNNING && t.leg == ST_LEG_WAIT); /* No heartbeat is required during dwell. */
 
     /* Body-contact references are stationary-only, bounded, and reset on reboot. */
     straight_init(&t, 0u);
@@ -163,6 +155,6 @@ int main(void) {
     t.distance_m = 1.001f;
     straight_step(&t, 10u, in);
     assert(t.phase == ST_FAULT && !strcmp(t.result, "APPROACH_TRAVEL_LIMIT"));
-    puts("TEST_PROGRAMS_OK (1/2/4m, 0.05/0.50mps round trips, reverse, dwell/HB/STOP, wall signs, directional braking, contact guard, approach, edge)");
+    puts("TEST_PROGRAMS_OK (1/2/4m, 0.05/0.50mps round trips, reverse, dwell without HB/STOP, wall signs, directional braking, contact guard, approach, edge)");
     return 0;
 }

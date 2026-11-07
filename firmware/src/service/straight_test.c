@@ -140,7 +140,9 @@ bool straight_command(StraightTest* t, const char* line, uint32_t now, StraightI
         t->laser_frame = in.laser_frame; t->result = "RUNNING";
         return true;
     }
-    if(t->phase == ST_RUNNING && (uint32_t)(now - t->heartbeat_ms) <= 750u &&
+    /* Legacy HB packets are harmless, but operation no longer leases motion
+     * from the host. Distance, sensors and the independent RC govern stopping. */
+    if(t->phase == ST_RUNNING &&
        token_command(line, "HB ", t->token)) { t->heartbeat_ms = now; return true; }
     return false;
 }
@@ -169,7 +171,6 @@ void straight_step(StraightTest* t, uint32_t now, StraightInput in) {
         if(!straight_laser_ready(t->plan, in)) { straight_fault(t, "LASER_INVALID_OR_STALE"); return; }
         if(collision_guard(t, in)) { straight_fault(t, "COLLISION_GUARD"); return; }
         if(elapsed > 50u) { straight_fault(t, "CONTROL_TIMING"); return; }
-        if(now - t->heartbeat_ms > 750u) { straight_fault(t, "LINK_TIMEOUT"); return; }
         const uint32_t timeout = t->plan == ST_PLAN_APPROACH ? STRAIGHT_TEST_APPROACH_TIMEOUT_MS :
             (uint32_t)(t->target_m / t->max_speed_mps * 1000.0f) + 15000u;
         if((t->leg != ST_LEG_WAIT && now - t->leg_start_ms > timeout) || now - t->start_ms > 2u * timeout + 5000u) {

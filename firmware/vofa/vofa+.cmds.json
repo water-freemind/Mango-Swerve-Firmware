@@ -4,7 +4,7 @@
   "ctx": {
     "name": "Mango底盘测试面板",
     "intro_on": true,
-    "intro": "双击Mango-VOFA-Test-OPEN-AREA.cmd后连接UDP。默认简洁日志；09组单独开启波形。04–08组需协议2固件。各项只点一次，编号/心跳自动处理。",
+    "intro": "双击Mango-VOFA-Test-OPEN-AREA.cmd后连接UDP。默认简洁日志；09组单独开启波形。04–08组需协议2固件。各项只点一次，编号自动处理；SWC=1500上位机、2000手动，1000停车。开始后车端独立运行，无需心跳。",
     "hex_on": true,
     "loop_on": false,
     "loop_ms": 100,
@@ -28,7 +28,7 @@
           {
             "name": "停止／取消本次测试",
             "intro_on": true,
-            "intro": "发送停止并取消待启动编号及自动心跳。仍需看 stopped=1 确认停稳。",
+            "intro": "明确发送STOP，停止当前手动或上位机动作并取消待启动编号；仍需看stopped=1确认停稳。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -201,7 +201,7 @@
       {
         "name": "03 单次1米直行（确认前方有净空）",
         "intro_on": true,
-        "intro": "需1m入口及target_m=1.00；SWD=2000许可，1000停止，1米模式不要求保持VRB。仍需SWA=1000、SWC不为1000、VRA>1200及摇杆回中。激光仅记录。",
+        "intro": "需1m入口及target_m=1.00；SWD=2000许可，1000停止，1米模式不要求保持VRB。仍需SWA=1000、SWC=1500、VRA>1200及摇杆回中。激光仅记录。",
         "hex_on": true,
         "loop_on": false,
         "loop_ms": 100,
@@ -226,7 +226,7 @@
           {
             "name": "步骤2 开始单次1米前进",
             "intro_on": true,
-            "intro": "按所选速度上限，默认0.10m/s；原单次组不启用激光限位。编号/200ms心跳自动处理，不自动返回，SWD=1000或停止可中止。",
+            "intro": "按所选速度上限，默认0.10m/s；原单次组不启用激光限位。编号自动处理，开始后无需心跳，不自动返回，SWD=1000或停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -266,7 +266,7 @@
           {
             "name": "开始1米普通往返（仅一轮）",
             "intro_on": true,
-            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。全过程有心跳，SWD=1000/停止可中止。",
+            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。车端独立执行，无需上位机持续连接，SWD=1000/停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -292,7 +292,7 @@
           {
             "name": "开始2米普通往返（仅一轮）",
             "intro_on": true,
-            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。全过程有心跳，SWD=1000/停止可中止。",
+            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。车端独立执行，无需上位机持续连接，SWD=1000/停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -318,7 +318,7 @@
           {
             "name": "开始4米普通往返（仅一轮）",
             "intro_on": true,
-            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。全过程有心跳，SWD=1000/停止可中止。",
+            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。车端独立执行，无需上位机持续连接，SWD=1000/停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -358,7 +358,7 @@
           {
             "name": "开始1米右墙定距往返（仅一轮）",
             "intro_on": true,
-            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。全过程有心跳，SWD=1000/停止可中止。",
+            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。车端独立执行，无需上位机持续连接，SWD=1000/停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -384,7 +384,7 @@
           {
             "name": "开始2米右墙定距往返（仅一轮）",
             "intro_on": true,
-            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。全过程有心跳，SWD=1000/停止可中止。",
+            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。车端独立执行，无需上位机持续连接，SWD=1000/停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -410,7 +410,7 @@
           {
             "name": "开始4米右墙定距往返（仅一轮）",
             "intro_on": true,
-            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。全过程有心跳，SWD=1000/停止可中止。",
+            "intro": "前进到点、停稳等待2秒、倒退返回；不掉头。车端独立执行，无需上位机持续连接，SWD=1000/停止可中止。",
             "hex_on": true,
             "loop_on": true,
             "loop_ms": 100,
@@ -686,7 +686,7 @@
               {
                 "name": "开启：整车状态 TEST_STATUS",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -726,7 +726,7 @@
               {
                 "name": "开启：许可与阻塞 TEST_HEALTH",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -766,7 +766,7 @@
               {
                 "name": "开启：遥控开关与摇杆",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -806,7 +806,7 @@
               {
                 "name": "开启：四轮电机详细反馈",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -846,7 +846,7 @@
               {
                 "name": "开启：CAN1总线",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -886,7 +886,7 @@
               {
                 "name": "开启：CAN2总线",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -926,7 +926,7 @@
               {
                 "name": "开启：CAN3总线",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -966,7 +966,7 @@
               {
                 "name": "开启：IMU标定与姿态状态",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1006,7 +1006,7 @@
               {
                 "name": "开启：陀螺原始值与修正值",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1046,7 +1046,7 @@
               {
                 "name": "开启：陀螺零偏与温度模型",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1086,7 +1086,7 @@
               {
                 "name": "开启：静止漂移统计",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1126,7 +1126,7 @@
               {
                 "name": "开启：激光完整诊断",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1166,7 +1166,7 @@
               {
                 "name": "开启：四向原始距离（5Hz）",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1206,7 +1206,7 @@
               {
                 "name": "开启：测试流程与所选参数",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1246,7 +1246,7 @@
               {
                 "name": "开启：按速度计算的保护停车线",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1272,7 +1272,7 @@
             ]
           },
           {
-            "name": "调度与心跳时序",
+            "name": "控制与采样时序",
             "intro_on": true,
             "intro": "展开后选择开启或关闭。默认简洁模式中的整车状态/流程最多1Hz。",
             "hex_on": true,
@@ -1284,9 +1284,9 @@
             "down": false,
             "subCmds": [
               {
-                "name": "开启：调度与心跳时序",
+                "name": "开启：控制与采样时序",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,
@@ -1297,7 +1297,7 @@
                 "subCmds": []
               },
               {
-                "name": "关闭：调度与心跳时序",
+                "name": "关闭：控制与采样时序",
                 "intro_on": true,
                 "intro": "关闭该类别的周期显示；主动查询仍能查看，命令回复不会被关闭。",
                 "hex_on": true,
@@ -1326,7 +1326,7 @@
               {
                 "name": "开启：FireWater波形数据（10Hz）",
                 "intro_on": true,
-                "intro": "仅改变发往VOFA的显示数据；后台完整记录与控制/心跳继续运行。",
+                "intro": "仅改变发往VOFA的显示数据；后台完整记录保留，车端控制独立运行。",
                 "hex_on": true,
                 "loop_on": true,
                 "loop_ms": 100,

@@ -48,7 +48,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -73,10 +73,10 @@ public static class MangoStraightConsole {
             serial.WriteTimeout = 100; serial.ReadTimeout = 100;
             serial.NewLine = "\n";
             serial.Open(); log.AutoFlush = true;
-            uint token = 0; string heartbeat = null;
+            uint token = 0;
             StringBuilder input = new StringBuilder();
             StringBuilder pending = new StringBuilder();
-            Stopwatch clock = Stopwatch.StartNew(); long nextHb = 0;
+            Stopwatch clock = Stopwatch.StartNew();
             long nextAppCheck = 0;
             Action<string> panelLog = delegate(string text) {
                 string message = "[INFO] TEST_PANEL " + text;
@@ -88,7 +88,7 @@ public static class MangoStraightConsole {
             if (commandPort != 0) panelLog("ready=1 command_port=" + commandPort + " wave_port=" + wavePort +
                 " motion_allowed=" + (allowMotion ? "1" : "0") + " auto_start=0");
             if (commandPort != 0) panelLog("log_preset=DEFAULT STATUS_and_PLAN_max_hz=1 wave=0 ACK_and_snapshots=ALWAYS background_log=FULL");
-            Console.WriteLine("No auto-start. Commands: PING, ARM, GO <token>, STOP, QUIT. HB every 200ms after GO. Escape = STOP.");
+            Console.WriteLine("No auto-start. Commands: PING, ARM, GO <token>, STOP, QUIT. No host heartbeat or automatic stop on exit. Escape = STOP; SWD=1000 stops independently.");
             try {
                 while (true) {
                     if (runSeconds != 0 && clock.ElapsedMilliseconds >= runSeconds * 1000L) break;
@@ -114,9 +114,6 @@ public static class MangoStraightConsole {
                             catch (SocketException ex) { log.WriteLine("WAVE_FORWARD_ERROR " + ex.Message); }
                             Match m = Regex.Match(line, @"TEST_ACK ok=1 phase=1 token=(\d+)");
                             if (m.Success) UInt32.TryParse(m.Groups[1].Value, out token);
-                            m = Regex.Match(line, @"TEST_STATUS phase=(\d+)");
-                            if (m.Success && (m.Groups[1].Value == "3" ||
-                                m.Groups[1].Value == "4" || m.Groups[1].Value == "5")) heartbeat = null;
                         }
                         pending.Clear(); pending.Append(text.Length > 2048 ? "" : text);
                     }
@@ -126,27 +123,21 @@ public static class MangoStraightConsole {
                     }
                     if (!uiOnly && Console.KeyAvailable) {
                         ConsoleKeyInfo key = Console.ReadKey(true);
-                        if (key.Key == ConsoleKey.Escape) { serial.WriteLine("STOP"); heartbeat = null; input.Clear(); }
+                        if (key.Key == ConsoleKey.Escape) { serial.WriteLine("STOP"); input.Clear(); }
                         else if (key.Key == ConsoleKey.Enter) {
                             string command = input.ToString().Trim(); input.Clear(); Console.WriteLine();
                             if (command.Equals("QUIT", StringComparison.OrdinalIgnoreCase)) break;
                             if (command.Equals("GO", StringComparison.OrdinalIgnoreCase)) command = "GO " + token;
-                            if (command == "STOP") heartbeat = null;
-                            if (Regex.IsMatch(command, @"^GO [0-9]+$")) {
-                                heartbeat = "HB " + command.Substring(3); nextHb = clock.ElapsedMilliseconds;
-                            }
                             if (command.Length != 0) { serial.WriteLine(command); log.WriteLine("HOST_TX " + command); }
                         } else if (key.Key == ConsoleKey.Backspace) {
                             if (input.Length > 0) { input.Length--; Console.Write("\b \b"); }
                         } else if (!Char.IsControl(key.KeyChar)) { input.Append(key.KeyChar); Console.Write(key.KeyChar); }
                     }
-                    if (heartbeat != null && clock.ElapsedMilliseconds >= nextHb) {
-                        serial.WriteLine(heartbeat); nextHb = clock.ElapsedMilliseconds + 200;
-                    }
                     Thread.Sleep(5);
                 }
             } finally {
-                try { serial.WriteLine("STOP"); } catch { }
+                // Motion belongs to the MCU/RC after GO. Closing a viewer must
+                // neither abort that run nor stop independent manual driving.
                 serial.Close();
             }
         }
@@ -156,9 +147,10 @@ public sealed class VofaTestSession {
     private readonly bool allowMotion;
     private readonly Action<string> tx, report;
     private readonly Dictionary<string, string> cache = new Dictionary<string, string>();
-    private long lastStatus = -10000, armSent, armAck, goSent, nextHb;
+    private long lastStatus = -10000, armSent, armAck, goSent;
     private bool healthy, stopped, awaitingArm, armed, awaitingGo, running, targetMatches;
-    private bool firmwareV2, rangeFresh;
+    private bool firmwareV2, firmwareOneShot, rangeFresh;
+    private string controlMode = "UNKNOWN";
     private long lastPlan = -10000, lastRange = -10000;
     private double firmwareTarget;
     private string selectedPlan = "FWD", observedPlan = "FWD";
@@ -190,6 +182,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
+        if (category == "CONTROL") category = "HEALTH";
         if (tag.Groups[1].Value != "INFO" || category == "ACK" || category == "READY" || category == "INIT_FAILED") return true;
         if (category == "CAN") {
             Match bus = Regex.Match(line, @"\bbus=([123])\b");
@@ -225,10 +218,19 @@ public sealed class VofaTestSession {
         }
         if (line.Contains("TEST_READY")) {
             Clear(); lastStatus = lastPlan = lastRange = -10000;
-            firmwareV2 = rangeFresh = haveYaw = marking = false; cache.Clear();
+            firmwareV2 = firmwareOneShot = rangeFresh = haveYaw = marking = false;
+            controlMode = "UNKNOWN"; cache.Clear();
         }
         Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
-        if (planStatus.Success) { firmwareV2 = true; lastPlan = now; observedPlan = planStatus.Groups[1].Value; }
+        if (planStatus.Success) {
+            firmwareV2 = true; lastPlan = now; observedPlan = planStatus.Groups[1].Value;
+            firmwareOneShot = Regex.IsMatch(line, @"\bhb_required=0\b");
+        }
+        Match owner = Regex.Match(line, @"(?:TEST_CONTROL[^\r\n]*\bsource=|\bcontrol=)(HOST|MANUAL|STOP)\b");
+        if (owner.Success) {
+            controlMode = owner.Groups[1].Value;
+            if (controlMode != "HOST") Clear();
+        }
         if (line.Contains("TEST_RANGE ")) {
             lastRange = now; rangeFresh = Regex.IsMatch(line, @"\bfresh=1\b");
             Match age = Regex.Match(line, @"\bage_ms=(\d+)");
@@ -259,7 +261,7 @@ public sealed class VofaTestSession {
             // A matching status can confirm GO if only its ACK was lost.
             if (awaitingGo && phase == "2" && status.Groups[2].Value == activeToken.ToString(CultureInfo.InvariantCulture) &&
                 Math.Abs(firmwareTarget - selectedTarget) < 0.005 && (selectedPlan == "FWD" || observedPlan == selectedPlan)) {
-                awaitingGo = false; running = true; nextHb = now;
+                awaitingGo = false; running = true;
             }
         }
         Match ack = Regex.Match(line, @"TEST_ACK ok=(\d+) phase=(\d+) token=(\d+)");
@@ -274,8 +276,8 @@ public sealed class VofaTestSession {
             awaitingGo = false;
             if (ack.Groups[1].Value == "1" && ack.Groups[2].Value == "2" &&
                 ack.Groups[3].Value == activeToken.ToString(CultureInfo.InvariantCulture) && now - goSent <= 500 && SelectionMatches(line)) {
-                running = true; nextHb = now;
-            } else { tx("STOP"); Clear(); }
+                running = true;
+            } else Clear();
         }
         if (line.StartsWith("FW:", StringComparison.Ordinal)) {
             double value;
@@ -315,7 +317,7 @@ public sealed class VofaTestSession {
             string category = command.Substring(12);
             string pattern;
             switch (category) {
-                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|TIMING|PLAN)$"; break;
+                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|CONTROL|TIMING|PLAN)$"; break;
                 case "IMU": pattern = @"^TEST_(IMU|IMU_RAW|IMU_BIAS|DRIFT)$"; break;
                 case "LASER": pattern = @"^TEST_(LASER|RANGE|PLAN|BRAKE)$"; break;
                 case "REMOTE": pattern = @"^TEST_REMOTE$"; break;
@@ -381,6 +383,12 @@ public sealed class VofaTestSession {
         string requestedPlan = motion.Groups[2].Success ? motion.Groups[2].Value : motion.Groups[4].Success ? "APPROACH" : "FWD";
         int requestedTarget = motion.Groups[3].Success ? Int32.Parse(motion.Groups[3].Value, CultureInfo.InvariantCulture) : 1;
         if (!allowMotion) { report("rejected=STATIC_MODE_USE_MOTION_LAUNCHER_IN_OPEN_AREA"); return false; }
+        if (!firmwareOneShot || now - lastPlan > 1000) {
+            report("rejected=FIRMWARE_ONE_SHOT_REQUIRED"); return false;
+        }
+        if (controlMode == "MANUAL" || controlMode == "STOP") {
+            report("rejected=SELECT_SWC_1500_HOST mode=" + controlMode); return false;
+        }
         if (requestedPlan != "FWD" && (!firmwareV2 || now - lastPlan > 1000)) {
             report("rejected=FIRMWARE_PROTOCOL_2_REQUIRED"); return false;
         }
@@ -405,14 +413,10 @@ public sealed class VofaTestSession {
     }
     public void Tick(long now) {
         if (awaitingArm && now - armSent > 1000) { Clear(); report("rejected=ARM_ACK_TIMEOUT"); }
-        if ((awaitingGo && now - goSent > 500) || (running && now - lastStatus > 400)) {
-            bool ackTimeout = awaitingGo;
-            long age = ackTimeout ? now - goSent : now - lastStatus;
-            tx("STOP"); Clear();
-            report(ackTimeout ? "stop_requested=GO_ACK_TIMEOUT go_age_ms=" + age :
-                "stop_requested=STATUS_TIMEOUT status_age_ms=" + age);
+        if (awaitingGo && now - goSent > 500) {
+            Clear();
+            report("go_confirmation=TIMEOUT motion_state=UNKNOWN auto_stop=0 use_RC_or_STOP_to_stop=1");
         }
-        if (running && now >= nextHb) { tx("HB " + activeToken.ToString(CultureInfo.InvariantCulture)); nextHb = now + 200; }
     }
 }
 '@

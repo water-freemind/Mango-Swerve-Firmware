@@ -1,5 +1,5 @@
 param(
-    [string]$Port = 'COM12',
+    [string]$Port = 'COM19',
     [int]$Seconds = 15,
     [int]$BaudRate = 921600
 )

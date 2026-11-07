@@ -33,10 +33,8 @@ int main(void) {
     uint32_t now = 100u;
     StraightInput moving = good;
     for(unsigned i = 0u; i < 4000u && t.phase == ST_RUNNING; ++i) {
-        char cmd[32];
         now += 10u;
-        snprintf(cmd, sizeof(cmd), "HB %lu", (unsigned long)t.token);
-        assert(straight_command(&t, cmd, now, good));
+        /* No host traffic after GO; the MCU must complete the full distance. */
         moving.vx_mps = t.speed_mps;
         moving.stationary = moving.vx_mps < 0.002f;
         straight_step(&t, now, moving);
@@ -54,7 +52,7 @@ int main(void) {
     straight_step(&t, now + 1760u, good);
     assert(t.phase == ST_FAULT);
     start(&t, 30000u);
-    assert(!straight_command(&t, "HB 3", 30751u, good)); /* late packet cannot renew expired lease */
+    assert(straight_command(&t, "HB 3", 30751u, good)); /* optional legacy packet, no lease */
     straight_step(&t, 30751u, good);
     assert(t.phase == ST_FAULT);
     start(&t, 40000u);
@@ -105,6 +103,6 @@ int main(void) {
     assert(t.phase == ST_STOPPING); /* Requires a continuous stationary window. */
     straight_step(&t, 50401u, good);
     assert(t.phase == ST_DONE);
-    puts("STRAIGHT_TEST_OK");
+    puts("STRAIGHT_TEST_OK (one-shot GO without HB, distance stop, RC/feedback loss, timing and token checks)");
     return 0;
 }
