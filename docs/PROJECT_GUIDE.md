@@ -120,6 +120,8 @@
 | 新组04–06数据准入 | S21C聚合帧新鲜、四向读数均在`70–7500mm`；WALL额外要求右距`150–3000mm` |
 | 参数保持 | `SPEED`和`EDGE ALL`仅存RAM；复位恢复`0.10m/s`及`110mm` |
 
+右墙范围150–3000mm按光学窗口到墙计算，保持的是GO时捕获的起始右距。按共用贴边基准估算，车体净距约为原始右距减去110mm；该差值不是右侧独立标定结果。运行中右距偏离参考超过250mm会退出。
+
 闭合方向在基础保护线外再加入以下距离预算，使用当前反馈与命令中的较大闭合速度：
 
 ```text
@@ -181,6 +183,10 @@ UI侧使用`UI ARM/GO ROUND <距离>`、`UI ARM/GO WALL <距离>`、`UI ARM/GO A
 
 完整记录位于`firmware/build/logs/straight-console-*.log`。助手读取这些文件即可观察车辆，不需要与VOFA抢占COM19。程序启动未自动连通VOFA时，仍需在界面点连接。
 
+模式6的实际串口输出采用最多64字节一块、每块后间隔1000µs的发送方式，保留原始日志内容。该处理针对无线接收中出现的大量120字节断尾，正常手动模式保留原阻塞写接口。关闭VOFA周期显示不会减少MCU原始发包量，不能将显示安静当作无线链路已无丢包。
+
+现场token=11/13均收到RUNNING确认，随后主机因状态更新超时请求STOP。接收原文显示多条长记录恰在120字节处截断；这是状态传输异常的证据，尚不能证明无线模块内部的具体缓冲/分包机制。分段发送固件部署后，20秒静态采集中200条状态全部完整、120字节断尾为0；仍须复测运动期间的状态连续性。保持400ms状态超时、500ms开始确认超时和750ms车端心跳租约，避免用放宽保护掩盖丢包。
+
 ### 4.2 yaw波形
 
 选择FireWater，在09组开启WAVE。数值帧形如 `FW: -7.7,-7.6,0.1,0.003`，末尾是真实换行：通道0=yaw、1=参考yaw、2=环绕归一化误差，前三路单位为度；通道3=wz修正，单位rad/s。旧日志中的`yaw/ref`曾为rad，新`yaw_deg/ref_deg`为度。
@@ -200,6 +206,8 @@ UI侧使用`UI ARM/GO ROUND <距离>`、`UI ARM/GO WALL <距离>`、`UI ARM/GO A
 | `WALL_DISTANCE_JUMP` | 右距偏离起步参考超过250mm，可能遇到开口/换目标；本轮退出 |
 | `FRONT_ALREADY_CLOSE` | 靠近程序起点已在停车目标附近，不再向墙移动 |
 | `PLAN_OR_DISTANCE_MISMATCH` / `CLICK_ARM_FIRST` | 准备与开始不匹配或编号已失效；在正确组重新准备，再开始 |
+| 车端ARM ok=1但没有arm_ready | 主机没有保留本次准备；桥接已修复上一轮DONE/FAULT状态在新ACK之前清除等待的问题，以本次arm_ready=1为准 |
+| `STATUS_TIMEOUT` / `GO_ACK_TIMEOUT` | 桥接分别等待状态超过400ms、等待GO确认超过500ms后请求STOP；输出对应年龄。旧版合并显示STATUS_OR_GO_ACK_TIMEOUT，需结合原文区分 |
 | `LINK_TIMEOUT` / `UART_ERROR_OR_OVERFLOW` | 心跳/串口异常，本轮不自动重连续跑；查无线链路、桥接和后台原文 |
 | `ARM_ACK_TIMEOUT` / `UART_STATUS_STALE` | 车端回复或状态没有及时到达；不要反复点开始 |
 | 只有`UI SNAPSHOT ...`和失败ACK | 可能将主机UI命令直发给MCU；确认VOFA用UDP、桥接监听1348 |
@@ -406,6 +414,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 手动配置隔离 | ManualStandalone BIN SHA256与扩展前一致 | 本次只扩展模式6及主机工具，不改队友正常手动配置 |
 | 最新部署 | 无线DAP备份/校验1MB、写入、Verified OK、复位；COM19看到proto=2、IDLE、cmd=0 | 已部署并静态检查，尚未证明新往返/沿墙/快档的实际效果 |
 | 面板与UDP | 74按钮源文件与D盘/context副本哈希一致；实际PING、遥控快照、日志预设经过链路 | 用户界面点击与现场操作仍需结合日志；不把仅安装文件当运动验收 |
+| 桥接准备会话 | 回归复现旧DONE/FAULT抢先清除ARM等待，修正后通过；用户随后token=11准备已显示arm_ready | 4秒主机开始窗口、5秒车端ARM有效期和其他超时保护保留 |
+| 无线日志传输 | 新固件20秒静态接收200/200条完整状态，120字节断尾为0；control_dt最大32ms、IMU采样间隔最大24666µs、imu_errors=0 | 仅证明该次静态链路改善；未自动发ARM/GO，沿墙行走期间还需验证 |
 
 静态yaw段起止为-1.008673°/-1.036799°，最小-1.072296°、最大-0.962301°。全段最小二乘趋势约+0.000899°/s，与端点净变化方向不同，说明短时波动明显；不要把一段5秒窗口斜率外推为长期恒定漂移。累计yaw含搬车的真实转动，应看确认静止期间的变化率。
 
@@ -415,13 +425,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 
 | 项目 | 记录 |
 | --- | --- |
-| 最新功能源码 | `91989bd61beba8381c4c445bd874c83a4aca703f` |
-| 最新模式6 HEX SHA256 | `4052F159637F92AAA77FC3EE55D4AC2A6D4117427FB2EECAAF449752EF649DCB` |
-| StraightTest构建尺寸 | text=97192、data=692、bss=11616 |
+| 多程序功能基线 | `91989bd61beba8381c4c445bd874c83a4aca703f`；后续无线日志与会话修复见Git历史及部署清单 |
+| 最新模式6 HEX SHA256 | `0FAC180085CAEE69C3F3A4EE3A9D16CAE4C81A37E543B1941A191BF81E22E008` |
+| StraightTest构建尺寸 | text=97312、data=692、bss=11616 |
 | 未改变的独立手动BIN SHA256 | `3AA47CB9380589857E5F3966097C49DF807BF61A943C8A0A5586C250CFCADD3D` |
-| 本次烧录前备份 | `firmware/build/backup/before-flash-20261107-151955-139.bin`，1048576字节，已校验 |
+| 本次烧录前备份 | `firmware/build/backup/before-flash-20261107-155245-433.bin`，1048576字节，已校验 |
 | 部署清单 | `firmware/build/StraightTest/manifest.json`，flash_verified=true |
-| 当前部署归档 | `firmware/build/deployed/20261107-programs-v2/`，保存本次HEX/ELF/BIN及清单，避免后续构建覆盖现场版本 |
+| 当前部署归档 | `firmware/build/deployed/20261107-programs-v2-paced-uart/`，保存本次HEX/ELF/BIN及清单，避免后续构建覆盖现场版本 |
+| 上一版多程序镜像 | `firmware/build/deployed/20261107-programs-v2/`，旧HEX哈希4052F159开头，仅作回溯 |
 | 旧已部署1米镜像 | `firmware/build/deployed/20261107-swd-latch/`，源码基线9996357、旧HEX哈希6A9E7BE4开头，仅作回溯 |
 
 ### 8.3 本机证据索引
@@ -436,8 +447,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | yaw静态原文与统计 | `build/logs/uart-20261107-115130-152.log`，`build/straight-review/yaw-static-resume.csv`及`yaw-static-resume-summary.json` |
 | 原单次1米与SWD记录 | `build/straight-review/swd-latch-runtime-verification.json`，原文`build/logs/straight-console-20261107-141910.log` |
 | 左侧贴边样本 | `build/straight-review/left-body-contact-samples.json` |
-| 最新主机/ARM验证 | `build/straight-review/programs-host-tests.log`、`programs-build-StraightTest.log`、`programs-build-ManualStandalone.log`、`programs-build-Diagnostics.log` |
-| 最新烧录/静态检查 | `build/straight-review/programs-flash.log`、`programs-postflash-verification.json`；UART文件名见`programs-postflash-runtime-log-name.txt` |
+| 多程序初版验证 | `build/straight-review/programs-host-tests.log`、`programs-build-StraightTest.log`、`programs-build-ManualStandalone.log`、`programs-build-Diagnostics.log` |
+| 无线日志修复回归 | `build/straight-review/wireless-log-host-tests.log`、`wireless-log-build-StraightTest.log`、`wireless-log-build-ManualStandalone.log`；模拟120字节突发接收、写失败与普通模式接口保持 |
+| ARM会话时序回归 | `build/straight-review/panel-arm-race-before.log`（复现失败）、`panel-arm-race-after.log`、`panel-arm-race-udp.log` |
+| 最新烧录/静态检查 | `build/straight-review/wireless-log-flash.log`、`wireless-log-static-summary.json`；静态UART文件名见`wireless-log-static-runtime-name.txt`，恢复Motion入口后的文件名见`wireless-log-motion-runtime-name.txt` |
 | 面板安装与实际UDP检查 | `build/straight-review/programs-panel-live-verification.json`，context备份`mango-backup-20261107-150904-165` |
 
 初始2米固件、旧COM12现场记录、USB重新枚举、波形增益为0等排查过程可从`91989bd`及更早的Git版本查阅。它们不再与当前操作步骤并列，也不覆盖后续修正。

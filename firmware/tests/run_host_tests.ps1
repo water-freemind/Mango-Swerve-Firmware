@@ -265,6 +265,14 @@ $diagnosticIncludes = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-DTEST_CAN_H
     "-I$(Join-Path $firmwareRoot 'src/app')", "-I$(Join-Path $firmwareRoot 'src/service')",
     "-I$(Join-Path $firmwareRoot 'src/platform')", "-I$(Join-Path $firmwareRoot 'src/infra')",
     "-I$(Join-Path $firmwareRoot 'src/device')", "-I$(Join-Path $firmwareRoot 'src/domain')")
+$logTransportExe = Join-Path $outputDir 'test_log_transport.exe'
+foreach ($logMode in @(6,5)) {
+    & $compiler.Source @diagnosticIncludes "-DAPP_RUN_MODE=$logMode" `
+        (Join-Path $PSScriptRoot 'test_log_transport.c') '-o' $logTransportExe
+    if ($LASTEXITCODE -ne 0) { throw "Log transport compilation failed (mode=$logMode)." }
+    & $logTransportExe
+    if ($LASTEXITCODE -ne 0) { throw "Log transport test failed (mode=$logMode)." }
+}
 $diagnosticExe = Join-Path $outputDir 'test_straight_diagnostics.exe'
 & $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
     (Join-Path $PSScriptRoot 'test_straight_diagnostics.c') `

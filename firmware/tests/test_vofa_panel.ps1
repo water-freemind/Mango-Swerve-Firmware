@@ -49,6 +49,7 @@ $motion.Tick(240)
 Assert ($tx[-1] -eq 'HB 37') 'Heartbeat did not renew at 200ms'
 $motion.Tick(621)
 Assert ($tx[-1] -eq 'STOP') 'Stale status did not stop the session'
+Assert ($messages[-1] -eq 'stop_requested=STATUS_TIMEOUT status_age_ms=401') 'State timeout diagnostic is ambiguous'
 $count = $tx.Count
 $motion.Tick(900)
 Assert ($tx.Count -eq $count) 'Heartbeat resumed after timeout'
@@ -74,6 +75,28 @@ $motion.Observe($idle, 3050)
 $count = $tx.Count
 $motion.Tick(3060)
 Assert ($tx.Count -eq $count) 'Idle-after-reset kept renewing old heartbeats'
+
+# A queued DONE/FAULT status can arrive after sending ARM but before its ACK.
+# It belongs to the previous attempt and must not erase the pending transaction.
+foreach ($previousPhase in @(4,5)) {
+    $messages.Clear()
+    $retry = [VofaTestSession]::new($true,$send,$report)
+    $previous = "[INFO] TEST_STATUS phase=$previousPhase token=7 healthy=1 stopped=1 target_m=1.00"
+    $retry.Observe($previous,0)
+    $retry.Observe('[INFO] TEST_PLAN proto=2 plan=WALL leg=OUT target_m=1.00',0)
+    Assert ($retry.Command('UI ARM WALL 1',1)) 'Retry ARM rejected'
+    $retry.Observe($previous,2)
+    $retry.Observe('[INFO] TEST_ACK ok=1 phase=1 token=8 reason=ARMED plan=WALL target_m=1.00 cmd=ARM',10)
+    $retry.Observe('[INFO] TEST_STATUS phase=1 token=8 healthy=1 stopped=1 target_m=1.00',20)
+    Assert (@($messages | Where-Object {$_ -match '^arm_ready=1'}).Count -eq 1) 'Queued terminal status erased pending ARM'
+    Assert ($retry.Command('UI GO WALL 1',30)) 'GO rejected after valid retry ARM ACK'
+    Assert ($tx[-1] -eq 'GO 8') 'Retry used the wrong token'
+    $retry.Observe('[INFO] TEST_ACK ok=1 phase=2 token=8 reason=RUNNING plan=WALL target_m=1.00 cmd=GO',40)
+    $retry.Observe('[INFO] TEST_STATUS phase=5 token=8 healthy=0 stopped=1 target_m=1.00',50)
+    $afterFault = $tx.Count
+    $retry.Tick(60)
+    Assert ($tx.Count -eq $afterFault) 'A confirmed running fault failed to clear heartbeat'
+}
 
 $json = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '../vofa/vofa+.cmds.json') | ConvertFrom-Json
 Assert ($json.type -eq 'cmds' -and $json.vnumber -eq 100) 'Not a native VOFA command file'

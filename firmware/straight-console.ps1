@@ -253,7 +253,9 @@ public sealed class VofaTestSession {
                 NumberStyles.Float, CultureInfo.InvariantCulture, out target) ? target : Double.NaN;
             string phase = status.Groups[1].Value;
             phaseValue = Int32.Parse(phase, CultureInfo.InvariantCulture);
-            if (phase == "3" || phase == "4" || phase == "5" || (phase == "0" && !awaitingArm)) Clear();
+            // A terminal status queued before ARM can arrive before its ACK.
+            // Resolve the pending ARM through its ACK/timeout, not that old status.
+            if (!awaitingArm && (phase == "0" || phase == "3" || phase == "4" || phase == "5")) Clear();
             // A matching status can confirm GO if only its ACK was lost.
             if (awaitingGo && phase == "2" && status.Groups[2].Value == activeToken.ToString(CultureInfo.InvariantCulture) &&
                 Math.Abs(firmwareTarget - selectedTarget) < 0.005 && (selectedPlan == "FWD" || observedPlan == selectedPlan)) {
@@ -404,7 +406,11 @@ public sealed class VofaTestSession {
     public void Tick(long now) {
         if (awaitingArm && now - armSent > 1000) { Clear(); report("rejected=ARM_ACK_TIMEOUT"); }
         if ((awaitingGo && now - goSent > 500) || (running && now - lastStatus > 400)) {
-            tx("STOP"); Clear(); report("stop_requested=STATUS_OR_GO_ACK_TIMEOUT");
+            bool ackTimeout = awaitingGo;
+            long age = ackTimeout ? now - goSent : now - lastStatus;
+            tx("STOP"); Clear();
+            report(ackTimeout ? "stop_requested=GO_ACK_TIMEOUT go_age_ms=" + age :
+                "stop_requested=STATUS_TIMEOUT status_age_ms=" + age);
         }
         if (running && now >= nextHb) { tx("HB " + activeToken.ToString(CultureInfo.InvariantCulture)); nextHb = now + 200; }
     }
