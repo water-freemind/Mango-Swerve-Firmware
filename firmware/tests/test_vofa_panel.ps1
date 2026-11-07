@@ -234,6 +234,22 @@ Assert (!$filters.Command('UI LOG UNKNOWN ON',1006)) 'Unknown log filter accepte
 Assert ($filters.Command('UI LOG DEFAULT',1007)) 'Default preset rejected'
 Assert (!$filters.WaveEnabled) 'Default preset failed to restore quiet wave state'
 
+# Manual slew telemetry shares the existing health toggle; no extra panel group.
+$ramp = '[INFO] TEST_RAMP t_ms=1008 target=1.5,0,0 output=0.2,0,0 reversing=0'
+Assert ($filters.ShouldForwardStatus($ramp,1008)) 'Default view hid manual ramp'
+Assert ($filters.Command('UI LOG QUIET',1009)) 'Quiet preset rejected for ramp'
+Assert (!$filters.ShouldForwardStatus($ramp,1010)) 'Quiet view leaked manual ramp'
+$filters.Observe($ramp,1010)
+$messages.Clear()
+Assert ($filters.Command('UI SNAPSHOT STATE',1010)) 'Quiet view blocked ramp snapshot'
+Assert (@($messages | Where-Object {$_ -match 'cached .*TEST_RAMP'}).Count -eq 1) 'Muted ramp missing from state snapshot'
+Assert ($filters.Command('UI LOG HEALTH ON',1011)) 'Health enable rejected'
+Assert ($filters.ShouldForwardStatus($ramp,1012)) 'Health enable did not include ramp'
+Assert ($filters.Command('UI LOG HEALTH OFF',1013)) 'Health disable rejected'
+Assert (!$filters.ShouldForwardStatus($ramp,1014)) 'Health disable leaked ramp'
+Assert ($filters.Command('UI LOG ALL ON',1015)) 'All preset rejected for ramp'
+Assert ($filters.ShouldForwardStatus($ramp,1016)) 'All view hid manual ramp'
+
 # Actual bidirectional sockets through the production receive/forward functions.
 $server = [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new([Net.IPAddress]::Loopback,0))
 $client = [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new([Net.IPAddress]::Loopback,0))

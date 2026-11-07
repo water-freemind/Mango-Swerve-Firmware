@@ -209,7 +209,9 @@ if ($LASTEXITCODE -ne 0) { throw 'Standalone work link test failed.' }
 }
 
 $offsetExe = Join-Path $outputDir 'test_chassis_zero_offsets.exe'
-& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `
+foreach ($offsetMode in @(0, 6)) {
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' "-DAPP_RUN_MODE=$offsetMode" `
+    "-I$(Join-Path $firmwareRoot 'src\app')" `
     "-I$(Join-Path $firmwareRoot 'src\service')" `
     "-I$(Join-Path $firmwareRoot 'src\device')" `
     "-I$(Join-Path $firmwareRoot 'src\domain')" `
@@ -223,6 +225,7 @@ $offsetExe = Join-Path $outputDir 'test_chassis_zero_offsets.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Chassis zero offset compilation failed.' }
 & $offsetExe
 if ($LASTEXITCODE -ne 0) { throw 'Chassis zero offset test failed.' }
+}
 
 $yawExe = Join-Path $outputDir 'test_yaw_hold.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
@@ -274,6 +277,13 @@ foreach ($logMode in @(6,5)) {
     if ($LASTEXITCODE -ne 0) { throw "Log transport test failed (mode=$logMode)." }
 }
 $diagnosticExe = Join-Path $outputDir 'test_straight_diagnostics.exe'
+$rampExe = Join-Path $outputDir 'test_manual_ramp.exe'
+& $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
+    (Join-Path $PSScriptRoot 'test_manual_ramp.c') `
+    (Join-Path $firmwareRoot 'src/service/manual_ramp.c') '-lm' '-o' $rampExe
+if ($LASTEXITCODE -ne 0) { throw 'Manual ramp compilation failed.' }
+& $rampExe
+if ($LASTEXITCODE -ne 0) { throw 'Manual ramp test failed.' }
 $sourceExe = Join-Path $outputDir 'test_drive_source.exe'
 & $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
     (Join-Path $PSScriptRoot 'test_drive_source.c') `
@@ -283,6 +293,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Drive source compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Drive source test failed.' }
 & $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
     (Join-Path $PSScriptRoot 'test_straight_diagnostics.c') `
+    (Join-Path $firmwareRoot 'src/service/manual_ramp.c') `
     (Join-Path $firmwareRoot 'src/service/straight_test.c') `
     (Join-Path $firmwareRoot 'src/service/drive_source.c') `
     (Join-Path $firmwareRoot 'src/service/chassis_yaw_hold.c') `

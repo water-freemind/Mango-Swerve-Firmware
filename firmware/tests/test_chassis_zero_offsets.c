@@ -1,5 +1,6 @@
 #include "chassis.h"
 #include "steering_calibration.h"
+#include "app_config.h"
 #include "log.h"
 
 #include <assert.h>
@@ -9,6 +10,7 @@
 static float raw_position[4];
 static float commanded_position[4];
 static float commanded_speed[4];
+static bool feedback_valid = true;
 
 static BusMotorStatus init_motor(const BusMotorConfig* config) {
     (void)config;
@@ -19,6 +21,7 @@ static BusMotorStatus prepare_motor(uint16_t id) {
     return MOTOR_STATUS_OK;
 }
 static BusMotorStatus feedback(uint16_t id, BusMotorFeedback* out) {
+    if(!feedback_valid) return MOTOR_STATUS_NO_FEEDBACK;
     if(out != NULL) {
         *out = (BusMotorFeedback){.id = id, .position = raw_position[id - 1u]};
     }
@@ -71,8 +74,17 @@ int main(void) {
         raw_position[i] = zero[i] + (i == 1u ? 6.283185307f : 0.0f);
     }
     assert(chassis.init(&config) == chassis.OK);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(!chassis_drive_output_allowed());
+#endif
     assert(chassis.set_velocity(0.1f, 0.0f, 0.0f) == chassis.OK);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(!chassis_drive_output_allowed());
+#endif
     assert(chassis.process() == chassis.OK);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(chassis_drive_output_allowed());
+#endif
     assert(chassis.is_ready());
     assert(chassis.get_control()->wz == 0.0f);
     for(unsigned i = 0u; i < 4u; ++i) {
@@ -81,12 +93,22 @@ int main(void) {
         assert(fabsf(commanded_speed[i]) > 0.0f);
     }
     assert(chassis.set_velocity(0.0f, 0.1f, 0.0f) == chassis.OK);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(!chassis_drive_output_allowed());
+#endif
     assert(chassis.process() == chassis.OK);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(!chassis_drive_output_allowed());
+    for(unsigned i = 0; i < 4; ++i) assert(commanded_speed[i] == 0);
+#endif
     for(unsigned i = 0u; i < 4u; ++i) {
         /* Equivalent reverse-drive headings must preserve a lateral wheel axis. */
         assert(fabsf(cosf(commanded_position[i] - zero[i])) < 0.001f);
     }
     assert(chassis.brake() == chassis.OK && chassis.process() == chassis.OK);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(!chassis_drive_output_allowed());
+#endif
     for(unsigned i = 0u; i < 4u; ++i) {
         assert(fabsf(fabsf(sinf(commanded_position[i] - zero[i])) - 0.70710678f) < 0.001f);
     }
@@ -102,6 +124,16 @@ int main(void) {
     for(unsigned i = 0u; i < 4u; ++i) {
         assert(fabsf(commanded_position[i]) < 0.001f);
     }
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    assert(chassis_drive_output_allowed());
+    assert(chassis.stop() == chassis.OK && !chassis_drive_output_allowed());
+    assert(chassis.set_velocity(0.1f, 0, 0) == chassis.OK && chassis.process() == chassis.OK);
+    assert(chassis_drive_output_allowed());
+    feedback_valid = false;
+    (void)chassis.process();
+    assert(!chassis_drive_output_allowed());
+    puts("CHASSIS_DRIVE_GATE_TEST_OK (real alignment gate, command invalidation, stop, brake and lost feedback)");
+#endif
     puts("CHASSIS_ZERO_OFFSETS_TEST_OK");
     return 0;
 }

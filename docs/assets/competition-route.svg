@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="760" viewBox="0 0 980 760">
+<rect width="980" height="760" fill="#fff"/>
+<defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="#1368b5"/></marker><marker id="outbound-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="#287e35"/></marker><marker id="return-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 L7 3.5 L0 7" fill="#d06a22"/></marker></defs>
+<g font-family="Microsoft YaHei, Arial, sans-serif" font-size="14">
+<text x="30" y="28" font-size="20" font-weight="bold">先直行到尽头，再蛇形返回 — NOT FOR HARDWARE</text>
+<rect x="55.00" y="80.00" width="321.43" height="492.86" fill="#fafaf6" stroke="#333"/>
+<rect x="55.00" y="572.86" width="42.86" height="107.14" fill="#dbf1da" stroke="#333"/>
+<path d="M56.00,572.86 H96.86" stroke="#fafaf6" stroke-width="3"/>
+<rect x="97.86" y="497.86" width="235.71" height="32.14" fill="#d8c2a2" stroke="#333"/>
+<text x="215.71" y="518.93" text-anchor="middle">R1</text>
+<rect x="97.86" y="422.86" width="235.71" height="32.14" fill="#d8c2a2" stroke="#333"/>
+<text x="215.71" y="443.93" text-anchor="middle">R2</text>
+<rect x="97.86" y="347.86" width="235.71" height="32.14" fill="#d8c2a2" stroke="#333"/>
+<text x="215.71" y="368.93" text-anchor="middle">R3</text>
+<rect x="119.29" y="272.86" width="192.86" height="32.14" fill="#d8c2a2" stroke="#333"/>
+<text x="215.71" y="293.93" text-anchor="middle">R4</text>
+<rect x="97.86" y="197.86" width="235.71" height="32.14" fill="#d8c2a2" stroke="#333"/>
+<text x="215.71" y="218.93" text-anchor="middle">R5</text>
+<rect x="97.86" y="122.86" width="235.71" height="32.14" fill="#d8c2a2" stroke="#333"/>
+<text x="215.71" y="143.93" text-anchor="middle">R6</text>
+<path d="M76.43,626.43 L76.43,551.43" fill="none" stroke-width="5" stroke="#287e35" marker-end="url(#outbound-arrow)"/>
+<path d="M76.43,551.43 L76.43,101.43" fill="none" stroke-width="5" stroke="#287e35" marker-end="url(#outbound-arrow)"/>
+<path d="M76.43,101.43 L355.00,101.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,101.43 L355.00,176.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,176.43 L76.43,176.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M76.43,176.43 L76.43,251.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M76.43,251.43 L355.00,251.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,251.43 L355.00,326.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,326.43 L76.43,326.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M76.43,326.43 L76.43,401.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M76.43,401.43 L355.00,401.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,401.43 L355.00,476.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,476.43 L76.43,476.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M76.43,476.43 L76.43,551.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M76.43,551.43 L355.00,551.43" fill="none" stroke-width="2.5" stroke="#1368b5" marker-end="url(#arrow)"/>
+<path d="M355.00,551.43 L76.43,551.43" fill="none" stroke-width="2.5" stroke="#d06a22" stroke-dasharray="7 5" marker-end="url(#return-arrow)"/>
+<path d="M76.43,551.43 L76.43,626.43" fill="none" stroke-width="2.5" stroke="#d06a22" stroke-dasharray="7 5" marker-end="url(#return-arrow)"/>
+<text x="215.71" y="544.43" text-anchor="middle" fill="#114c86">G1</text>
+<text x="215.71" y="469.43" text-anchor="middle" fill="#114c86">G2</text>
+<text x="215.71" y="394.43" text-anchor="middle" fill="#114c86">G3</text>
+<text x="215.71" y="319.43" text-anchor="middle" fill="#114c86">G4</text>
+<text x="215.71" y="244.43" text-anchor="middle" fill="#114c86">G5</text>
+<text x="215.71" y="169.43" text-anchor="middle" fill="#114c86">G6</text>
+<text x="215.71" y="94.43" text-anchor="middle" fill="#114c86">G7</text>
+<circle cx="76.43" cy="626.43" r="6" fill="#287e35"/><text x="89.43" y="631.43">起点 / 终点 P</text>
+<text x="430" y="90">世界坐标：X 向右、Y 向上；长度单位为米。</text>
+<text x="430" y="119">地图等比例系数：1；中心路线：30.60 m</text>
+<text x="430" y="148">① 绿粗线：入场后沿左通道直达最远端 L7。</text>
+<text x="430" y="177">② 蓝实线：从 G7 开始，向下蛇形返回至 G1。</text>
+<text x="430" y="206">③ 橙虚线箭头：沿 G1 回左侧，再出门停车。</text>
+<text x="430" y="235">包络朝向 90°；默认 90° 方案车头为 +Y。</text>
+<text x="430" y="264">先行经过沟口不计覆盖；G7 无北侧作业垄。</text>
+<text x="430" y="293">默认前向机构：G6 → G1 处理北侧 R6 → R1。</text>
+<text x="430" y="322">R4 为短垄，名义 x = 0.6 .. 2.4 m。</text>
+<text x="430" y="351">图线表示车体中心；检查使用整车连续扫掠。</text>
+<text x="430" y="380">演示车体 0.27 × 0.27 m：尚未确认</text>
+<text x="430" y="409">航向误差 ±5°；跟踪误差 0.02 m</text>
+<text x="430" y="438">每侧安全余量：0.01 m</text>
+<text x="430" y="467">尚未建模树枝、树体及作业机构的运动包络。</text>
+<text x="430" y="496">本图未声称任何真实树位置。</text>
+<text x="430" y="525">等比例缩放不能覆盖全部现场尺寸误差。</text>
+<text x="430" y="554">其他朝向只验包络，不证明机构作业方向。</text>
+<text x="30" y="735" fill="#a12828">仅供离线核查 | deployment_ready = false | 未连接 STM32 或执行机构</text>
+</g></svg>

@@ -14,6 +14,7 @@
 #include "imu/bmi088.h"
 #include "remote.h"
 #include "drive_source.h"
+#include "manual_ramp.h"
 #include "work_link.h"
 #include "laser.h"
 #include "log.h"
@@ -36,6 +37,9 @@ static const float zeros[4] = STEERING_FORWARD_ZERO_RAD;
 static bool tx_fault;
 static DriveSource control_source;
 static DriveVelocity manual_velocity;
+static DriveVelocity manual_target;
+static ManualRamp manual_ramp;
+static uint32_t last_manual_target;
 static uint32_t last_manual_process;
 
 /* Capture each sensor frame once. BMI088 get_sample() consumes its NEW flags. */
@@ -84,6 +88,9 @@ static void update_imu_sample(void) {
 }
 
 static void stop_outputs(void) {
+    manual_ramp_reset(&manual_ramp);
+    manual_target = manual_velocity = (DriveVelocity){0};
+    last_manual_target = HAL_GetTick();
     /* Clear the cached chassis command as well as the physical motor outputs,
      * so the next owner cannot process the previous owner's velocity. */
     (void)chassis.set_velocity(0.0f, 0.0f, 0.0f);
@@ -273,16 +280,30 @@ static void update_control_source(uint32_t now, StraightInput in) {
         chassis_yaw_hold_disable();
         stop_outputs();
         log_control(now);
+    } else if(!was_manual && control_source.manual_armed) {
+        manual_ramp_reset(&manual_ramp);
+        manual_target = manual_velocity = (DriveVelocity){0};
+        last_manual_target = now;
     }
 }
-static void apply_manual(void) {
-    manual_velocity = drive_source_velocity(&rc_state);
+static void apply_manual(uint32_t now, StraightInput in) {
+    manual_target = drive_source_velocity(&rc_state);
+    const float dt_s = (float)(uint32_t)(now - last_manual_target) * 0.001f;
+    last_manual_target = now;
     /* Free manual motion: only the sticks command rotation. HOST owns the
      * automatic heading hold used by the test programs. */
     chassis_yaw_hold_disable();
+    if(!manual_ramp_step(&manual_ramp, manual_target, in.stationary, chassis_drive_output_allowed(), dt_s)) {
+        drive_source_stop_manual(&control_source);
+        straight_fault(&test, "MANUAL_RAMP_TIMING_OR_INPUT");
+        stop_outputs();
+        return;
+    }
+    manual_velocity = manual_ramp.output;
     if(chassis.set_velocity(manual_velocity.vx, manual_velocity.vy, manual_velocity.wz) != chassis.OK) {
         drive_source_stop_manual(&control_source);
         straight_fault(&test, "MANUAL_CONTROL");
+        stop_outputs();
     }
 }
 static bool can_healthy(void) {
@@ -400,7 +421,14 @@ static void log_detail(uint32_t now, StraightInput in) {
         log_info("TEST_DRIFT t_ms=%lu valid=%u wheel_still=%u window_ms=%lu yaw_deg_s=%.6f gyro_deg_s=%.6f yaw_deg_min=%.3f body_static=USER_CONFIRM auto_zero=0",
             (unsigned long)now, (unsigned)drift_valid, (unsigned)in.stationary, (unsigned long)drift_window_ms,
             (double)drift_yaw_rate, (double)drift_gyro_rate, (double)drift_yaw_rate * 60.0);
-    } else log_control(now);
+    } else {
+        if(control_source.mode == DRIVE_SOURCE_MANUAL)
+            log_info("TEST_RAMP t_ms=%lu target=%.3f,%.3f,%.3f output=%.3f,%.3f,%.3f reversing=%u",
+                (unsigned long)now, (double)manual_target.vx, (double)manual_target.vy, (double)manual_target.wz,
+                (double)manual_velocity.vx, (double)manual_velocity.vy, (double)manual_velocity.wz,
+                (unsigned)manual_ramp.reversing);
+        log_control(now);
+    }
 }
 static void log_plan(StraightInput in) {
     log_info("TEST_PLAN proto=2 plan=%s leg=%s target_m=%.2f x=%.3f out=%.3f vy=%.4f right_ref_mm=%.1f laser_ok=%u body_edge_mm=%u front_target_mm=%u vmax=%.2f hb_required=0",
@@ -449,6 +477,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 host_vrb_required=0 manual_vrb_max=%u manual_heading_hold=0", DRIVE_MANUAL_VRB_MAX);
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
+    log_info("TEST_READY manual_ramp linear_accel=0.20 linear_decel=0.30 angular_accel=0.40 angular_decel=0.60 unverified=1 reverse_wait=wheel_stop");
 }
 void straight_test_app_loop(void) {
     const uint32_t now = HAL_GetTick();
@@ -478,7 +507,7 @@ void straight_test_app_loop(void) {
         if(control_dt_ms > control_dt_max_ms) control_dt_max_ms = control_dt_ms;
         last_step = now;
         if(control_source.mode == DRIVE_SOURCE_HOST) straight_step(&test, now, in);
-        if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) apply_manual();
+        if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) apply_manual(now, in);
         else if(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
@@ -495,7 +524,13 @@ void straight_test_app_loop(void) {
             manual_velocity = (DriveVelocity){0};
             stop_outputs();
         }
-        if(tx_fault || !can_healthy()) straight_fault(&test, "CAN_TX_OR_BUS");
+        if(tx_fault || !can_healthy()) {
+            straight_fault(&test, "CAN_TX_OR_BUS");
+            if(control_source.manual_armed) {
+                drive_source_stop_manual(&control_source);
+                stop_outputs();
+            }
+        }
     }
     if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed && now - last_manual_process >= 2u) {
         if(now - last_manual_process > 50u || chassis.process() != chassis.OK) {

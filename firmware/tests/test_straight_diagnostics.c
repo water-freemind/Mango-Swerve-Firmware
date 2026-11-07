@@ -12,6 +12,10 @@ static bool fake_online = true, fake_calibrated = true, fresh_flag;
 static bool fake_can_healthy, fake_laser_ready;
 static uint16_t fake_swd = 2000u, fake_vrb = 1500u;
 static uint16_t fake_swc = 1500u, fake_ry = 1500u, fake_lx = 1500u;
+static uint16_t fake_swb = 1500u, fake_rx = 1500u;
+static float fake_wheel_speed;
+static bool fake_drive_gate = true;
+bool chassis_drive_output_allowed(void) { return fake_drive_gate; }
 static DriveVelocity last_velocity;
 static unsigned sample_reads;
 static unsigned motor_stop_calls;
@@ -80,12 +84,14 @@ bool remote_get_state(RemoteState* r) {
     r->rc_data.channel[REMOTE_CH_SWD] = fake_swd;
     r->rc_data.channel[REMOTE_CH_VRB] = fake_vrb;
     r->rc_data.channel[REMOTE_CH_SWC] = fake_swc;
+    r->rc_data.channel[REMOTE_CH_SWB] = fake_swb;
+    r->rc_data.channel[REMOTE_CH_RIGHT_X] = fake_rx;
     r->rc_data.channel[REMOTE_CH_RIGHT_Y] = fake_ry;
     r->rc_data.channel[REMOTE_CH_LEFT_X] = fake_lx;
     return true;
 }
 bool remote_is_online(uint32_t timeout) { (void)timeout; return fake_online; }
-static float fake_speed(uint16_t id) { (void)id; return 0.0f; }
+static float fake_speed(uint16_t id) { (void)id; return fake_wheel_speed; }
 static float fake_position(uint16_t id) { return zeros[id - 1u]; }
 static float fake_current(uint16_t id) { (void)id; return -16384.0f; }
 static BusMotorStatus fake_motor_stop(uint16_t id) { (void)id; ++motor_stop_calls; return MOTOR_STATUS_OK; }
@@ -180,6 +186,66 @@ static void check_round_heading(const char* arm, float yaw) {
     in = input(start + 2500u);
     receive_command("STOP\n", start + 2500u, in);
     assert(!chassis_yaw_hold_is_active() && last_velocity.vx == 0.0f);
+}
+static void check_manual_ramp_scheduler(void) {
+    uint32_t now = 40000u;
+    for(unsigned fault = 0; fault < 7; ++fault) {
+        initialized = true;
+        tx_fault = rx_fault = false;
+        fake_can_healthy = fake_online = fake_calibrated = true;
+        fake_drive_gate = true;
+        fake_swc = fake_swb = 2000u; fake_swd = 1000u; fake_vrb = 1250u;
+        fake_ry = fake_rx = fake_lx = 1500u; fake_wheel_speed = 0;
+        control_source = (DriveSource){0};
+        last_step = last_imu = last_log = last_plan_log = last_manual_process = now;
+        straight_init(&test, now);
+        loop_at(now += 10u);
+        fake_swd = 2000u; loop_at(now += 10u);
+        assert(control_source.manual_armed && manual_velocity.vx == 0);
+        fake_ry = 2000u;
+        for(unsigned i = 0; i < 100; ++i) loop_at(now += 10u);
+        assert(fabsf(manual_velocity.vx - 0.2f) < 0.00001f && manual_target.vx == 1.5f);
+        assert(!chassis_yaw_hold_is_active() && manual_velocity.wz == 0);
+        fake_drive_gate = false;
+        for(unsigned i = 0; i < 20; ++i) {
+            loop_at(now += 10u);
+            assert(manual_velocity.vx <= 0.002001f);
+        }
+        fake_drive_gate = true; loop_at(now += 10u);
+        assert(manual_velocity.vx <= 0.004001f);
+        /* A safety stop takes effect immediately, not at the next 10 ms ramp step. */
+        if(fault == 0) fake_swd = 1000u;
+        if(fault == 1) fake_vrb = 1251u;
+        if(fault == 2) fake_online = false;
+        if(fault == 3) fake_swc = 1000u;
+        if(fault == 4) fake_can_healthy = false;
+        if(fault == 6) {
+            StraightInput in = input(now);
+            receive_command("STOP\n", now, in);
+        } else loop_at(now += fault == 5 ? 51u : 1u);
+        assert(!control_source.manual_armed);
+        assert(last_velocity.vx == 0 && last_velocity.vy == 0 && last_velocity.wz == 0);
+        assert(manual_ramp.output.vx == 0 && manual_ramp.last_motion.vx == 0 && !manual_ramp.reversing);
+        assert(manual_target.vx == 0 && manual_velocity.vx == 0);
+        /* Recovering permit/fault alone cannot resume a previous command. */
+        fake_can_healthy = fake_online = true; fake_swc = 2000u; fake_swd = 2000u; fake_vrb = 1250u;
+        loop_at(now += 10u); assert(!control_source.manual_armed);
+        fake_ry = 1500u; fake_swd = 1000u; loop_at(now += 10u);
+        fake_swd = 2000u; loop_at(now += 10u);
+        assert(control_source.manual_armed && manual_velocity.vx == 0);
+        fake_ry = 2000u; loop_at(now += 10u);
+        assert(fabsf(manual_velocity.vx - 0.002f) < 0.000001f);
+        /* Reverse waits for actual wheel-stop feedback after output reaches zero. */
+        fake_wheel_speed = 0.5f; fake_ry = 1000u;
+        for(unsigned i = 0; i < 20; ++i) { loop_at(now += 10u); assert(manual_velocity.vx == 0); }
+        assert(manual_ramp.reversing);
+        fake_wheel_speed = 0; loop_at(now += 10u);
+        assert(manual_velocity.vx == 0 && !manual_ramp.reversing);
+        loop_at(now += 10u); assert(manual_velocity.vx < 0);
+        fake_swd = 1000u; loop_at(now += 1u);
+        now += 100u;
+    }
+    puts("MANUAL_RAMP_SCHEDULER_TEST_OK (full throttle, stick-only yaw, SWD/VRB/RC/source/CAN/timing/STOP immediate reset, re-arm and feedback-gated reverse)");
 }
 int main(void) {
     test.phase = ST_IDLE;
@@ -288,17 +354,17 @@ int main(void) {
     assert(control_source.manual_armed);
     chassis_yaw_hold_set_target(fake_yaw); /* A stale HOST reference cannot affect manual. */
     fake_yaw += 0.2f;
-    apply_manual();
-    assert(fabsf(last_velocity.vx - 0.8f) < 0.00001f && last_velocity.vy == 0.0f);
+    apply_manual(9010u, in);
+    assert(fabsf(last_velocity.vx - 0.002f) < 0.00001f && last_velocity.vy == 0.0f);
     assert(last_velocity.wz == 0.0f && !chassis_yaw_hold_is_active());
     fake_yaw -= 0.4f;
-    apply_manual();
+    apply_manual(9020u, in);
     assert(last_velocity.wz == 0.0f); /* Yaw/gyro drift cannot create a manual turn. */
     fake_lx = 2000u;
-    in = input(9000u); apply_manual();
-    assert(fabsf(last_velocity.wz + 3.0f) < 0.00001f && !chassis_yaw_hold_is_active());
+    in = input(9000u); apply_manual(9030u, in);
+    assert(fabsf(last_velocity.wz + 0.004f) < 0.00001f && !chassis_yaw_hold_is_active());
     fake_lx = 1500u;
-    in = input(9000u); apply_manual();
+    in = input(9000u); apply_manual(9040u, in);
     assert(last_velocity.wz == 0.0f);
     /* Releasing VRB must stop motor output AND clear the cached velocity. */
     const unsigned before_stops = motor_stop_calls;
@@ -321,7 +387,7 @@ int main(void) {
     in = input(9000u); update_control_source(9000u, in);
     assert(control_source.manual_armed);
     fake_ry = 2000u;
-    in = input(9000u); apply_manual();
+    in = input(9000u); apply_manual(9010u, in);
     assert(last_velocity.vx > 0.0f);
     receive_command("STOP\n",9000u,in);
     assert(!control_source.manual_armed && last_velocity.vx == 0.0f);
@@ -339,6 +405,7 @@ int main(void) {
     assert(chassis_yaw_hold_is_active()); /* Returning to HOST reacquires heading hold. */
     check_round_heading("ARM ROUND 1\n", 0.6f);
     check_round_heading("ARM WALL 1\n", -0.6f);
+    check_manual_ramp_scheduler();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");
