@@ -17,5 +17,13 @@ try {
     $peer = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
     $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
     if ($actual -cne "FW: -7.7, -7.6, 0.1, 0.003`n") { throw 'FireWater payload changed' }
+    $status = '[INFO] TEST_STATUS phase=0 healthy=0 stopped=1 cmd=0.000000 result=IDLE'
+    if (![MangoStraightConsole]::ForwardStatus($sender, $port, ([char]27 + '[94m' + $status + [char]27 + "[0m`r"))) { throw 'Status log rejected' }
+    $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
+    if ($actual -cne ($status + "`n")) { throw 'Status log content changed' }
+    foreach ($line in @('FW: 1,2,3,4', 'unrelated: 1,2,3,4', '[INFO] TEST_STATUS note:invalid')) {
+        if ([MangoStraightConsole]::ForwardStatus($sender, $port, $line)) { throw 'Unexpected log forwarded as status' }
+    }
+    if ([MangoStraightConsole]::ForwardStatus($sender, 0, $status)) { throw 'Disabled status forwarding sent data' }
     'STRAIGHT_CONSOLE_UDP_TEST_OK (loopback only; serial not opened)'
 } finally { $sender.Dispose(); $receiver.Dispose() }

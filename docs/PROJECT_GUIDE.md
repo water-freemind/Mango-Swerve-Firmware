@@ -535,13 +535,15 @@ TEST_STATUS每100ms记录phase、token、healthy、stopped、估计行程s、实
 
 VOFA+选择FireWater而非RawData，数据到达后在波形图右键“绑定Y轴”，选第0路实际数据通道，再将显示名称改为yaw；可同时绑定第1路比较参考。点Auto调整Y轴，当前约-7.7°不会显示在固定-5～5°窗口内。协议要求逗号分隔数值并以换行结束，见[FireWater协议](https://www.vofa.plus/docs/learning/dataengines/firewater/)及[官方波形绑定步骤](https://www.vofa.plus/docs/learning/start/quick_start/)。
 
-运行测试时推荐经过主机工具过滤转发，避免COM19被VOFA+和心跳工具同时占用，以及普通日志混入数值解析：先断开VOFA+串口，选择UDP接收接口、本地监听端口1347及FireWater，再运行以下命令。此为本机回环转发，不改变车端无线DAP链路；VOFA+通过UDP只接收波形，ARM/GO/STOP仍在终端发送。
+运行测试时可经过主机工具转发，避免COM19被VOFA+和心跳工具同时占用：先断开VOFA+串口，选择UDP接收接口、本地监听端口1347及FireWater，再运行以下命令。此为本机回环转发，不改变车端无线DAP链路；VOFA+接收波形及筛选的状态文本，ARM/GO/STOP仍在终端发送。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.ps1 -Port COM19 -WavePort 1347
 ```
 
-不传WavePort或传0则不转发；转发器仅接受以FW:开头且恰好4个有限数值的帧。UDP失败只记录绘图错误，不终止串口心跳；串口异常仍触发退出/车端超时。新增离线回环测试验证日志/畸形帧拒绝、关闭转发、4通道数值及换行保真，该离线测试没有打开串口。授权烧录后另有真实FW上行只读证据；GUI曲线和无线串口下行仍待确认。
+不传WavePort或传0则不转发；采样帧须以FW:开头且恰好4个有限数值。另外保留TEST_STATUS/TEST_ACK/TEST_READY/TEST_INIT_FAILED状态文本，去除ANSI颜色后传给VOFA+，文本白名单不含冒号，避免被当成冒号后的数值帧。原始串口全部内容仍显示在控制台并保存到文件。UDP失败只记录绘图错误，不终止串口心跳；串口异常仍触发退出/车端超时。离线回环测试验证畸形数值拒绝、关闭转发、4通道保真、状态文字保留及去色，没有打开串口。GUI曲线和无线下行指令仍待现场确认。
+
+**图上全0的排查记录。** 用户截图收到`FW: -30.16,0,0,0`，但yaw通道显示0且Y轴仅-5～5。只读检查本机VOFA保存配置`AppData/Local/vofa+/100/context/vofa+.config.json`，发现yaw的`settings_ctx[0].scale=0`、yoffset=0；保存配置可能早于当前界面，需以界面复核为准。优先在右侧yaw属性的“增益与偏移”将增益设1、偏移设0，再点Auto。不得仅把现象归咎于混发日志：官方文档允许其他文本数据，上述FW数值格式符合协议。保留状态日志，无需为调整增益重烧。确认依据是右侧实际数值恢复且曲线显示正确，当前未代替用户完成该UI验证。
 
 **离线验证范围。** 完整主机回归通过，StraightTest/ManualStandalone/Manual/Diagnostics各83源文件完整ARM构建通过；日志在`build/straight-review/`。主机状态机测试覆盖默认静止、无许可拒绝、ARM过期、重复/旧/错误编号、心跳过期、定速限幅、2m完成与连续停稳、STOP、逆行/非数反馈、超程/运行/停车超时及计时回绕。模式5/6均验证关闭作业握手。真实UART收发、无线时延、运动、轮径和到点精度尚未实测；串口工具只编译C#和校验脚本语法，没有打开端口。
 

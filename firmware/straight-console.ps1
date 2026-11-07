@@ -34,6 +34,17 @@ public static class MangoStraightConsole {
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
         return true;
     }
+    public static bool ForwardStatus(UdpClient udp, int port, string line) {
+        if (port == 0) return false;
+        string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
+        // FireWater treats nonnumeric lines without a colon as ordinary text.
+        // Keep a narrow status whitelist and do not create numeric-looking log frames.
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED)\b") ||
+            plain.IndexOf(':') >= 0) return false;
+        byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
+        udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
+        return true;
+    }
     public static void Run(string port, int baud, string logPath, int wavePort) {
         using (SerialPort serial = new SerialPort(port, baud, Parity.None, 8, StopBits.One))
         using (UdpClient wave = new UdpClient())
@@ -56,7 +67,9 @@ public static class MangoStraightConsole {
                         string text = pending.ToString(); int end;
                         while ((end = text.IndexOf('\n')) >= 0) {
                             string line = text.Substring(0, end); text = text.Substring(end + 1);
-                            try { ForwardWave(wave, wavePort, line); }
+                            try {
+                                if (!ForwardWave(wave, wavePort, line)) ForwardStatus(wave, wavePort, line);
+                            }
                             catch (SocketException ex) { log.WriteLine("WAVE_FORWARD_ERROR " + ex.Message); }
                             Match m = Regex.Match(line, @"TEST_ACK ok=1 phase=1 token=(\d+)");
                             if (m.Success) UInt32.TryParse(m.Groups[1].Value, out token);
