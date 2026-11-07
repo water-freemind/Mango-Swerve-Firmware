@@ -30,6 +30,7 @@
 | 理解赛题与从出发到结束的逻辑 | [完整自主路线设计](docs/PROJECT_GUIDE.md#roadmap)，含逐段坐标、作业互锁、时间预算与待测参数 |
 | 按步骤调车 | [详细调试流程：上电、检查、行走与恢复](docs/PROJECT_GUIDE.md#quick-start) |
 | 处理三档满杆起步易翻车 | [手动缓加减速候选及验收](docs/PROJECT_GUIDE.md#manual-ramp)，未烧录，不代表防翻已验证 |
+| 继续优化底盘、安排离线工作 | [底盘优化候选与优先级](docs/PROJECT_GUIDE.md#chassis-offline-backlog)，含时间基准/PID、参数、数值防护及平顺性验证 |
 | 复现自主仿真、给队友交接 | [轨迹与日志报告](docs/PROJECT_GUIDE.md#autonomy-offline-replay)、[交付证据与现场记录表](docs/PROJECT_GUIDE.md#autonomy-handoff) |
 | 排查无线距离/隔墙影响 | [静态链路对照](docs/PROJECT_GUIDE.md#debug-link) |
 | 查看yaw波形与零漂 | [yaw核验步骤](docs/PROJECT_GUIDE.md#debug-yaw) |
