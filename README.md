@@ -11,16 +11,16 @@
 | 项目 | 已有结果与边界 |
 | --- | --- |
 | 自主路线 | 先沿左侧直达远端，再G7至G1下降S形、底沟回门；共享C状态机及仿真已实现，未绑定实车运行入口 |
-| 自主基础代码（离线交付） | 四向净空、观测校验、线段控制、17段任务状态机及独立作业事务；9个共享C场景、完整主机回归、32项Python回归通过；H723三模式各91源构建通过。尚未接入/烧录/实测，见指南9.15–9.17 |
+| 自主基础代码（离线交付基线） | 四向净空、观测校验、线段控制、17段任务状态机及独立作业事务；`37752cf`阶段9个共享C场景、32项Python回归及三模式各91源构建通过。尚未接入/烧录/实测；历史基线见指南9.15–9.17，本轮结果见9.18 |
 | 底盘基础 | 电机通信、轮位、架空前后左右方向、独立零位回位及低速航向保持已有现场记录 |
 | 原单次1米 | 两轮正常到点；用户地面近似实测约103.2cm，未据此修改轮径，重复性待测 |
 | 新测试 | 1/2/4米普通往返、右墙定距往返、前方靠近停车已实现、编译并部署，完整运动验收待做 |
 | 测试速度 | 0.05 / 0.08 / 0.10 / 0.20 / 0.30 / 0.50m/s，默认0.10；靠近停车最高0.05 |
 | 无线状态传输 | 64字节分块、1ms间隔后，已部署f5bc3da组合固件约20秒采集206/206条状态完整；远距/隔墙与运动期间仍待对照 |
-| VOFA面板 | 10组74按钮，UDP桥接处理一次性编号；GO后无需心跳或状态持续回传，17类日志可分别开关 |
+| VOFA面板 | 仓库源现为11组78按钮，新增10组TRACE采集；本轮未安装到本机VOFA。UDP桥接处理一次性编号；GO后无需心跳或状态持续回传，17类日志可分别开关 |
 | 控制切换 | 组合固件SWC：1000停车、1500上位机、2000手动；SWD统一1000停车/2000许可；手动还须VRB≤1250，上位机不要求VRB |
-| 本轮手动起停候选 | MANUAL加入向量加减速、反向停稳和调轮期间不积累目标；完整主机回归通过，StraightTest和ManualStandalone各85源构建成功，尚未烧录 |
-| 隔离边界 | 切换取消旧任务；手动不受上位机心跳/串口错误影响；旧独立手动模式BIN哈希保持一致 |
+| 本轮底盘候选 | 已实现时间基准/PID参考周期归一化、数值保护、参数档案、MANUAL S曲线/复合运动限幅、舵轮低速与对齐滞回、512帧TRACE及回放。完整C/PowerShell回归、43项Python测试与三模式各93源构建通过，独立审查未发现阻塞合入问题；尚未烧录，见指南9.18 |
+| 隔离边界 | 切换取消旧任务；手动不受上位机心跳/串口错误影响。模式0/5也使用修改后的共享底盘/电机服务，不能再宣称其BIN或底层行为完全不变；仅模式6接入新S曲线和TRACE |
 | 往返审查修复 | 等待段保留原航向参考，避免误报航向偏差及返程失去角度环；主循环回归通过且已部署，实车往返待验收 |
 
 ## 从哪里开始
@@ -30,6 +30,7 @@
 | 理解赛题与从出发到结束的逻辑 | [完整自主路线设计](docs/PROJECT_GUIDE.md#roadmap)，含逐段坐标、作业互锁、时间预算与待测参数 |
 | 按步骤调车 | [详细调试流程：上电、检查、行走与恢复](docs/PROJECT_GUIDE.md#quick-start) |
 | 处理三档满杆起步易翻车 | [手动缓加减速候选及验收](docs/PROJECT_GUIDE.md#manual-ramp)，未烧录，不代表防翻已验证 |
+| 复现底盘候选、查看延期项 | [底盘候选交付与测试教程](docs/PROJECT_GUIDE.md#chassis-offline-backlog)，含时间基准/PID、参数、S曲线、TRACE和停止距离边界 |
 | 复现自主仿真、给队友交接 | [轨迹与日志报告](docs/PROJECT_GUIDE.md#autonomy-offline-replay)、[交付证据与现场记录表](docs/PROJECT_GUIDE.md#autonomy-handoff) |
 | 排查无线距离/隔墙影响 | [静态链路对照](docs/PROJECT_GUIDE.md#debug-link) |
 | 查看yaw波形与零漂 | [yaw核验步骤](docs/PROJECT_GUIDE.md#debug-yaw) |
@@ -42,11 +43,11 @@
 
 ## 恢复手动和切回上位机
 
-以下为新增VRB保护版本的操作，须烧录该版本后使用：先SWD=1000停车、摇杆回中；SWA=1000、VRA>1200，手动先用SWB=1000低档。将SWC切2000、**保持VRB≤1250**并保持SWD关闭，等IMU标定和电机就绪后，再把SWD切2000；看到 `TEST_CONTROL source=MANUAL manual_armed=1 vrb_required=1 vrb_ok=1` 后使用摇杆。手动期间VRB>1250即撤销许可并停止输出；若VRB松手回到1500，也会进入保护。恢复时须重新关闭SWD、回中停稳、保持VRB≤1250，再打开SWD，不能仅把VRB重新压低就续跑。
+以下操作适用于已部署`8555a15`及保留同一开关策略的组合候选：先SWD=1000停车、摇杆回中；SWA=1000、VRA>1200，手动先用SWB=1000低档。将SWC切2000、**保持VRB≤1250**并保持SWD关闭，等IMU标定和电机就绪后，再把SWD切2000；看到 `TEST_CONTROL source=MANUAL manual_armed=1 vrb_required=1 vrb_ok=1` 后使用摇杆。手动期间VRB>1250即撤销许可并停止输出；若VRB松手回到1500，也会进入保护。恢复时须重新关闭SWD、回中停稳、保持VRB≤1250，再打开SWD，不能仅把VRB重新压低就续跑。
 
 手动为自由遥控，前后/横移/旋转速度均由摇杆给定，保留电机闭环和SWB限速，**不自动修正yaw**。上位机直行、往返和沿墙测试仍使用航向保持。
 
-本轮源码候选为MANUAL增加命令斜率：平移加速/正常减速0.20/0.30m/s²，旋转0.40/0.60rad/s²；反向先停稳，调轮期间不积累大目标。SWD、VRB撤销及故障仍直接进入原停车路径。初值未实测，普通松杆停车会延长距离，例如已达1.5m/s时命令曲线约需5秒/3.75m减至零，不能当急停。当前车上8555a15尚无此功能。
+本轮源码候选为MANUAL加入S曲线：平移加速/正常减速0.20/0.30m/s²、jerk 0.80m/s³，旋转0.40/0.60rad/s²、jerk 1.60rad/s³；反向先停稳，调轮期间不积累大目标。平移与旋转还进行目标耦合限幅，初值未实测。SWD、VRB撤销及故障直接进入保护停车路径，不经过普通斜坡。**普通松杆停车距离变长**：1.5m/s命令回放约5.38秒、4.03m减至零，原线性坡道约5秒、3.75m；这些是命令曲线积分，不是实际制动距离。当前车上8555a15尚无此功能。
 
 上位机测试则先停车回中，把SWC切1500、SWD切2000，重新准备并开始；此模式VRB可回中，不参与许可判断。两种来源互斥，手动不执行旧ARM/GO；08组测试速度不改变SWB手动档。**GO后车端独立执行，关闭VOFA或断开无线不会自动停车；停车使用遥控SWD或明确STOP。** 完整检查和各测试步骤见[详细调试流程](docs/PROJECT_GUIDE.md#quick-start)。
 
@@ -77,7 +78,7 @@ firmware/
 
 自主核心源码为`firmware/src/service/auto_*.c`，仅计算输入快照和输出建议，不访问设备。`tools/autonomy_report.py`读取共享C测试产生的CSV，输出路线图、状态转移及首个故障，也可分析已有手动缓加减速日志；复现命令和数据边界见[离线报告教程](docs/PROJECT_GUIDE.md#autonomy-offline-replay)。
 
-本机仓库位于 `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`；PR #4已合并，临时功能分支已清理。源码、权威配置、脚本、测试与命令源入Git；`build`现场证据保留在本机。详细目录约定及证据位置见[仓库维护](docs/PROJECT_GUIDE.md#repository-layout)。
+本机仓库位于 `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`。本轮以 `1a4345b` 为基线在 `feat/chassis-offline-optimization` 整理候选；PR及合并状态以GitHub和 `git status` 为准。源码、权威配置、脚本、测试与命令源入Git；`build`现场证据保留在本机。详细目录约定及证据位置见[仓库维护](docs/PROJECT_GUIDE.md#repository-layout)。
 
 ## 构建和调试入口
 
@@ -85,8 +86,12 @@ firmware/
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\tests\run_host_tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode Diagnostics
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode ManualStandalone
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest
 ```
+
+底盘专项为 `firmware/tests/run_chassis_tests.ps1`；完整回归会生成S曲线、四向净空与TRACE报告。详细输出路径、TRACE采集/导出及报告复现见[第9.18节](docs/PROJECT_GUIDE.md#chassis-offline-backlog)。当前整理只交付已有成果，机械实测、PID实车调参、全局定位及自主运行接入列为延期项。
 
 只安装/更新VOFA配置时，先完全退出VOFA，再运行：
 

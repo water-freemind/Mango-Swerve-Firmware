@@ -1352,6 +1352,72 @@
             ]
           }
         ]
+      },
+      {
+        "name": "10 底盘同步采集（不启动运动）",
+        "intro_on": true,
+        "intro": "候选固件专用。只控制日志采集；20ms采样，最多约10.24秒窗口。导出须遥控在线、SWD关闭且车辆停稳。停止采集不是停车。",
+        "hex_on": true,
+        "loop_on": false,
+        "loop_ms": 100,
+        "loop_count": 1,
+        "cmd_hex": "",
+        "is_group": true,
+        "down": true,
+        "subCmds": [
+          {
+            "name": "开始／继续采集",
+            "intro_on": true,
+            "intro": "仅记录目标、轮速、舵角和IMU，不授予运动许可。保留已有缓存。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 54 52 41 43 45 20 53 54 41 52 54 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "停止采集（车辆不会因此停止）",
+            "intro_on": true,
+            "intro": "冻结日志缓存。要停车请用00组停止或SWD安全开关。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 54 52 41 43 45 20 53 54 4F 50 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "清空采集缓存",
+            "intro_on": true,
+            "intro": "仅SWD关闭、车辆停稳且未导出时可用。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 54 52 41 43 45 20 43 4C 45 41 52 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "导出冻结记录",
+            "intro_on": true,
+            "intro": "SWD关闭且停稳后分块输出，期间重新放行会取消导出。原始后台日志可供离线报告工具读取。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 54 52 41 43 45 20 44 55 4D 50 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          }
+        ]
       }
     ]
   }

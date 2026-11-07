@@ -90,6 +90,14 @@ int main(void) {
     NEAR(out.clearance_m,.055f*cosf(.1f)-.16f*sinf(.1f));
     p.pose.yaw=NAN;
     assert(auto_laser_clearance(&c,3,c.stowed,p,(AutoTwist){0},r,wall,100,&out)==AUTO_GEOM_CONFIG);
+    /* Accepted-but-delayed range overestimates current clearance by 15mm. The
+     * configured additional reaction budget cannot hide 150ms of observed age. */
+    AutoConfig delayed=c; delayed.latency_s=.1f;
+    p=(AutoPoseSample){{0,0,0},250,true};
+    wall=(AutoPlane){{1,0},.18f,11,true}; r=(AutoRange){155,100,11,true,true};
+    assert(auto_laser_clearance(&delayed,3,delayed.stowed,p,(AutoTwist){.1f,0,0},r,wall,250,&out)==AUTO_GEOM_OK);
+    assert(out.protective_stop); /* Old fixed .1s budget falsely returned clear. */
+    NEAR(out.required_m,.1f*.25f+.1f*.1f/(2*.3f)+.02f);
     AutoPoseSample mapped;
     p=(AutoPoseSample){{1,0,.1f},UINT32_MAX-9,true};
     assert(auto_pose_to_map(p,(AutoPose){.2f,-.5f,1.5707963268f},10,50,&mapped));
@@ -102,6 +110,30 @@ int main(void) {
     AutoConfig bad=c; bad.brake_decel=0; assert(!auto_config_valid(&bad));
     bad=c; bad.wheel[2]=bad.wheel[1]; assert(!auto_config_valid(&bad));
     bad=c; bad.laser[0].yaw=NAN; assert(!auto_config_valid(&bad));
+    /* Endpoint-only rotation clearance misses the long front corner mid-turn. */
+    AutoEnvelope rotating={.25f,.10f,.10f,.10f};
+    const AutoVec2 forward={1,0};
+    assert(auto_envelope_support(rotating,forward)<.26f);
+    assert(auto_envelope_support(rotating,(AutoVec2){0,-1})<.26f);
+    assert(auto_envelope_swept_support(rotating,forward,1.5707963268f)>.26f);
+    NEAR(auto_envelope_swept_support(rotating,forward,1.5707963268f),hypotf(.25f,.10f));
+    NEAR(auto_envelope_swept_support(rotating,forward,0),.25f);
+    assert(isnan(auto_envelope_swept_support(rotating,forward,NAN)));
+    assert(isnan(auto_envelope_swept_support(rotating,(AutoVec2){0,0},1)));
+    for(unsigned shape=0;shape<2;shape++) {
+        AutoEnvelope body=shape?c.extended:c.stowed;
+        for(int sign=-1;sign<=1;sign+=2) {
+            const float sweep=sign*1.8f;
+            const AutoVec2 n={cosf(.3f),sinf(.3f)};
+            float bound=auto_envelope_swept_support(body,n,sweep), sampled=0;
+            for(unsigned k=0;k<=2000;k++) {
+                float support=auto_envelope_support(body,auto_rotate(n,-sweep*k/2000));
+                assert(support<=bound+.000002f); sampled=fmaxf(sampled,support);
+            }
+            NEAR(sampled,bound);
+            NEAR(auto_envelope_swept_support(body,n,sign*7.0f),hypotf(fmaxf(body.front,body.rear),fmaxf(body.left,body.right)));
+        }
+    }
     puts("AUTO_GEOMETRY_TEST_OK (four offsets, 55/65 gaps, yaw, extension, closing speed, validity, map pose and whole-body parking)");
     return 0;
 }

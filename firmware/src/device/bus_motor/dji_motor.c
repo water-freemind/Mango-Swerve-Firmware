@@ -1,6 +1,7 @@
 #include "dji_motor.h"
 
 #include <stdbool.h>
+#include <math.h>
 #include <string.h>
 
 // ! ========================= 变 量 声 明 ========================= ! //
@@ -44,10 +45,13 @@ typedef struct {
     int16_t rpm;
     int16_t current;
     uint8_t temperature;
-    int32_t total_tick;
+    int64_t total_tick;
     float target_speed;
     bool has_feedback;
     bool angle_initialized;
+    bool control_clock_valid;
+    uint32_t control_ms;
+    uint32_t feedback_ms;
     BusMotorFeedback feedback;
     DjiMotorPid speed_pid;
 } DjiMotorSlot;
@@ -73,6 +77,7 @@ static DjiMotorSlot s_slots[DJI_MOTOR_MAX_ID];
 static uint8_t s_pending_current_mask = 0u;
 static DjiMotorModel s_model = DJI_MOTOR_MODEL_M2006;
 static const DjiMotorModelParams* s_active_model_params = 0;
+static uint32_t s_feedback_timeout_ms = DJI_MOTOR_FEEDBACK_TIMEOUT_MS;
 
 // ! ========================= 私 有 函 数 声 明 ========================= ! //
 
@@ -102,7 +107,11 @@ static void dji_motor_reset_slot(DjiMotorSlot* slot,
                                  uint16_t id,
                                  const DjiMotorModelParams* model_params);
 static BusMotorStatus dji_motor_send_all_current(void);
-static void dji_motor_update_pid(DjiMotorSlot* slot);
+static BusMotorStatus dji_motor_update_pid(DjiMotorSlot* slot, uint32_t now_ms);
+static void dji_motor_reset_control(DjiMotorSlot* slot);
+static void dji_motor_clear_currents(void);
+static BusMotorStatus dji_motor_fail(BusMotorStatus status);
+static BusMotorStatus dji_motor_feedback_status(const DjiMotorSlot* slot);
 static float dji_motor_limit(float value, float limit);
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
@@ -135,12 +144,12 @@ static BusMotorStatus dji_motor_init(const BusMotorConfig* config) {
     const DjiMotorModelParams* model_params;
     DjiMotorModel model;
     uint16_t id;
+    bool cleared = true;
 
-    if(config == 0 || config->ops == 0) {
-        return MOTOR_STATUS_INVALID_PARAM;
-    }
-    if(config->ops->send == 0) {
-        return MOTOR_STATUS_PORT_ERROR;
+    if(dji_motor_is_ready()) {
+        const uint8_t zeros[DJI_MOTOR_CMD_LEN] = {0};
+        dji_motor_clear_currents();
+        cleared = s_ops->send(DJI_MOTOR_CTRL_FRAME_ID, zeros, DJI_MOTOR_CMD_LEN);
     }
 
     s_ops = 0;
@@ -148,6 +157,15 @@ static BusMotorStatus dji_motor_init(const BusMotorConfig* config) {
     s_pending_current_mask = 0u;
     s_model = DJI_MOTOR_MODEL_M2006;
     s_active_model_params = 0;
+    if(!cleared) return MOTOR_STATUS_PORT_ERROR;
+
+    if(config == 0 || config->ops == 0 || config->timeout_ms > 1000u) {
+        return MOTOR_STATUS_INVALID_PARAM;
+    }
+    if(config->ops->send == 0 || config->ops->now_ms == 0) {
+        return MOTOR_STATUS_PORT_ERROR;
+    }
+    s_feedback_timeout_ms = config->timeout_ms != 0u ? config->timeout_ms : DJI_MOTOR_FEEDBACK_TIMEOUT_MS;
 
     driver_config = (const DjiMotorConfig*)config->driver_config;
     if(driver_config != 0) {
@@ -232,8 +250,7 @@ static BusMotorStatus dji_motor_disable(uint16_t id) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->target_speed = 0.0f;
-    slot->speed_pid.output = 0.0f;
+    dji_motor_reset_control(slot);
     return dji_motor_send_all_current();
 }
 
@@ -272,6 +289,8 @@ static BusMotorStatus dji_motor_set_pos(uint16_t id, float position) {
  */
 static BusMotorStatus dji_motor_set_spd(uint16_t id, float speed) {
     DjiMotorSlot* slot;
+    BusMotorStatus status;
+    uint32_t now_ms;
 
     if(dji_motor_is_ready() == false) {
         return MOTOR_STATUS_NOT_INITIALIZE;
@@ -279,11 +298,18 @@ static BusMotorStatus dji_motor_set_spd(uint16_t id, float speed) {
 
     slot = dji_motor_get_slot(id);
     if(slot == 0) {
-        return MOTOR_STATUS_INVALID_PARAM;
+        return dji_motor_fail(MOTOR_STATUS_INVALID_PARAM);
     }
-
+    /* Bound at the signed rotor-rpm feedback representation, not a claim about
+     * rated mechanical speed. Check before the multiplication or integer cast. */
+    if(!isfinite(speed) || fabsf(speed) > 32767.0f / (s_active_model_params->reduction_ratio * DJI_MOTOR_RAD_S_TO_RPM))
+        return dji_motor_fail(MOTOR_STATUS_INVALID_PARAM);
+    status = dji_motor_feedback_status(slot);
+    if(status != MOTOR_STATUS_OK) return dji_motor_fail(status);
+    now_ms = s_ops->now_ms();
     slot->target_speed = speed;
-    dji_motor_update_pid(slot);
+    status = dji_motor_update_pid(slot, now_ms);
+    if(status != MOTOR_STATUS_OK) return dji_motor_fail(status);
     s_pending_current_mask |= (uint8_t)(1u << (id - 1u));
     if(s_pending_current_mask != ((1u << DJI_MOTOR_MAX_ID) - 1u)) {
         return MOTOR_STATUS_OK;
@@ -330,8 +356,8 @@ static BusMotorStatus dji_motor_set_pd(uint16_t id, float kp, float kd) {
     }
 
     slot = dji_motor_get_slot(id);
-    if(slot == 0) {
-        return MOTOR_STATUS_INVALID_PARAM;
+    if(slot == 0 || !isfinite(kp) || !isfinite(kd) || kp < 0.0f || kd < 0.0f) {
+        return dji_motor_fail(MOTOR_STATUS_INVALID_PARAM);
     }
 
     slot->speed_pid.kp = kp;
@@ -344,6 +370,9 @@ static BusMotorStatus dji_motor_set_pd(uint16_t id, float kp, float kd) {
  */
 static BusMotorStatus dji_motor_update_feedback(uint16_t id, BusMotorFeedback* feedback) {
     const DjiMotorSlot* slot;
+    BusMotorStatus status;
+
+    if(feedback != 0) memset(feedback, 0, sizeof(*feedback));
 
     if(dji_motor_is_ready() == false) {
         return MOTOR_STATUS_NOT_INITIALIZE;
@@ -353,9 +382,8 @@ static BusMotorStatus dji_motor_update_feedback(uint16_t id, BusMotorFeedback* f
     if(slot == 0) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
-    if(slot->has_feedback == false) {
-        return MOTOR_STATUS_NO_FEEDBACK;
-    }
+    status = dji_motor_feedback_status(slot);
+    if(status != MOTOR_STATUS_OK) return status;
 
     if(feedback != 0) {
         *feedback = slot->feedback;
@@ -370,7 +398,7 @@ static BusMotorStatus dji_motor_update_feedback(uint16_t id, BusMotorFeedback* f
 static float dji_motor_get_pos(uint16_t id) {
     const DjiMotorSlot* slot = dji_motor_get_slot_const(id);
 
-    if(slot == 0 || slot->has_feedback == false) {
+    if(!dji_motor_is_ready() || slot == 0 || dji_motor_feedback_status(slot) != MOTOR_STATUS_OK) {
         return 0.0f;
     }
 
@@ -383,7 +411,7 @@ static float dji_motor_get_pos(uint16_t id) {
 static float dji_motor_get_spd(uint16_t id) {
     const DjiMotorSlot* slot = dji_motor_get_slot_const(id);
 
-    if(slot == 0 || slot->has_feedback == false) {
+    if(!dji_motor_is_ready() || slot == 0 || dji_motor_feedback_status(slot) != MOTOR_STATUS_OK) {
         return 0.0f;
     }
 
@@ -396,7 +424,7 @@ static float dji_motor_get_spd(uint16_t id) {
 static float dji_motor_get_tor(uint16_t id) {
     const DjiMotorSlot* slot = dji_motor_get_slot_const(id);
 
-    if(slot == 0 || slot->has_feedback == false) {
+    if(!dji_motor_is_ready() || slot == 0 || dji_motor_feedback_status(slot) != MOTOR_STATUS_OK) {
         return 0.0f;
     }
 
@@ -407,6 +435,13 @@ static float dji_motor_get_tor(uint16_t id) {
  * @brief 停止 DJI 电机
  */
 static BusMotorStatus dji_motor_stop(uint16_t id) {
+    DjiMotorSlot* slot;
+    if(!dji_motor_is_ready()) return MOTOR_STATUS_NOT_INITIALIZE;
+    slot = dji_motor_get_slot(id);
+    if(slot == 0) return dji_motor_fail(MOTOR_STATUS_INVALID_PARAM);
+    dji_motor_reset_control(slot);
+    if(dji_motor_feedback_status(slot) != MOTOR_STATUS_OK)
+        return dji_motor_send_all_current();
     return dji_motor_set_spd(id, 0.0f);
 }
 
@@ -414,7 +449,7 @@ static BusMotorStatus dji_motor_stop(uint16_t id) {
  * @brief 制动 DJI 电机
  */
 static BusMotorStatus dji_motor_brake(uint16_t id) {
-    return dji_motor_set_spd(id, 0.0f);
+    return dji_motor_stop(id);
 }
 
 /**
@@ -446,6 +481,10 @@ BusMotorStatus dji_motor_parse_feedback_frame(uint32_t frame_id,
     }
 
     slot->angle = (uint16_t)(((uint16_t)data[0] << 8) | data[1]);
+    if(slot->angle >= DJI_MOTOR_ENCODER_RANGE) {
+        slot->has_feedback = false;
+        return MOTOR_STATUS_INVALID_PARAM;
+    }
     slot->rpm = (int16_t)(((uint16_t)data[2] << 8) | data[3]);
     slot->current = (int16_t)(((uint16_t)data[4] << 8) | data[5]);
     slot->temperature = data[6];
@@ -475,6 +514,7 @@ BusMotorStatus dji_motor_parse_feedback_frame(uint32_t frame_id,
         ((float)slot->rpm * DJI_MOTOR_RPM_TO_RAD_S) / reduction_ratio;
     slot->feedback.torque = (float)slot->current;
     slot->has_feedback = true;
+    slot->feedback_ms = s_ops->now_ms();
 
     if(feedback != 0) {
         *feedback = slot->feedback;
@@ -563,12 +603,15 @@ static BusMotorStatus dji_motor_send_all_current(void) {
     }
 
     for(i = 0u; i < DJI_MOTOR_MAX_ID; ++i) {
+        if(!isfinite(s_slots[i].speed_pid.output) || fabsf(s_slots[i].speed_pid.output) > s_active_model_params->max_current_command)
+            return dji_motor_fail(MOTOR_STATUS_INVALID_PARAM);
         int16_t current = (int16_t)s_slots[i].speed_pid.output;
         data[i * 2u] = (uint8_t)(((uint16_t)current >> 8) & 0xFFu);
         data[i * 2u + 1u] = (uint8_t)((uint16_t)current & 0xFFu);
     }
 
     if(s_ops->send(DJI_MOTOR_CTRL_FRAME_ID, data, DJI_MOTOR_CMD_LEN) == false) {
+        dji_motor_clear_currents();
         return MOTOR_STATUS_PORT_ERROR;
     }
 
@@ -576,23 +619,64 @@ static BusMotorStatus dji_motor_send_all_current(void) {
     return MOTOR_STATUS_OK;
 }
 
-static void dji_motor_update_pid(DjiMotorSlot* slot) {
+static BusMotorStatus dji_motor_update_pid(DjiMotorSlot* slot, uint32_t now_ms) {
     DjiMotorPid* pid;
     float target_rpm;
     float reduction_ratio;
 
-    if(slot == 0 || s_active_model_params == 0) {
-        return;
-    }
+    const uint32_t elapsed_ms = slot->control_clock_valid ? now_ms - slot->control_ms : DJI_MOTOR_PID_REFERENCE_MS;
+    float scale, integral, derivative, output;
+    if(elapsed_ms > DJI_MOTOR_CONTROL_MAX_GAP_MS) return MOTOR_STATUS_TIMEOUT;
+    scale = (float)elapsed_ms / (float)DJI_MOTOR_PID_REFERENCE_MS;
 
     pid = &slot->speed_pid;
     reduction_ratio = s_active_model_params->reduction_ratio;
     target_rpm = slot->target_speed * reduction_ratio * DJI_MOTOR_RAD_S_TO_RPM;
     pid->error = target_rpm - (float)slot->rpm;
-    pid->integral = dji_motor_limit(pid->integral + pid->error, pid->max_integral);
-    pid->output = pid->kp * pid->error + pid->ki * pid->integral + pid->kd * (pid->error - pid->last_error);
-    pid->output = dji_motor_limit(pid->output, pid->max_output);
+    integral = dji_motor_limit(pid->integral + pid->error * scale, pid->max_integral);
+    derivative = elapsed_ms != 0u ? (pid->error - pid->last_error) / scale : 0.0f;
+    output = pid->kp * pid->error + pid->ki * integral + pid->kd * derivative;
+    if(!isfinite(output)) return MOTOR_STATUS_INVALID_PARAM;
+    /* Do not accumulate further into current saturation. Allow unwinding. */
+    if((output > pid->max_output && pid->error > 0.0f) || (output < -pid->max_output && pid->error < 0.0f)) {
+        integral = pid->integral;
+        output = pid->kp * pid->error + pid->ki * integral + pid->kd * derivative;
+    }
+    pid->integral = integral;
+    pid->output = dji_motor_limit(output, pid->max_output);
     pid->last_error = pid->error;
+    slot->control_ms = now_ms;
+    slot->control_clock_valid = true;
+    return MOTOR_STATUS_OK;
+}
+
+static BusMotorStatus dji_motor_feedback_status(const DjiMotorSlot* slot) {
+    if(!slot->has_feedback) return MOTOR_STATUS_NO_FEEDBACK;
+    /* Capture the received timestamp BEFORE polling the clock: a CAN interrupt
+     * arriving after a caller's older 'now' must not look billions of ms old. */
+    const uint32_t stamp = slot->feedback_ms;
+    const uint32_t now_ms = s_ops->now_ms();
+    if(now_ms - stamp > s_feedback_timeout_ms) return MOTOR_STATUS_TIMEOUT;
+    return MOTOR_STATUS_OK;
+}
+
+static void dji_motor_reset_control(DjiMotorSlot* slot) {
+    slot->target_speed = 0.0f;
+    slot->speed_pid.error = slot->speed_pid.last_error = slot->speed_pid.integral = slot->speed_pid.output = 0.0f;
+    slot->control_clock_valid = false;
+}
+
+static void dji_motor_clear_currents(void) {
+    for(uint16_t i=0; i<DJI_MOTOR_MAX_ID; ++i) dji_motor_reset_control(&s_slots[i]);
+    s_pending_current_mask = 0u;
+}
+
+static BusMotorStatus dji_motor_fail(BusMotorStatus status) {
+    const uint8_t zeros[DJI_MOTOR_CMD_LEN] = {0};
+    dji_motor_clear_currents();
+    /* Attempt a complete zero frame; never flush partially updated targets. */
+    if(!s_ops->send(DJI_MOTOR_CTRL_FRAME_ID, zeros, DJI_MOTOR_CMD_LEN)) return MOTOR_STATUS_PORT_ERROR;
+    return status;
 }
 
 static float dji_motor_limit(float value, float limit) {

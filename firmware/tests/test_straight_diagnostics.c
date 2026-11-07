@@ -5,6 +5,8 @@ typedef struct { unsigned unused; } UART_HandleTypeDef;
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#undef assert
+#define assert(x) do { if(!(x)) { fprintf(stderr,"CHECK_FAILED %s:%d: %s\n",__FILE__,__LINE__,#x); exit(1); } } while(0)
 
 uint32_t g_test_tick_ms;
 static uint32_t fake_us;
@@ -15,6 +17,7 @@ static uint16_t fake_swc = 1500u, fake_ry = 1500u, fake_lx = 1500u;
 static uint16_t fake_swb = 1500u, fake_rx = 1500u;
 static float fake_wheel_speed;
 static bool fake_drive_gate = true;
+void chassis_reset_control_history(void) {}
 bool chassis_drive_output_allowed(void) { return fake_drive_gate; }
 static DriveVelocity last_velocity;
 static unsigned sample_reads;
@@ -22,6 +25,7 @@ static unsigned motor_stop_calls;
 static unsigned chassis_process_calls;
 static float fake_yaw;
 static char last_line[1024];
+static FILE* trace_test_log;
 FDCAN_HandleTypeDef hfdcan1, hfdcan2, hfdcan3;
 UART_HandleTypeDef huart1;
 static ChassisErrorCode fake_set_velocity(float vx, float vy, float wz) {
@@ -96,7 +100,7 @@ static float fake_position(uint16_t id) { return zeros[id - 1u]; }
 static float fake_current(uint16_t id) { (void)id; return -16384.0f; }
 static BusMotorStatus fake_motor_stop(uint16_t id) { (void)id; ++motor_stop_calls; return MOTOR_STATUS_OK; }
 static BusMotorStatus fake_feedback(uint16_t id, BusMotorFeedback* f) {
-    (void)id; *f = (BusMotorFeedback){.position = 0.0f}; return MOTOR_STATUS_OK;
+    *f = (BusMotorFeedback){.position = zeros[id-1u], .speed = fake_wheel_speed}; return MOTOR_STATUS_OK;
 }
 static const BusMotorInterface fake_motor = {.get_spd = fake_speed, .get_pos = fake_position,
     .get_tor = fake_current, .stop = fake_motor_stop, .brake = fake_motor_stop,
@@ -119,6 +123,7 @@ LogStatus log_info(const char* fmt, ...) {
     va_start(args, fmt);
     const int n = vsnprintf(last_line, sizeof(last_line), fmt, args);
     va_end(args);
+    if(trace_test_log && !strncmp(last_line,"TEST_TRACE",10)) fprintf(trace_test_log,"[INFO] %s\n",last_line);
     if(n < 0 || (unsigned)n + 18u >= LOG_BUFFER_SIZE) {
         fprintf(stderr, "Log exceeds production buffer (%d) %s\n", n, last_line);
         assert(0);
@@ -204,7 +209,8 @@ static void check_manual_ramp_scheduler(void) {
         assert(control_source.manual_armed && manual_velocity.vx == 0);
         fake_ry = 2000u;
         for(unsigned i = 0; i < 100; ++i) loop_at(now += 10u);
-        assert(fabsf(manual_velocity.vx - 0.2f) < 0.00001f && manual_target.vx == 1.5f);
+        /* 0.25 s jerk ramp to 0.2 m/s^2, then 0.75 s constant acceleration. */
+        assert(fabsf(manual_velocity.vx - 0.175f) < 0.00001f && manual_target.vx == 1.5f);
         assert(!chassis_yaw_hold_is_active() && manual_velocity.wz == 0);
         fake_drive_gate = false;
         for(unsigned i = 0; i < 20; ++i) {
@@ -234,11 +240,11 @@ static void check_manual_ramp_scheduler(void) {
         fake_swd = 2000u; loop_at(now += 10u);
         assert(control_source.manual_armed && manual_velocity.vx == 0);
         fake_ry = 2000u; loop_at(now += 10u);
-        assert(fabsf(manual_velocity.vx - 0.002f) < 0.000001f);
+        assert(fabsf(manual_velocity.vx - 0.00004f) < 0.000001f);
         /* Reverse waits for actual wheel-stop feedback after output reaches zero. */
         fake_wheel_speed = 0.5f; fake_ry = 1000u;
-        for(unsigned i = 0; i < 20; ++i) { loop_at(now += 10u); assert(manual_velocity.vx == 0); }
-        assert(manual_ramp.reversing);
+        for(unsigned i = 0; i < 20; ++i) { loop_at(now += 10u); assert(manual_velocity.vx >= 0); }
+        assert(manual_velocity.vx == 0 && manual_ramp.reversing);
         fake_wheel_speed = 0; loop_at(now += 10u);
         assert(manual_velocity.vx == 0 && !manual_ramp.reversing);
         loop_at(now += 10u); assert(manual_velocity.vx < 0);
@@ -246,6 +252,45 @@ static void check_manual_ramp_scheduler(void) {
         now += 100u;
     }
     puts("MANUAL_RAMP_SCHEDULER_TEST_OK (full throttle, stick-only yaw, SWD/VRB/RC/source/CAN/timing/STOP immediate reset, re-arm and feedback-gated reverse)");
+}
+static void check_trace_adapter(void) {
+    chassis_trace_init(&trace);
+    trace_recording=true;trace_dumping=trace_was_active=false;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_MANUAL,.manual_armed=true};
+    test.phase=ST_FAULT; /* A cancelled HOST task must not freeze MANUAL trace. */
+    tx_fault=rx_fault=false;blockers=0;rc_online=true;
+    manual_target=manual_velocity=(DriveVelocity){.1f,0,0};
+    StraightInput in={.healthy=true,.stationary=false};
+    for(unsigned i=0;i<CHASSIS_TRACE_CAPACITY+3u;i++) {
+        trace_sensor=(ChassisTraceSample){.t_ms=i*20u,.steer_valid_mask=15,.drive_valid_mask=15,.imu_valid=1};
+        trace_capture(in);
+    }
+    assert(trace_recording && trace.count==CHASSIS_TRACE_CAPACITY && trace.overwritten==3);
+    const unsigned motor_before=motor_stop_calls;
+    receive_command("TRACE STOP\n",20000u,in);
+    assert(!trace_recording && control_source.manual_armed && motor_stop_calls==motor_before);
+    receive_command("TRACE START\n",20001u,in);assert(trace_recording);
+    manual_target=manual_velocity=(DriveVelocity){0};in.stationary=true;
+    trace_sensor.t_ms+=20; trace_capture(in);
+    assert(!trace_recording && control_source.manual_armed); /* ordinary release freezes even with permit on */
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_STOP};test.phase=ST_IDLE;
+    rc_state.manual_request=false;
+    rc_state.rc_data.channel[REMOTE_CH_SWD]=1500;
+    receive_command("TRACE DUMP\n",20002u,in);assert(!trace_dumping);
+    rc_state.rc_data.channel[REMOTE_CH_SWD]=1000;rc_online=false;
+    receive_command("TRACE DUMP\n",20003u,in);assert(!trace_dumping);
+    rc_online=true;
+    const char* path=getenv("MANGO_TRACE_EXPORT");
+    if(path) {trace_test_log=fopen(path,"w");assert(trace_test_log);}
+    receive_command("TRACE DUMP\n",20004u,in);assert(trace_dumping);
+    for(unsigned i=0;i<6000 && trace_dumping;i++) trace_export(20020u+i*20u,in);
+    assert(!trace_dumping && trace_dump_sent==CHASSIS_TRACE_CAPACITY);
+    if(trace_test_log) {fclose(trace_test_log);trace_test_log=NULL;}
+    assert(motor_stop_calls==motor_before);
+    receive_command("TRACE DUMP\n",20005u,in);assert(trace_dumping);
+    rc_state.rc_data.channel[REMOTE_CH_SWD]=2000;
+    trace_export(150000u,in);assert(!trace_dumping); /* permission change cancels output immediately */
+    puts("CHASSIS_TRACE_ADAPTER_OK scope, finite window, no motion, SWD/online gating, buffer bounds and export");
 }
 int main(void) {
     test.phase = ST_IDLE;
@@ -355,17 +400,18 @@ int main(void) {
     chassis_yaw_hold_set_target(fake_yaw); /* A stale HOST reference cannot affect manual. */
     fake_yaw += 0.2f;
     apply_manual(9010u, in);
-    assert(fabsf(last_velocity.vx - 0.002f) < 0.00001f && last_velocity.vy == 0.0f);
+    assert(fabsf(last_velocity.vx - 0.00004f) < 0.000001f && last_velocity.vy == 0.0f);
     assert(last_velocity.wz == 0.0f && !chassis_yaw_hold_is_active());
     fake_yaw -= 0.4f;
     apply_manual(9020u, in);
     assert(last_velocity.wz == 0.0f); /* Yaw/gyro drift cannot create a manual turn. */
     fake_lx = 2000u;
     in = input(9000u); apply_manual(9030u, in);
-    assert(fabsf(last_velocity.wz + 0.004f) < 0.00001f && !chassis_yaw_hold_is_active());
+    assert(fabsf(last_velocity.wz + 0.00008f) < 0.000001f && !chassis_yaw_hold_is_active());
     fake_lx = 1500u;
     in = input(9000u); apply_manual(9040u, in);
-    assert(last_velocity.wz == 0.0f);
+    /* Ordinary stick release cancels acceleration smoothly; it is not a protective stop. */
+    assert(last_velocity.wz <= 0.0f && last_velocity.wz > -0.0003f && !chassis_yaw_hold_is_active());
     /* Releasing VRB must stop motor output AND clear the cached velocity. */
     const unsigned before_stops = motor_stop_calls;
     fake_vrb = 1251u;
@@ -406,6 +452,7 @@ int main(void) {
     check_round_heading("ARM ROUND 1\n", 0.6f);
     check_round_heading("ARM WALL 1\n", -0.6f);
     check_manual_ramp_scheduler();
+    check_trace_adapter();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");

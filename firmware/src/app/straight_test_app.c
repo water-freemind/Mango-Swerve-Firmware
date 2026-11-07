@@ -15,6 +15,8 @@
 #include "remote.h"
 #include "drive_source.h"
 #include "manual_ramp.h"
+#include "chassis_profile.h"
+#include "chassis_trace.h"
 #include "work_link.h"
 #include "laser.h"
 #include "log.h"
@@ -39,6 +41,13 @@ static DriveSource control_source;
 static DriveVelocity manual_velocity;
 static DriveVelocity manual_target;
 static ManualRamp manual_ramp;
+static ChassisTrace trace;
+static ChassisTraceSample trace_sensor;
+static bool trace_recording, trace_was_active, trace_dumping, trace_header;
+static uint32_t trace_dump_sequence, trace_dump_end, trace_dump_sent, trace_last_export;
+static unsigned trace_chunk_offset;
+static char trace_row[CHASSIS_TRACE_CSV_CAPACITY];
+static const char* trace_stop_reason = "BOOT";
 static uint32_t last_manual_target;
 static uint32_t last_manual_process;
 
@@ -94,6 +103,7 @@ static void stop_outputs(void) {
     /* Clear the cached chassis command as well as the physical motor outputs,
      * so the next owner cannot process the previous owner's velocity. */
     (void)chassis.set_velocity(0.0f, 0.0f, 0.0f);
+    chassis_reset_control_history();
     for(uint16_t id = 1u; id <= 4u; ++id) {
         BusMotorFeedback f;
         if(drive_motor.stop(id) != MOTOR_STATUS_OK) tx_fault = true;
@@ -151,6 +161,8 @@ static bool remote_permit(void) {
 static StraightInput input(uint32_t now) {
     StraightInput in = {.healthy = true, .stationary = true, .vx_mps = 0.0f};
     uint32_t stamp[8];
+    BusMotorFeedback steer_sample[4], drive_sample[4];
+    BusMotorStatus steer_status[4], drive_status[4];
     blockers = 0u;
     const uint32_t key = __get_PRIMASK();
     __disable_irq();
@@ -159,10 +171,17 @@ static StraightInput input(uint32_t now) {
     for(unsigned i = 0u; i < 8u; ++i) stamp[i] = motor_ms[i];
     for(unsigned i = 0u; i < 4u; ++i)
         if(motor_state[i] == 1u) enabled_mask |= (uint8_t)(1u << i);
+    /* Cache-only reads: keep value/status pairs with their CAN receipt stamps.
+     * No SPI, CAN transmit, formatting or floating-point trigonometry here. */
+    for(unsigned i=0u;i<4u;++i) {
+        steer_status[i]=steer_motor.update_feedback((uint16_t)(i+1u),&steer_sample[i]);
+        drive_status[i]=drive_motor.update_feedback((uint16_t)(i+1u),&drive_sample[i]);
+    }
     __set_PRIMASK(key);
     /* Read time after copying stamps: an RX interrupt during SPI work may be
      * newer than the loop's original 'now', which must not underflow its age. */
     now = HAL_GetTick();
+    trace_sensor = (ChassisTraceSample){.t_ms = now};
     for(unsigned i = 0u; i < 8u; ++i) motor_age[i] = now - stamp[i];
     for(unsigned i = 0u; i < 8u; ++i)
         if(!(feedback_seen & (1u << i)) || motor_age[i] > 100u)
@@ -178,8 +197,16 @@ static StraightInput input(uint32_t now) {
     if(!imu_debug_valid || !imu_debug.calibrated || !imu_debug.has_angle) blockers |= BLOCK_IMU_CAL;
     for(uint16_t id = 1u; id <= 4u; ++id) {
         const float sign = (id == 2u || id == 3u) ? -1.0f : 1.0f;
-        const float speed = drive_motor.get_spd(id);
-        const float angle = steer_motor.get_pos(id) - zeros[id - 1u];
+        const float speed = drive_status[id-1u] == MOTOR_STATUS_OK ? drive_sample[id-1u].speed : NAN;
+        const float angle = steer_status[id-1u] == MOTOR_STATUS_OK ? steer_sample[id-1u].position - zeros[id-1u] : NAN;
+        trace_sensor.wheel_rad_s[id-1u] = sign * speed;
+        trace_sensor.steer_rad[id-1u] = angle;
+        trace_sensor.steer_age_ms[id-1u] = (uint16_t)(motor_age[id-1u] > 65535u ? 65535u : motor_age[id-1u]);
+        trace_sensor.drive_age_ms[id-1u] = (uint16_t)(motor_age[id+3u] > 65535u ? 65535u : motor_age[id+3u]);
+        if((feedback_seen & (1u << (id-1u))) && motor_age[id-1u] <= 100u && isfinite(angle))
+            trace_sensor.steer_valid_mask |= (uint8_t)(1u << (id-1u));
+        if((feedback_seen & (1u << (id+3u))) && motor_age[id+3u] <= 100u && isfinite(speed))
+            trace_sensor.drive_valid_mask |= (uint8_t)(1u << (id-1u));
         if(!isfinite(speed) || !isfinite(angle)) blockers |= BLOCK_NONFINITE;
         in.stationary = in.stationary && fabsf(speed) < 0.05f;
         in.vx_mps += sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * cosf(angle) * 0.25f;
@@ -187,6 +214,11 @@ static StraightInput input(uint32_t now) {
     }
     const ImuAngle attitude = imu.get_angle();
     const ImuGyro gyro = imu_get_gyro_corrected();
+    trace_sensor.yaw_rad = attitude.yaw;
+    trace_sensor.gyro_z_rad_s = gyro.z;
+    trace_sensor.imu_age_us = imu_age_us;
+    trace_sensor.imu_valid = imu_debug_valid && imu_debug.calibrated && imu_debug.has_angle && imu_seen && imu_update_status == IMU_STATUS_OK &&
+        imu_age_us <= 100000u && isfinite(attitude.yaw) && isfinite(gyro.z);
     if(!isfinite(attitude.yaw) || !isfinite(gyro.z)) blockers |= BLOCK_NONFINITE;
     LaserSnapshot laser = {0};
     if(laser_get_snapshot(&laser)) {
@@ -200,6 +232,105 @@ static StraightInput input(uint32_t now) {
     }
     in.healthy = blockers == 0u;
     return in;
+}
+static bool trace_safe_to_export(StraightInput in) {
+    const unsigned swd = rc_state.rc_data.channel[REMOTE_CH_SWD];
+    return in.stationary && rc_online && swd >= 900u && swd <= 1100u &&
+        !control_source.manual_armed && !rc_state.manual_request &&
+        (blockers & (BLOCK_STEER_RX | BLOCK_DRIVE_RX | BLOCK_NONFINITE)) == 0u &&
+        test.phase != ST_RUNNING && test.phase != ST_ARMED && test.phase != ST_STOPPING;
+}
+static void trace_capture(StraightInput in) {
+    const bool manual_motion = control_source.mode == DRIVE_SOURCE_MANUAL &&
+        (manual_target.vx != 0 || manual_target.vy != 0 || manual_target.wz != 0 ||
+         manual_velocity.vx != 0 || manual_velocity.vy != 0 || manual_velocity.wz != 0);
+    const bool active = manual_motion || !in.stationary || test.phase == ST_RUNNING || test.phase == ST_STOPPING;
+    if(trace_recording && !trace_dumping) {
+        ChassisTraceSample s = trace_sensor;
+        s.mode = (uint8_t)control_source.mode;
+        s.permitted = (uint8_t)(control_source.manual_armed || (control_source.mode == DRIVE_SOURCE_HOST && rc_switches && rc_online));
+        s.blocker = blockers;
+        s.fault = (control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_FAULT ? 1u : 0u) |
+            (tx_fault ? 2u : 0u) | (control_source.mode == DRIVE_SOURCE_HOST && rx_fault ? 4u : 0u);
+        s.control_dt_ms = (uint16_t)(control_dt_ms > 65535u ? 65535u : control_dt_ms);
+        if(control_source.mode == DRIVE_SOURCE_MANUAL) {
+            s.target[0]=manual_target.vx; s.target[1]=manual_target.vy; s.target[2]=manual_target.wz;
+            s.limited[0]=manual_velocity.vx; s.limited[1]=manual_velocity.vy; s.limited[2]=manual_velocity.wz;
+        } else if(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
+            s.target[0]=s.limited[0]=test.speed_mps;
+            s.target[1]=s.limited[1]=test.lateral_mps;
+            s.target[2]=0.0f; s.limited[2]=chassis_yaw_hold_get_output_wz();
+        }
+        (void)chassis_trace_push(&trace,&s);
+        if(trace_was_active && (!active || s.fault)) {
+            trace_recording=false;
+            trace_stop_reason = control_source.mode == DRIVE_SOURCE_HOST &&
+                (test.phase == ST_FAULT || test.phase == ST_DONE) ? test.result : "MANUAL_RELEASE";
+            log_info("TEST_TRACE_STATE recording=0 reason=%s count=%lu",trace_stop_reason,(unsigned long)trace.count);
+        }
+    }
+    trace_was_active=active;
+}
+static void trace_command(const char* cmd, StraightInput in) {
+    if(!strcmp(cmd,"TRACE START") && !trace_dumping) {
+        trace_recording=true; trace_stop_reason="CAPTURE_RUNNING";
+    } else if(!strcmp(cmd,"TRACE STOP")) {
+        trace_recording=false; trace_stop_reason="CAPTURE_STOP";
+    } else if(!strcmp(cmd,"TRACE CLEAR") && trace_safe_to_export(in) && !trace_dumping) {
+        chassis_trace_init(&trace); trace_stop_reason="CLEARED";
+    } else if(!strcmp(cmd,"TRACE DUMP") && trace_safe_to_export(in) && !trace_dumping) {
+        trace_recording=false; trace_dumping=true; trace_header=true;
+        trace_dump_sequence=chassis_trace_oldest(&trace); trace_dump_end=trace.next_sequence;
+        trace_dump_sent=0; trace_chunk_offset=0; trace_row[0]='\0';
+        log_info("TEST_TRACE_META expected_count=%lu first=%lu next=%lu overwritten=%lu reason=%s",
+            (unsigned long)trace.count,(unsigned long)trace_dump_sequence,(unsigned long)trace_dump_end,
+            (unsigned long)trace.overwritten,trace_stop_reason);
+    } else {
+        log_info("TEST_TRACE_STATE rejected=INVALID_BUSY_OR_NOT_STOPPED require=SWD_OFF_FRESH_STATIONARY");
+        return;
+    }
+    log_info("TEST_TRACE_STATE recording=%u dumping=%u count=%lu reason=%s motor_command=NONE",
+        (unsigned)trace_recording,(unsigned)trace_dumping,(unsigned long)trace.count,trace_stop_reason);
+}
+static void trace_export(uint32_t now,StraightInput in) {
+    if(!trace_dumping) return;
+    if(!trace_safe_to_export(in)) {
+        trace_dumping=false;
+        log_info("TEST_TRACE_STATE rejected=EXPORT_CANCELLED_NOT_STOPPED");
+        return;
+    }
+    if(now-trace_last_export<20u) return;
+    trace_last_export=now;
+    if(trace_row[0]=='\0') {
+        if(trace_header) {
+            const char* header=chassis_trace_csv_header();
+            if(strlen(header)>=sizeof(trace_row)) {trace_dumping=false;return;}
+            strcpy(trace_row,header);
+        } else if(trace_dump_sequence==trace_dump_end) {
+            trace_dumping=false;
+            log_info("TEST_TRACE_END sent_count=%lu",(unsigned long)trace_dump_sent);
+            return;
+        } else {
+            ChassisTraceSample sample;
+            const ChassisProfile* profile=chassis_profile_for_mode(APP_RUN_MODE);
+            if(!profile || !chassis_trace_get(&trace,trace_dump_sequence,&sample) ||
+               !chassis_trace_csv_row(&sample,&profile->model,trace_row,sizeof(trace_row))) {
+                trace_dumping=false; log_info("TEST_TRACE_STATE rejected=EXPORT_FORMAT_OR_DATA"); return;
+            }
+        }
+    }
+    const unsigned length=(unsigned)strlen(trace_row), total=(length+149u)/150u;
+    const unsigned part=trace_chunk_offset/150u+1u;
+    const unsigned size=length-trace_chunk_offset>150u ? 150u : length-trace_chunk_offset;
+    char chunk[151]; memcpy(chunk,trace_row+trace_chunk_offset,size);chunk[size]='\0';
+    if(trace_header) log_info("TEST_TRACE seq=HEADER part=%u total=%u data=%s",part,total,chunk);
+    else log_info("TEST_TRACE seq=%lu part=%u total=%u data=%s",(unsigned long)trace_dump_sequence,part,total,chunk);
+    trace_chunk_offset+=size;
+    if(trace_chunk_offset>=length) {
+        trace_row[0]='\0';trace_chunk_offset=0;
+        if(trace_header) trace_header=false;
+        else {++trace_dump_sequence;++trace_dump_sent;}
+    }
 }
 static void commands(uint32_t now, StraightInput in) {
     if(rx_fault) {
@@ -218,6 +349,9 @@ static void commands(uint32_t now, StraightInput in) {
         if(ch == '\r' || ch == '\n') {
             if(line_len == 0u) continue;
             line[line_len] = '\0';
+            if(!strncmp(line,"TRACE ",6u)) {
+                trace_command(line,in); line_len=0u; continue;
+            }
             const StraightPhase before = test.phase;
             bool ok;
             if(!strcmp(line, "STOP")) {
@@ -446,6 +580,9 @@ static void log_plan(StraightInput in) {
 }
 void straight_test_app_init(void) {
     initialized = false;
+    chassis_trace_init(&trace);
+    trace_recording=true;trace_dumping=trace_was_active=false;
+    trace_stop_reason="BOOT";
     control_source = (DriveSource){0};
     (void)assemble_delay();
     if(assemble_log() != SYSTEM_STATUS_OK) return;
@@ -478,6 +615,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
     log_info("TEST_READY manual_ramp linear_accel=0.20 linear_decel=0.30 angular_accel=0.40 angular_decel=0.60 unverified=1 reverse_wait=wheel_stop");
+    log_info("TEST_READY manual_jerk linear=0.80 angular=1.60 target_lateral_budget=0.30 transient_budget_not_guaranteed=1");
 }
 void straight_test_app_loop(void) {
     const uint32_t now = HAL_GetTick();
@@ -511,7 +649,7 @@ void straight_test_app_loop(void) {
         else if(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
-            const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, 0.01f);
+            const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, (float)control_dt_ms * 0.001f);
             if(chassis.set_velocity(test.speed_mps, test.lateral_mps, wz) != chassis.OK || chassis.process() != chassis.OK)
                 straight_fault(&test, "CHASSIS_CONTROL");
         } else if(!(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg == ST_LEG_WAIT)) {
@@ -541,6 +679,8 @@ void straight_test_app_loop(void) {
         }
         last_manual_process = now;
     } else if(!control_source.manual_armed) last_manual_process = now;
+    trace_capture(in);
+    trace_export(now,in);
     if(now - last_log >= 100u) {
         last_log = now;
         const ImuAngle a = imu.get_angle();

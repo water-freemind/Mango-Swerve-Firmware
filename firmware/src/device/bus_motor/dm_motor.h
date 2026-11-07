@@ -45,6 +45,14 @@ typedef enum {
  */
 extern const BusMotorInterface dm_motor_instance;
 
+/* Numeric setters reject NaN/Inf before caching or serializing. MIT retains
+ * finite-value clamping; POS_VEL/SPEED retain their finite float wire values.
+ * POS_VEL_TOR requires speed*100 and torque*10000 to fit signed16. Mode changes
+ * validate existing targets for the new encoding and propagate transport errors.
+ * Invalid candidates send no frame and leave the last valid command unchanged.
+ * This driver does not invent an automatic disable/hold policy: callers must
+ * handle failures using their existing stop/permission latch. */
+
 // ! ========================= 接 口 函 数 声 明 ========================= ! //
 
 /**

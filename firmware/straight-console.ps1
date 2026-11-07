@@ -48,7 +48,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -182,6 +182,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
+        if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
         if (category == "CONTROL" || category == "RAMP") category = "HEALTH";
         if (tag.Groups[1].Value != "INFO" || category == "ACK" || category == "READY" || category == "INIT_FAILED") return true;
         if (category == "CAN") {
@@ -298,6 +299,9 @@ public sealed class VofaTestSession {
         string command = packet.Trim();
         if (command.IndexOf('\n') >= 0 || command.IndexOf('\r') >= 0) { report("rejected=BATCH_PACKET"); return false; }
         if (command == "UI STOP") { tx("STOP"); Clear(); report("stop_requested=1"); return true; }
+        if (Regex.IsMatch(command, @"^UI TRACE (START|STOP|CLEAR|DUMP)$")) {
+            tx(command.Substring(3)); report("capture_command=" + command.Substring(9) + " motor_command=NONE device_checks_dump_stop=1"); return true;
+        }
         if (command == "UI LOG QUIET" || command == "UI LOG DEFAULT" || command == "UI LOG ALL ON") {
             string preset = command == "UI LOG QUIET" ? "QUIET" : command == "UI LOG DEFAULT" ? "DEFAULT" : "ALL";
             LogPreset(preset);

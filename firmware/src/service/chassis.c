@@ -62,6 +62,11 @@
  * 需与 TIM6 触发周期保持一致
  */
 #define CHASSIS_CONTROL_PERIOD_S 0.002f
+#define CHASSIS_MAX_CONTROL_GAP_MS 50u
+/* Candidate hysteresis: acquisition is tighter; release never exceeds the old tolerance. */
+#define CHASSIS_DRIVE_ALIGN_ENTER_RAD 0.12f
+#define CHASSIS_LOW_SPEED_ENTER_MPS 0.0001f
+#define CHASSIS_LOW_SPEED_EXIT_MPS 0.00015f
 /**
  * @brief 判定转向目标明显变化的角度阈值
  *
@@ -188,6 +193,11 @@ static Chassis s_chassis = { 0 };
  * 避免直接暴露内部控制过程中的中间状态
  */
 static Chassis s_chassis_view = { 0 };
+static uint32_t s_process_tick;
+static bool s_process_clock_valid, s_alignment_acquired;
+static float s_process_dt = CHASSIS_CONTROL_PERIOD_S;
+static bool s_low_speed_hold[CHASSIS_MODULE_COUNT];
+static bool s_command_heading_valid[CHASSIS_MODULE_COUNT];
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
 static bool s_drive_output_allowed;
 bool chassis_drive_output_allowed(void) { return s_drive_output_allowed; }
@@ -564,6 +574,8 @@ ChassisErrorCode chassis_init(const ChassisConfig* config) {
     log_info("CHASSIS init begin");
 
     if(config_status != ch.OK) {
+        if(s_chassis.initialized) (void)chassis_stop();
+        s_chassis.initialized = false;
         log_error("CHASSIS config check failed: %s", chassis_error_code_to_str(config_status));
         return config_status;
     }
@@ -583,6 +595,9 @@ ChassisErrorCode chassis_init(const ChassisConfig* config) {
     s_chassis.brake_latched = false;
     s_chassis.steer_then_drive_enabled = true;
     s_chassis.initialized = false;
+    s_process_clock_valid = false;
+    s_alignment_acquired = false;
+    s_process_dt = CHASSIS_CONTROL_PERIOD_S;
     chassis_reset_steer_speed_profiles();
     s_steer_prepare_retry_countdown = 0u;
     s_drive_prepare_retry_countdown = 0u;
@@ -597,6 +612,8 @@ ChassisErrorCode chassis_init(const ChassisConfig* config) {
         s_module_fb[i].steer_abs_angle = 0.0f;
         s_module_fb[i].drive_omega = 0.0f;
         s_last_drive_inverted[i] = false;
+        s_low_speed_hold[i] = true;
+        s_command_heading_valid[i] = false;
     }
 
     if(steer_motor.init(&steer_config) != MOTOR_STATUS_OK) {
@@ -642,10 +659,18 @@ ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz) {
         return ch.NOT_INITIALIZED;
     }
 
+    if(!steer_wheel_twist_valid(vx, vy, wz)) {
+        (void)chassis_stop();
+        return ch.INVALID_PARAM;
+    }
     work_link_limit_velocity(&vx, &vy, &wz);
     s_chassis.brake_requested = false;
     s_chassis.brake_latched = false;
     wz_for_ik = wz - chassis_calc_yaw_bias_ext(vx, vy);
+    if(!steer_wheel_twist_valid(vx, vy, wz_for_ik)) {
+        (void)chassis_stop();
+        return ch.INVALID_PARAM;
+    }
     chassis_external_to_internal_twist(vx, vy, wz_for_ik, &s_chassis.kine.control.vx, &s_chassis.kine.control.vy, &s_chassis.kine.control.wz);
 
     return ch.OK;
@@ -677,6 +702,7 @@ ChassisErrorCode chassis_process(void) {
     uint8_t drive_missing_mask = 0u;
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
     bool drive_output_allowed = false;
+    const bool previous_drive_output_allowed = s_drive_output_allowed;
     s_drive_output_allowed = false;
 #endif
 
@@ -691,6 +717,31 @@ ChassisErrorCode chassis_process(void) {
     work_link_limit_velocity(&s_chassis.kine.control.vx,
                              &s_chassis.kine.control.vy,
                              &s_chassis.kine.control.wz);
+
+    if(!steer_wheel_twist_valid(s_chassis.kine.control.vx, s_chassis.kine.control.vy, s_chassis.kine.control.wz)) {
+        (void)chassis_stop();
+        return ch.INVALID_PARAM;
+    }
+    /* All hardware assemblies supply now_ms. Clockless host clients retain the
+     * explicit nominal 2ms contract; no guessed dt on invalid hardware clocks. */
+    s_process_dt = CHASSIS_CONTROL_PERIOD_S;
+    if(s_chassis.config.drive_ops->now_ms != NULL) {
+        const uint32_t now = s_chassis.config.drive_ops->now_ms();
+        const uint32_t elapsed = now - s_process_tick;
+        if(s_process_clock_valid && elapsed == 0u) {
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+            s_drive_output_allowed = previous_drive_output_allowed;
+#endif
+            return ch.OK;
+        }
+        if(s_process_clock_valid && elapsed > CHASSIS_MAX_CONTROL_GAP_MS) {
+            (void)chassis_stop();
+            return ch.CONTROL_TIMING;
+        }
+        if(s_process_clock_valid) s_process_dt = (float)elapsed * 0.001f;
+        s_process_tick = now;
+        s_process_clock_valid = true;
+    }
 
     for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
         const ChassisModuleMap* map = &s_module_map[i];
@@ -707,6 +758,7 @@ ChassisErrorCode chassis_process(void) {
 
     if(!chassis_maintain_motor_startup(steer_feedback_observed, steer_missing_mask,
                                        drive_feedback_observed, drive_missing_mask)) {
+        (void)chassis_stop(); /* Missing feedback must not retain an old speed. */
         s_chassis.kine.state.cur_vx = 0.0f;
         s_chassis.kine.state.cur_vy = 0.0f;
         s_chassis.kine.state.cur_wz = 0.0f;
@@ -719,6 +771,12 @@ ChassisErrorCode chassis_process(void) {
         float drive_omega = (float)map->drive_sign * drive_motor.get_spd(map->drive_id);
         float steer_abs_angle = steer_motor.get_pos(map->steer_id);
 
+        if(!isfinite(drive_omega) || !isfinite(steer_abs_angle) ||
+           fabsf(steer_abs_angle) > 1000000.0f || fabsf(drive_omega) > 1000000.0f) {
+            (void)chassis_stop();
+            return ch.FEEDBACK_INVALID;
+        }
+
         s_module_fb[map->module].drive_omega = drive_omega;
         s_module_fb[map->module].steer_abs_angle = steer_abs_angle;
         s_chassis.kine.state.cur_wheels[map->module].wheel_omega = chassis_drive_omega_to_wheel_omega(drive_omega);
@@ -726,6 +784,11 @@ ChassisErrorCode chassis_process(void) {
             chassis_wrap_pi(steer_abs_angle - s_chassis.config.steer_zero_rad[map->module]);
     }
 
+    /* Validate all measured wheel values before sending any new actuator output. */
+    if(swheel.fk(&s_chassis.kine) != swheel.OK) {
+        (void)chassis_stop();
+        return ch.KINEMATICS_FAILED;
+    }
     if(s_chassis.brake_requested) {
         chassis_set_brake_targets();
 
@@ -735,8 +798,12 @@ ChassisErrorCode chassis_process(void) {
                 float target_angle = s_module_cmd[map->module].steer_target_abs_angle;
                 float steer_speed = chassis_calc_steer_track_speed(map->module, target_angle);
 
-                (void)drive_motor.stop(map->drive_id);
-                (void)steer_motor.set_pos_vel(map->steer_id, target_angle, steer_speed);
+                const BusMotorStatus drive_status = drive_motor.stop(map->drive_id);
+                const BusMotorStatus steer_status = steer_motor.set_pos_vel(map->steer_id, target_angle, steer_speed);
+                if(drive_status != MOTOR_STATUS_OK || steer_status != MOTOR_STATUS_OK) {
+                    (void)chassis_stop();
+                    return ch.MOTOR_OUTPUT_FAILED;
+                }
             }
 
             if(chassis_brake_targets_reached()) {
@@ -748,8 +815,12 @@ ChassisErrorCode chassis_process(void) {
             for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
                 const ChassisModuleMap* map = &s_module_map[i];
 
-                (void)steer_motor.brake(map->steer_id);
-                (void)drive_motor.brake(map->drive_id);
+                const BusMotorStatus steer_status = steer_motor.brake(map->steer_id);
+                const BusMotorStatus drive_status = drive_motor.brake(map->drive_id);
+                if(steer_status != MOTOR_STATUS_OK || drive_status != MOTOR_STATUS_OK) {
+                    (void)chassis_stop();
+                    return ch.MOTOR_OUTPUT_FAILED;
+                }
             }
         }
 
@@ -764,6 +835,7 @@ ChassisErrorCode chassis_process(void) {
         bool drive_ready;
 
         if(swheel.ik(&s_chassis.kine) != swheel.OK) {
+            (void)chassis_stop();
             return ch.KINEMATICS_FAILED;
         }
 
@@ -784,11 +856,20 @@ ChassisErrorCode chassis_process(void) {
             float target_speed = chassis_wheel_omega_to_drive_omega(s_module_cmd[map->module].wheel_omega);
             float steer_speed = chassis_calc_steer_track_speed(map->module, target_angle);
 
-            (void)steer_motor.set_pos_vel(map->steer_id, target_angle, steer_speed);
-            (void)drive_motor.set_spd(map->drive_id, drive_ready ? ((float)map->drive_sign * target_speed) : 0.0f);
+            if(!isfinite(target_speed) || !isfinite(target_angle) || !isfinite(steer_speed)) {
+                (void)chassis_stop();
+                return ch.INVALID_PARAM;
+            }
+            const BusMotorStatus steer_status = steer_motor.set_pos_vel(map->steer_id, target_angle, steer_speed);
+            const BusMotorStatus drive_status = drive_motor.set_spd(map->drive_id, drive_ready ? ((float)map->drive_sign * target_speed) : 0.0f);
+            if(steer_status != MOTOR_STATUS_OK || drive_status != MOTOR_STATUS_OK) {
+                (void)chassis_stop();
+                return ch.MOTOR_OUTPUT_FAILED;
+            }
         }
 
         if(swheel.fk(&s_chassis.kine) != swheel.OK) {
+            (void)chassis_stop();
             return ch.KINEMATICS_FAILED;
         }
     }
@@ -808,6 +889,7 @@ ChassisErrorCode chassis_process(void) {
  */
 ChassisErrorCode chassis_stop(void) {
     uint8_t i;
+    bool output_ok = true;
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
     s_drive_output_allowed = false;
 #endif
@@ -819,16 +901,35 @@ ChassisErrorCode chassis_stop(void) {
     s_chassis.kine.control.vx = 0.0f;
     s_chassis.kine.control.vy = 0.0f;
     s_chassis.kine.control.wz = 0.0f;
+    s_process_clock_valid = false;
+    s_alignment_acquired = false;
+    for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
+        s_chassis.kine.control.wheels[i].wheel_omega = 0.0f;
+        s_module_cmd[i].wheel_omega = 0.0f;
+        s_low_speed_hold[i] = true;
+        s_command_heading_valid[i] = false;
+    }
     s_chassis.brake_requested = false;
     s_chassis.brake_latched = false;
     chassis_reset_steer_speed_profiles();
 
     for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
-        (void)steer_motor.brake(s_module_map[i].steer_id);
-        (void)drive_motor.stop(s_module_map[i].drive_id);
+        if(steer_motor.brake(s_module_map[i].steer_id) != MOTOR_STATUS_OK) output_ok = false;
+        if(drive_motor.stop(s_module_map[i].drive_id) != MOTOR_STATUS_OK) output_ok = false;
     }
+    chassis_sync_view();
+    return output_ok ? ch.OK : ch.MOTOR_OUTPUT_FAILED;
+}
 
-    return ch.OK;
+/* Called only while the owner has explicitly stopped outputs. Does not send CAN. */
+void chassis_reset_control_history(void) {
+    s_process_clock_valid = false;
+    s_alignment_acquired = false;
+    chassis_reset_steer_speed_profiles();
+    for(uint8_t i = 0; i < CHASSIS_MODULE_COUNT; ++i) {
+        s_low_speed_hold[i] = true;
+        s_command_heading_valid[i] = false;
+    }
 }
 
 /**
@@ -923,9 +1024,12 @@ static ChassisErrorCode chassis_check_config(const ChassisConfig* config) {
     if(config->steer_motor_interface == NULL || config->drive_motor_interface == NULL || config->steer_ops == NULL || config->drive_ops == NULL || config->prepare_steer_motor == NULL || config->prepare_drive_motor == NULL || config->steer_ops->send == NULL || config->drive_ops->send == NULL) {
         return ch.DEPENDENCY_MISSING;
     }
-    if(config->model.length <= 0.0f || config->model.width <= 0.0f || config->model.wheel_radius <= 0.0f || config->model.max_wheel_linear_speed < 0.0f || config->wheel_drive_ratio <= 0.0f) {
+    if(!steer_wheel_model_valid(&config->model) || !isfinite(config->wheel_drive_ratio) ||
+       config->wheel_drive_ratio <= 0.0f || config->wheel_drive_ratio > 10000.0f) {
         return ch.INVALID_MODEL;
     }
+    if(!isfinite(config->yaw_bias.k_vx) || !isfinite(config->yaw_bias.k_vy) ||
+       !isfinite(config->yaw_bias.v_deadband) || config->yaw_bias.v_deadband < 0.0f) return ch.INVALID_PARAM;
     if(config->steer_target_mode != CHASSIS_STEER_TARGET_ABS_NEAREST && config->steer_target_mode != CHASSIS_STEER_TARGET_WRAP_PI) {
         return ch.INVALID_PARAM;
     }
@@ -1204,6 +1308,18 @@ static void chassis_resolve_drive_module_command(ChassisModule module) {
                    s_chassis.config.steer_zero_rad[module];
     target_omega = s_chassis.kine.control.wheels[module].wheel_omega;
 
+    const float linear_speed = fabsf(target_omega) * s_chassis.config.model.wheel_radius;
+    if(linear_speed < CHASSIS_LOW_SPEED_ENTER_MPS) s_low_speed_hold[module] = true;
+    else if(linear_speed >= CHASSIS_LOW_SPEED_EXIT_MPS) s_low_speed_hold[module] = false;
+    if(s_low_speed_hold[module]) {
+        if(!s_command_heading_valid[module])
+            s_module_cmd[module].steer_target_abs_angle = chassis_select_nearest_heading_angle(current_angle, current_angle);
+        s_module_cmd[module].wheel_omega = 0.0f;
+        s_command_heading_valid[module] = true;
+        return;
+    }
+    s_command_heading_valid[module] = true;
+
     option_a = chassis_select_nearest_heading_angle(current_angle, target_angle);
     option_b = chassis_select_nearest_heading_angle(current_angle, target_angle + CHASSIS_PI);
     error_a = option_a - current_angle;
@@ -1271,7 +1387,8 @@ static float chassis_calc_steer_track_speed(ChassisModule module, float target_a
         s_steer_speed_initialized[module] = true;
     }
 
-    s_steer_speed_ramp_time[module] += CHASSIS_CONTROL_PERIOD_S;
+    s_steer_speed_ramp_time[module] = fminf(CHASSIS_STEER_SPEED_RAMP_TIME_S,
+                                         s_steer_speed_ramp_time[module] + s_process_dt);
     ramp_ratio = s_steer_speed_ramp_time[module] / CHASSIS_STEER_SPEED_RAMP_TIME_S;
     slowdown_ratio = chassis_smoothstep(angle_error / CHASSIS_STEER_SLOWDOWN_ANGLE_RAD);
     speed_ratio = chassis_smoothstep(ramp_ratio);
@@ -1284,17 +1401,20 @@ static float chassis_calc_steer_track_speed(ChassisModule module, float target_a
 
 static bool chassis_drive_targets_reached(void) {
     uint8_t i;
+    const float tolerance = s_alignment_acquired ? CHASSIS_DRIVE_ANGLE_TOL_RAD : CHASSIS_DRIVE_ALIGN_ENTER_RAD;
 
     for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
         float current_angle = s_module_fb[i].steer_abs_angle;
         float target_angle = s_module_cmd[i].steer_target_abs_angle;
         float angle_error = target_angle - current_angle;
 
-        if(fabsf(angle_error) > CHASSIS_DRIVE_ANGLE_TOL_RAD) {
+        if(!isfinite(angle_error) || fabsf(angle_error) > tolerance) {
+            s_alignment_acquired = false;
             return false;
         }
     }
 
+    s_alignment_acquired = true;
     return true;
 }
 

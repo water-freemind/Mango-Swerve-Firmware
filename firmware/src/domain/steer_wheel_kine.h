@@ -136,6 +136,19 @@ extern const struct SteerWheelInterface {
 
 // ! ========================= 接 口 函 数 声 明 ========================= ! //
 
+/* Broad numerical acceptance domain, NOT operating or stability limits.
+ * Spans: [0.001,100] m; radius: [0.0001,10] m; wheel limit: [0,100] m/s.
+ * Twist components: |vx|,|vy| <=100 m/s, |wz| <=1000 rad/s.
+ * Wheel feedback: |omega * radius| <=100 m/s, |angle| <=1e6 rad.
+ * All values must be finite. All non-null failures clear command and computed
+ * FK outputs. A zeroed FK output on error is NOT evidence that the vehicle stopped;
+ * callers must honor the error and use their normal protective-stop path.
+ * Invalid init also clears initialized; valid fresh commands/feedback may recover
+ * from data errors, while a failed init requires successful reinitialization.
+ */
+bool steer_wheel_model_valid(const SteerWheelModel* model);
+bool steer_wheel_twist_valid(float vx, float vy, float wz);
+
 SteelWheelErrorCode steer_wheel_init(SteerWheel* steer_wheel, SteerWheelModel model);
 SteelWheelErrorCode steer_wheel_fk(SteerWheel* steer_wheel);
 SteelWheelErrorCode steer_wheel_ik(SteerWheel* steer_wheel);

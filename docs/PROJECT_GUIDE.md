@@ -23,16 +23,16 @@
 
 | 项目 | 截至本次整理的状态 |
 | --- | --- |
-| 本机仓库 | `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`；PR #4已合并，原临时功能分支已清理 |
+| 本机仓库 | `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`；本轮候选基于`1a4345b`整理，PR与分支状态以Git/GitHub为准 |
 | 远端 | [water-freemind/Mango-Swerve-Firmware](https://github.com/water-freemind/Mango-Swerve-Firmware)，本机提交与远端同步状态以 `git status` 为准 |
 | 代码来源 | [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`；提取基线 `65088f94be15c69ccfa647779d7f847b06b95735`。原仓库仅作参考，不修改 |
 | 当前车端固件 | 已烧录PR #4合并提交 `8555a15` 的 `StraightTest` 模式6、协议2；SWC切换HOST/MANUAL/STOP，`hb_required=0`；1MB备份及新镜像校验通过，部署标识见8.2 |
 | 上次车端更新 | MANUAL新增VRB≤1250许可，超过即撤销；手动自由运动取消自动yaw修正，保留电机闭环和SWB限速。HOST不要求VRB，仍保留航向保持，WAIT段不再清空参考；已部署，运动验收待做 |
-| 本轮源码候选 | 模式6 MANUAL新增起步/松杆减速斜率、反向停稳及调轮期间不蓄积目标；编译通过，尚未烧录，详见2.1.1和第8节。自主比赛路线仍仅设计/离线模型 |
+| 本轮源码候选 | 时间基准/PID、数值保护、参数档案、手动S曲线与耦合限幅、舵轮滞回、512帧TRACE及离线报告；完整C/PowerShell回归、43项Python测试及三模式各93源构建通过，未烧录。模式0/5共享底层也有变化，详见9.18 |
 | 部署后检查 | 旧测试版本曾确认IDLE、healthy=1、停稳和零命令；新版烧录后另查当前来源、标定和SWD，历史状态不能当实时许可 |
 | 已有实车结果 | 电机通信、轮位与架空方向、四路激光方向、独立零位回位、低速航向保持、旧单次1米程序到点及SWD撤销许可停车 |
 | 新功能验证层级 | 双来源互斥、无需心跳的车端测试、1/2/4米往返、沿墙和靠近均已实现并部署；新增切换和运动效果仍需现场操作验收 |
-| VOFA调试入口 | 已安装新版10组、74按钮面板及本机UDP桥接；日志分类开关已做实际链路检查 |
+| VOFA调试入口 | 已安装版本为原10组74按钮；仓库候选源为11组78按钮，新增TRACE；本轮未安装到本机VOFA，原日志分类链路验证不能代替TRACE实机验收 |
 | 默认构建 | 仓库默认仍为 `Diagnostics` 模式0。默认构建模式与车上实际固件是两件事 |
 | 自主路线设计 | 已核验2026-09-10赛题原件，完成七沟蛇形/回场/作业状态机设计及独立离线几何与时间工具；尚未接入固件，见第9节 |
 | 仍待完成 | 新车几何/有效轮径、逐轮转向符号配置、测距逐路失效验证、中高速制动与重复精度、比赛模式、地图定位和完整疏果联动 |
@@ -93,33 +93,36 @@ MANUAL仍是摇杆控制前后、横移和旋转的自由遥控，VRB只作为�
 
 手动不依赖VOFA、无线串口心跳或激光定距；串口错误和上位机旧运动命令不撤销手动许可。明确的STOP是两种来源共用的停车命令。模式6的 `TEST_STATUS healthy`表示HOST测试能否准备，因此手动时出现 `healthy=0、blocked=HOST_NOT_SELECTED`是预期；手动许可看 `TEST_CONTROL manual_armed/hw_ok/vrb_required/vrb_ok`和电机反馈。`hw_ok=1`仅表示硬件反馈通过，不代替VRB门槛、SWD重新放行和回中条件。
 
-独立构建的旧 `Manual/ManualStandalone`（模式1/5）仍保留原VRB流程，不能套用本表；本次不修改它们。组合固件使用模式6的102mm名义轮径、启动均值零偏和共享零位，手动摇杆方向与SWB三档设置沿用既有映射。
+独立构建的 `Manual/ManualStandalone`（模式1/5）保留其原VRB流程，不能套用本表；本轮不改该模式开关映射，但其调用的共享底盘/电机服务已有修复，须重新构建与低速验证。组合固件使用模式6的102mm名义轮径、启动均值零偏和共享零位，手动摇杆方向与SWB三档设置沿用既有映射。
 
 <a id="manual-ramp"></a>
 
 #### 2.1.1 手动起停缓加减速：源码候选，尚未烧录
 
-2026-11-07用户反馈：当前机械结构手动第三档直接满杆容易翻车，第二档尚可。记录为现场现象，没有据此推算重心高度或已验证加速度。新增[manual_ramp.c](../firmware/src/service/manual_ramp.c)仅接入组合固件的MANUAL；HOST距离/墙距规划和旧模式1/5沿用原控制。摇杆仍决定自由运动目标，未恢复自动yaw保持，也未改变SWB三档上限。
+2026-11-07用户反馈：当前机械结构手动第三档直接满杆容易翻车，第二档尚可。记录为现场现象，没有据此推算重心高度或已验证加速度。新增[manual_ramp.c](../firmware/src/service/manual_ramp.c)仅接入组合固件的MANUAL；HOST距离/墙距规划沿用原规划器；模式1/5未接入S曲线，但本轮共享底盘与电机服务也有改动，不能视为底层完全不变。摇杆仍决定自由运动目标，未恢复自动yaw保持，也未改变SWB三档上限。
 
 | 命令变化 | 初始参数 | 含义 |
 | --- | --- | --- |
 | 平移加速 | 0.20m/s² | 限制`(vx,vy)`向量变化量，斜向不叠成两倍，换档也经过斜率 |
 | 平移正常减速 | 0.30m/s² | 松杆/降低目标时渐减；不是急停 |
 | 旋转加速/正常减速 | 0.40 / 0.60rad/s² | 仅限制摇杆角速度目标变化，没有航向闭环 |
+| 平移/旋转jerk | 0.80m/s³ / 1.60rad/s³ | 普通轨迹限制加速度变化率；目标改变时先平滑消除当前加速度 |
+| 目标重规划带宽 | 0.006m/s / 0.024rad/s | 对应两个高速档遥控计数；零目标、初次运动与反向不延后，避免杆量微抖导致不断重规划 |
+| 平移/旋转耦合 | 目标`速度×角速度`预算0.30m/s² | 双向结合当前输出限制新目标；不是输出瞬态硬约束，也不是实测稳定上限 |
 | 反向 | 先将整车平移与旋转目标降到0，再等四轮新鲜反馈停稳 | 平移新旧向量点积<0或旋转反号触发；过零后至少留一个零输出周期再向新方向起步 |
 | 转向未到位 | 准备步最多0.002m/s、0.004rad/s，不累计 | 按底盘真实驱动门控判断；调轮期间维持小目标方向，门控开放后从小值继续爬升 |
 | 调度异常 | 时间间隔超过50ms或输入非有限数，撤销手动许可 | 不用丢失的时间补发一大步速度，需要重新放行 |
 
-这是**速度命令斜率限制**，没有限定加速度变化率，不是完整的jerk受限S曲线，更不是实车防倾覆保证。原转向到位门控仍可立即抑制驱动；机械载荷、重心、轮胎滑移及同时平移/旋转产生的加速度仍需实测。参数集中在[manual_ramp.h](../firmware/src/service/manual_ramp.h)，初值未经过实车调参。
+当前候选已由线性速度坡道更新为**分段恒定jerk的S曲线**。目标变化先消除当前加速度，再转向最新目标；小幅非零目标采用重规划带宽，避免遥控噪声反复取消加速。它不是实车防倾覆保证。原转向到位门控仍可立即抑制驱动；机械载荷、重心、轮胎滑移及同时平移/旋转产生的加速度仍需实测。参数集中在[manual_ramp.h](../firmware/src/service/manual_ramp.h)，初值未经过实车调参。
 
 **区分正常减速与保护停车。** SWD=1000、VRB>1250、遥控失联、切换控制来源、显式STOP以及硬件故障均立即清空坡道/速度缓存，并沿原停车路径停止输出；不等待上述渐减过程。这里“立即”指软件指令撤销，不代表惯性和物理制动距离为零。普通松杆则保持手动许可并渐减，不能把回中当作紧急停车。
 
-按命令曲线估算：若平移已达1.5m/s，以0.30m/s²回中正常减速需5秒、距离3.75m；若旋转已达6rad/s，以0.60rad/s²正常减速需10秒、转角30rad。它们没有计实际执行误差，**狭小区域不适合验收高档满速和回中停车**。后续若正常停车距离过长，应在低速记录实际响应后调整减速参数与档位上限，而不是绕过安全开关。
+命令曲线对比：若平移已达1.5m/s，原线性坡道正常减速约5.00秒、3.75m，当前S曲线候选约5.38秒、4.03m。**平顺性改善会增加普通停车距离**；旋转也需要额外的加速度过渡时间，不能再沿用恒定减速度公式当作完整S曲线停车量。以上未计实际执行误差，**狭小区域不适合验收高档满速和回中停车**。后续若正常停车距离过长，应在低速记录实际响应后调整减速参数与档位上限，而不是绕过安全开关。
 
 候选固件烧录后的队友验收步骤：
 
 1. 静置完成IMU标定，SWD=1000、摇杆回中，先核对启动日志含`manual_ramp ... unverified=1`；当前车上旧8555a15没有此功能。
-2. 按2.1进入MANUAL，用低档、小幅杆量检查前后、横移及旋转。观察`TEST_RAMP target/output/reversing`，目标可阶跃，输出应缓变；`TEST_CONTROL`仍显示许可状态。
+2. 按2.1进入MANUAL，用低档、小幅杆量检查前后、横移及旋转。观察`TEST_RAMP target/output/reversing`，目标可阶跃，输出应缓变；`TEST_CONTROL`仍显示许可状态。短时起停用9.18的TRACE记录，约1.6秒一条的普通RAMP日志不适合计算峰值jerk。
 3. 在空间允许且低速时验证松杆渐减、反向先停稳再启动、转向未到位不突然放大驱动。不要用抬车/移动DM板混入IMU静态标定。
 4. 低速验证SWD停车、VRB撤销、遥控失联及HOST/MANUAL切换：旧目标不恢复；重新许可必须关闭SWD、回中停稳、保持VRB≤1250，再开启SWD。
 5. 按前后/横移分别记录负载、档位、目标/反馈速度、起停时间、真实停车距离及晃动，再逐档提高。高速档只在已验证净空和足够制动空间内试，不凭编译通过宣称不会翻车。
@@ -267,6 +270,7 @@ ARM阶段和上电待命保持当前轮向；开始运动后才计算目标轮�
 | 07 | 四方向静态贴边记录 | 左侧项向上取整到5mm并更新四向共用基准；其余方向只记录，不覆盖参数 |
 | 08 | 六档测试速度 | `0.05 / 0.08 / 0.10 / 0.20 / 0.30 / 0.50m/s`，仅停稳且未ARM时可设置 |
 | 09 | 日志/波形分类开关 | 只控制发往VOFA的数据，后台完整记录与车端控制不受影响 |
+| 10 | 底盘同步采集（候选专用） | START/STOP只控制采集；CLEAR/DUMP需遥控在线、SWD关闭、反馈新鲜且停稳；停止采集不会停车，详见9.18 |
 
 往返中的距离是**单程距离**，4米档总路程约8米。`TEST_PLAN leg=OUT/WAIT/BACK`表示出程/等待/回程，`x`是相对起点的带符号前向里程估计，`out`记录出程停稳位置。返回沿同一次里程积分回到起点附近，不是定位系统已验证回到原坐标。
 
@@ -569,7 +573,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 文件 | 职责 |
 | --- | --- |
 | [straight-console.ps1](../firmware/straight-console.ps1) | 串口独占、本机UDP收发、一次性编号、来源识别、快照缓存、日志过滤、后台原文 |
-| [vofa+.cmds.json](../firmware/vofa/vofa+.cmds.json) | 唯一维护的原生命令源，74按钮，真实LF、单次发送、组不批量循环 |
+| [vofa+.cmds.json](../firmware/vofa/vofa+.cmds.json) | 唯一维护的原生命令源，11组78按钮（含4个TRACE），真实LF、单次发送、组不批量循环 |
 | [install-vofa-panel.ps1](../firmware/vofa/install-vofa-panel.ps1) | 复制命令、生成启动入口；ConfigureContext备份并更新VOFA实际默认配置 |
 | [start-vofa-panel.ps1](../firmware/vofa/start-vofa-panel.ps1) | 联合启动VOFA与后台桥接，Static/Motion选择 |
 | firmware/tests | 状态机、传感器适配、协议、UDP会话、命令文件、日志过滤与安装回归 |
@@ -616,9 +620,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 上一版组合源码f5bc3da | 完整主机回归；StraightTest及ManualStandalone各84源文件构建通过 | 覆盖全程无HB、互斥所有权、实际串口分发、旧命令/串口错误隔离、遥控失联、重新放行；不包含本次VRB保护验收 |
 | 本次手动VRB保护与自由遥控 | 完整主机回归通过，覆盖1250允许/1251拒绝、保护时清零/重新放行、手动旋转仅由摇杆给定、HOST不受VRB影响且保留航向环；StraightTest和ManualStandalone各84源文件构建通过 | 已烧录校验；新保护和自由遥控完整运动验收待做，旧版正常反馈不能替代本版验收 |
 | PR审查：往返航向参考 | 修复WAIT阶段误清零GO航向参考；实际主循环回归覆盖ROUND/WALL以±0.6rad起步、等待停轮、返程纠偏及STOP撤销，输出ROUND_HEADING_ADAPTER_TEST_OK | 最终完整回归与模式6的84源构建通过；实车往返仍待验收 |
-| 手动配置隔离 | ManualStandalone BIN SHA256与扩展前一致 | 模式1/5不变；模式6新增组合手动，沿用其102mm名义轮径及启动零偏策略 |
-| 本轮MANUAL缓加减速候选 | 完整主机回归通过：向量/反向/真实驱动门控、实际调度、SWD/VRB/RC/模式/CAN/STOP清零、RAMP显隐/快照与原HOST航向；模式6和5各85源文件全量构建成功，模式5 BIN与基线相同 | 未烧录、未做实车加速度/防倾覆验证；参数与后续验收见2.1.1 |
-| 本轮路线与CAD分析 | 24项Python离线测试通过；保存规则原图、55/65mm CAD图和路线图；默认时间模型351.6秒 | 假设包络几何通过不等于实车可通行；默认时间超预算；比赛程序尚未接入固件 |
+| 历史组合手动隔离 | 当时ManualStandalone BIN SHA256与扩展前一致 | 仅对应当时组合模式扩展；本轮共享底盘/电机修复会影响模式0/5，不能沿用此结论 |
+| 历史线性坡道候选b66c1ab | 完整主机回归通过：向量/反向/真实驱动门控、实际调度、SWD/VRB/RC/模式/CAN/STOP清零、RAMP显隐/快照与原HOST航向；模式6和5各85源文件全量构建成功，模式5 BIN与基线相同 | 未烧录、未做实车加速度/防倾覆验证；参数与后续验收见2.1.1 |
+| 历史路线与CAD分析 | 24项Python离线测试通过；保存规则原图、55/65mm CAD图和路线图；默认时间模型351.6秒 | 假设包络几何通过不等于实车可通行；默认时间超预算；比赛程序尚未接入固件 |
 | 上一版部署f5bc3da | 无线DAP备份/校验1MB、写入、Verified OK、复位；COM19看到proto=2、hb_required=0、停稳、零命令 | 不包含本次VRB保护，仅作历史记录 |
 | 最新部署8555a15 | 2026-11-07重新完整构建、备份校验1MB、烧录Verified OK；恢复COM19桥接后约87.21秒872/872条状态完整，IMU ready=1、cal=2000/2000、imu_errors=0 | 期间出现来源切换与姿态变化，不作为静止零漂或运动验收；工具未发ARM/GO，末次HOST healthy=1且stopped=1 |
 | 组合手动与SWD | 用户2026-11-07反馈“swd安全开关还有遥控模式没有问题”；原始日志确认SWC=2000、SWD=1000时MANUAL、manual_armed=0、停稳 | 末次审查补充停车/交接时清零内部速度缓存并完成回归；不把此反馈扩大为所有切换与高速场景已验收 |
@@ -659,13 +663,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 当前部署归档 | `firmware/build/deployed/20261107-pr4-main/`，HEX/ELF/BIN及manifest.json；source_commit=8555a15、flash_verified=true |
 | 现场状态 | 新镜像Verified OK、复位后IMU标定完成，保护日志字段已回传；尚未完成新保护、自由遥控或往返效果验收 |
 
-本轮**未部署**的MANUAL缓加减速候选：
+历史`b66c1ab`线性坡道候选归档（**未部署，已被本轮S曲线源码替代**；以下旧哈希不代表当前工作树）：
 
 | 项目 | 记录 |
 | --- | --- |
 | 模式6 HEX SHA256 | `BFA6BCC1E6EFB95E4ACF4868EA72E372DFAF41FA38DC754A42F5BDAB96A2C8AC` |
 | 模式6 BIN SHA256 | `30D288E46DF75CD77C408B84C6C44440AFB506F18A7DDB8867BC13313F5252F3` |
-| 构建 | 当前源码85个源文件，text=101392、data=692、bss=11680；完整host suite通过 |
+| 当时构建 | 85个源文件，text=101392、data=692、bss=11680；完整host suite通过 |
 | 旧模式隔离 | ManualStandalone也按85源文件构建；BIN仍为`3AA47CB9380589857E5F3966097C49DF807BF61A943C8A0A5586C250CFCADD3D`，旧模式代码产物未改变 |
 | 候选归档 | `firmware/build/candidates/20261107-manual-ramp/`，独立清单记录源提交、哈希、编译/测试，`flash_verified=false`、`hardware_tested=false` |
 | 部署边界 | 本轮没有烧录、串口操作或运动指令；车端仍是上表8555a15。构建通过不代表三档防翻或实际制动距离通过 |
@@ -1203,13 +1207,13 @@ py -3 -B tools/autonomy_report.py ramp tools/fixtures/ramp-synthetic.csv --outpu
 
 如另有同步测得的车体速度，使用CSV列：`t_ms,target_vx,target_vy,target_wz,output_vx,output_vy,output_wz,measured_vx,measured_vy,measured_wz,reversing`。平移单位m/s、旋转rad/s，时间为同一个板端时基；三项measured均可留空，不允许只填一项后猜其余。报告区分命令与反馈的平均加速度、松杆首个采样时刻、命令/反馈首次近零时刻；时间回退分段，不跨重启求导。没有同步反馈时实际起停与防翻表现为UNKNOWN，不从命令曲线推算实测停车距离。现场仍需记录卷尺距离、载荷、速度档和车体姿态。
 
-本轮没有增加车端UART输出或VOFA按钮。原`TEST_RAMP`仍属于HEALTH分类，ACK/主动查询规则不变；新增CSV/JSON只由电脑测试进程生成。报告不覆盖部署归档，`build/autonomy-prep`均为本机可再生证据。
+上述自主核心交付阶段没有增加车端UART输出或VOFA按钮；后续底盘候选的TRACE见9.18。原`TEST_RAMP`仍属于HEALTH分类，ACK/主动查询规则不变；新增CSV/JSON只由电脑测试进程生成。报告不覆盖部署归档，`build/autonomy-prep`均为本机可再生证据。
 
 <a id="autonomy-handoff"></a>
 
-### 9.17 本轮交付核验与下一次现场操作顺序
+### 9.17 自主核心交付基线与现场操作顺序
 
-本轮交付是**可编译、可离线验证的自主控制基础**，不是已部署比赛程序。新增模块全部位于`src/service/auto_*`，只通过输入/输出结构与外部交互；不调用HAL、电机、串口或CAN发送。现有`APP_RUN_MODE`仍为0..6，默认Diagnostics。`auto_mission_init()`在硬件配置缺少机械、测距、制动、起跑、地图或作业契约确认时拒绝初始化；现场入口尚未组装，因此也不存在可用的“自主开始”VOFA按钮。
+本节记录截至`37752cf`、经PR #6合并的历史交付基线；三模式旧哈希及“入口不变”结论只适用于该阶段，本轮底盘优化会改变共享运行代码，见9.18。该阶段交付是**可编译、可离线验证的自主控制基础**，不是已部署比赛程序。新增模块全部位于`src/service/auto_*`，只通过输入/输出结构与外部交互；不调用HAL、电机、串口或CAN发送。现有`APP_RUN_MODE`仍为0..6，默认Diagnostics。`auto_mission_init()`在硬件配置缺少机械、测距、制动、起跑、地图或作业契约确认时拒绝初始化；现场入口尚未组装，因此也不存在可用的“自主开始”VOFA按钮。
 
 **一次完整离线检查：** 在根目录执行`powershell.exe -NoProfile -ExecutionPolicy Bypass -File firmware/tests/run_host_tests.ps1`。现已包含原底盘/CAN/IMU/手动坡道/控制来源/VOFA回归、自主五组C测试、32项Python测试以及九场景报告生成。UDP测试仅使用随机本机回环端口，VOFA安装测试写入测试目录，不打开COM19、不启动真实面板、不连接下载器。Python需3.10以上及`py -3`可用，其他依赖见第7节。构建分别执行`firmware/build-local.ps1 -Mode Diagnostics`、`-Mode ManualStandalone`、`-Mode StraightTest`，不会烧录。
 
@@ -1250,6 +1254,91 @@ py -3 -B tools/autonomy_report.py ramp tools/fixtures/ramp-synthetic.csv --outpu
 | 待填 | 待填 | 待填 | 待填 | 未测 | 未测 | 未测 | 待填 | 待填 |
 
 自主单段另记录：`segment_id、进入/退出时刻、coverage_mask、实际动作数、work_task、收回证据来源、剩余预算、完整车体离场结果`。真实起停距离由地面标记/卷尺及同步反馈核对，报告工具的区间平均导数不能代替实车稳定性验收。
+
+<a id="chassis-offline-backlog"></a>
+
+### 9.18 底盘候选交付、复现与延期清单
+
+本节记录基于`1a4345b`形成的底盘候选，范围截至本次已有代码与测试成果，不再继续拓展新的优化功能。源码有改动不代表已部署；车端仍以8.2的`8555a15`记录为准。本轮未访问COM19、下载器或车辆，未安装本机VOFA。集成回归与三模式构建通过，证据见本节末尾；这些结果不代表原长期目标的全部功能或实车性能已完成，PR与合并状态以GitHub为准。
+
+**已有代码及影响范围：**
+
+| 范围 | 当前实现 | 兼容与待验证边界 |
+| --- | --- | --- |
+| 控制周期/PID | `chassis.c`转向坡道使用真实经过时间，同一时刻不重复推进，超过50ms返回时序故障；DJI轮速PID按2ms参考周期归一化，加入重复时刻、反馈过期、饱和和复位处理 | 保留名义增益，2ms参考是兼容基准而非新实车整定；模式0/5/6共享服务均受影响，必须分别构建并在部署后低速复验 |
+| 数值与故障 | 运动学模型/指令/反馈及DM、DJI命令入口检查NaN/Inf/极值，失败时清除可执行旧目标或输出并交由原保护处理 | 没有据此声称现场发生过NaN；编译和错误注入不等于CAN硬件异常已验收 |
+| 参数档案 | `chassis_profile`明确模式0..5为`LEGACY_GEOMETRY`，模式6为`NOMINAL102_LEGACY_SPAN`；运行装配记录档案来源 | 两档长宽均保留0.26572986916m；旧档半径0.035276m，模式6为名义0.051m。四轴坐标、受载半径仍未确认，不能当已校准几何 |
+| MANUAL平顺性 | 模式6增加分段恒定jerk、向量变化、反向停稳、小目标重规划带宽及双向平移/旋转目标耦合 | 参数和普通停车代价见2.1.1；手动无yaw保持，SWC/SWD/VRB语义保留。模式5不接入此S曲线，但共享底层并非不变 |
+| 舵轮切换 | 低速保持进入/退出门槛0.0001/0.00015m/s；对齐进入0.12rad、退出约0.157rad；保留最短转角、翻转滞回及先转后走 | 方向预备量必须能够越过低速退出门槛；阈值为待实车复验的候选，没有取消对齐互锁 |
+| TRACE与回放 | 模式6的512帧内存环、20ms常规采样、状态边沿额外记录；主机`sizeof(ChassisTrace)=55308`字节，最终MCU占用以构建map为准；停止后按需分块导出 | 最多约10.24秒常规窗口，边沿记录会缩短；它是缓存快照，不保证传感器同一时刻采样，也不是全程黑匣子 |
+| 四向净空 | 复用`auto_geometry`，增加观测年龄与额外延迟的预算区分、扫掠几何工具和C回放报告 | 仍是离线自主核心；未将未标定几何接入旧测试保护，未覆盖旧110mm部署值。底部四束不能证明高处外廓无碰撞 |
+
+**离线复现流程（队友无需连接板子）：**
+
+1. 在仓库根目录打开Windows PowerShell 5.1，先执行`git status --short --branch`和`git log -1 --oneline`，记录本次源码版本；保留自己的未提交修改。环境需`gcc.exe`、`py -3`（Python≥3.10）和构建脚本配置的Arm GNU工具链。
+2. 执行完整回归。脚本包含原遥控/IMU/CAN/模式隔离回归、底盘专项、S曲线、实际C适配层TRACE导出、面板/桥接测试、自主核心与Python报告测试。UDP只用本机回环测试端口，面板安装测试使用测试目录，不安装到运行中的VOFA。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\tests\run_host_tests.ps1
+```
+
+3. 若只排查底盘数学/驱动/服务问题，可先运行专项；它不能代替完整回归。报告脚本依赖完整回归已经生成的`build/host-tests/chassis-trace-export.log`；不要拿旧导出文件声称当前适配层通过。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\tests\run_chassis_tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\tests\run_chassis_reports.ps1
+```
+
+4. 依次完整构建三个模式。构建不会烧录，任何一个失败都应保留日志并修复，不能仅以主机测试通过交付。不同模式的生成目录可能被后续构建覆盖，需保存各模式日志、镜像及SHA256；旧部署归档禁止覆盖。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode Diagnostics
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode ManualStandalone
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest
+```
+
+| 产物（仓库根目录下） | 如何解读 |
+| --- | --- |
+| `firmware/build/chassis-optimization/ramp-legacy.csv`、`ramp-candidate.csv` | 同一C场景分别运行冻结的`1a4345b`线性坡道夹具和当前S曲线；11种场景，反馈停稳为合成信号，不是实际轮胎模型 |
+| `firmware/build/chassis-optimization/ramp-report/summary.json`、各场景SVG | 对比速度、加速度、jerk、正常停车命令积分；控制门关闭及保护复位不混入平顺性导数统计，报告保留其原始事件 |
+| `firmware/build/chassis-optimization/clearance-replay.csv`、`clearance-report.json` | 四向、延迟、开口/失效及姿态场景；参数是测试夹具，`simulation_only=true`；不能用于宣称比赛通行间隙已经测准 |
+| `firmware/build/host-tests/chassis-trace-export.log` | 主机测试调用实际C采集/分块导出适配层产生的合成日志，包含META、HEADER、分片和END |
+| `firmware/build/chassis-optimization/trace-report.json/.svg` | 上述C导出日志的电脑重组与逐轮一致性诊断；源类型必须写`synthetic`，不是实车轨迹 |
+
+S曲线回放的1.5m/s普通松杆案例：命令积分停止距离由约3.75m增加至约4.03m，停止时间约5.00秒增加至5.38秒；差分jerk峰值由约30降至约0.80m/s³，数值受采样和浮点误差影响。它说明平顺性与停车距离的取舍，不是实测车辆防翻结果。纯旋转转入平移的测试也记录目标耦合的瞬态；预算0.30m/s²不是输出不变量，不能当作硬安全保证。
+
+**候选固件部署后的TRACE操作（本轮未执行）：**
+
+先确认板端确实是包含TRACE的候选、仓库新版桥接和11组78按钮面板已另行安装；旧`8555a15`不支持TRACE。操作不会自动开始测试，也不改变车端无需心跳的策略。
+
+1. 停车、摇杆回中，遥控保持在线，SWD=1000，等待四轮新鲜反馈停稳。10组“清空采集缓存”发送`UI TRACE CLEAR`，再点“开始／继续采集”（`UI TRACE START`）。开始采集保留已有缓存，CLEAR才清空。
+2. 按第2节独立授予许可并进行已安排的低速试验；TRACE本身不授予许可。只想观察可保持停车。正常运动结束或故障会按车端状态冻结记录；也可点`UI TRACE STOP`冻结。**停止采集不会停车**，要停车仍用SWD或00组STOP。
+3. 试验后保持遥控在线、SWD=1000及新鲜停稳反馈，点“导出冻结记录”（`UI TRACE DUMP`）。导出冻结缓存，每20ms最多一片150字节数据，附带序号与片号；期间重新放行或反馈失效会取消导出。等待`TEST_TRACE_END sent_count=...`，保存后台原始日志。
+4. 文件应包含同一次导出的`TEST_TRACE_META`、完整HEADER、所有分片和END。不能凭“收到几行”判断完整；若缺片/计数不符，保留原文件并在停止状态重新导出。512帧不是整场记录，分析前查看`overwritten`和首尾时间，不能对未被记录的前段加减速下结论。
+5. 把本次原始日志复制到本机`firmware/build/`中的独立证据目录，用下列命令生成JSON/SVG。`--source-kind hardware`只说明文件来自实机日志，不代表编码器等于地面真值；仿真/测试日志必须用`synthetic`。
+
+```powershell
+py -3 -B tools/chassis_trace_report.py firmware/build/your-run/raw.log --source-kind hardware --output firmware/build/your-run/trace-report
+```
+
+报告保留源文件哈希、时间范围、记录完整性、有效位/年龄、逐轮速度残差及轮式角速度与IMU的差异。无效/过期数据应显示为断段，不能补成零速度后计算成功率。报告对“陀螺与轮式角速度对照”采用20ms IMU年龄筛选，运行保护仍使用原100ms门槛；严格的报告筛选不是改小了车端保护阈值。外部车体坐标为x向前/y向左/逆时针为正，轮角内部坐标采用y向右；顺序FL、FR、RR、RL，报告转换遵守这个约定。残差异常只能提示检查打滑、零位、轮径、符号或时间差，当前不自动剔除轮子、不自动调整里程计权重。
+
+**暂缓项与下一次现场顺序：**
+
+- 四个转向轴坐标、受载有效轮径、各方向光学基准至整车边缘偏移、收拢/伸出包络、重心和真实制动距离仍未确认。160mm单个尺寸不能填成全部轮距，55/65mm场景净空不是传感器偏移；新参数不自动放行。
+- 本次没有新增完整定位融合、自动轮径/零位标定、加权里程计、全场自主运行入口、实测PID整定或疏果器实车闭环；这些列为延期工作，不作为本次交付完成项。
+- 先核对固件版本与参数档案，静态验证反馈、IMU和遥控；再低速验证SWD/VRB/失联/切换取消旧目标；随后验证前后、横移、旋转、普通松杆和反向；最后才安排足够净空的逐档试验及TRACE对照。每次记录地面实际停止距离，不能用命令积分代替。
+- 若候选异常，停止试验并保存日志。回退采用第8节已归档的已知版本及另行授权的烧录流程；不靠关闭数值检查、跳过对齐或改小安全阈值让测试变绿。
+
+**本次收尾核验（2026-11-07）：** 完整C/PowerShell主机回归和43项Python测试通过；包含9个自主场景、11组坡道对比、17组净空合成场景及512帧实际C适配层分块导出到Python报告的检查。专项底盘和78指令面板检查通过，独立代码审查未发现阻塞合入问题。三模式均从当前源码完整构建93源文件，日志未出现编译warning/error。本次只交付已列成果，延期项仍未实现或未验收。
+
+| 模式 | text / data / bss（字节） | HEX SHA256 |
+| --- | --- | --- |
+| Diagnostics | 48436 / 676 / 11016 | `BCE79CE80918885D0346F815A35288A56C666A56DBDCB88F0151E0BBF8DB6CC2` |
+| ManualStandalone | 98144 / 700 / 13736 | `5E3AE872C7F9DDADC4C7AB785870BC43A1DA971B0CB63448135FA4BAC83840A9` |
+| StraightTest | 111672 / 708 / 68408 | `AC2D96554EA56664344CA747F9F24DB50D8E6A5B85CD14506FABA1E21B2E7153` |
+
+核验文件位于`firmware/build/chassis-optimization/`：`closeout-host-final.log`、`closeout-chassis-tests.log`、`closeout-panel-tests.log`、`closeout-reports.log`、`closeout-Diagnostics.log`、`closeout-ManualStandalone.log`、`closeout-StraightTest.log`及`closeout-hashes.json`。清单中的哈希对应HEX，不与第8节历史BIN哈希混比。镜像分别位于`firmware/build/Debug/`、`ManualStandalone/`和`StraightTest/`。上述产物均为候选，**未烧录、未做实车稳定性或制动验收**；原已部署归档保持不变。
 
 <a id="references"></a>
 
