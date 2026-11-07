@@ -1,0 +1,7 @@
+#ifndef MANGO_STEERING_CALIBRATION_H
+#define MANGO_STEERING_CALIBRATION_H
+
+/* Mechanical forward, steering IDs 1..4. ID1 realigned on 2026-11-07. */
+#define STEERING_FORWARD_ZERO_RAD {-0.043395909f, -3.131723507f, 3.127908751f, 2.075799191f}
+
+#endif

@@ -1,8 +1,9 @@
 param(
     [string]$OpenOcdRoot = '',
     [string]$Toolchain = '',
+    [ValidateSet('auto', 'hid', 'usb_bulk')][string]$DapBackend = 'hid',
     [switch]$ProbeOnly,
-    [ValidateSet('Diagnostics', 'Steering', 'ZeroTest')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +40,8 @@ Write-Host "OPENOCD_ROOT $OpenOcdRoot"
 Push-Location $PSScriptRoot
 try {
     $connection = @('-s', $scripts, '-f', 'interface/cmsis-dap.cfg',
+        '-c', "cmsis-dap backend $DapBackend",
+        '-c', 'cmsis-dap quirk enable',
         '-c', 'transport select swd', '-c', 'adapter speed 1000', '-f', 'target/stm32h7x.cfg')
     if ($ProbeOnly) {
         & $openocd @connection -c 'init; targets; shutdown'
@@ -48,12 +51,15 @@ try {
     & (Join-Path $PSScriptRoot 'build-local.ps1') -Toolchain $Toolchain -Mode $Mode
     New-Item -ItemType Directory -Force 'build/backup' | Out-Null
     $backup = 'build/backup/before-flash-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.bin'
-    # Read and verify the original 1 MB flash before programming the diagnostic image.
+    # Read and verify the original 1 MB flash before programming the selected image.
     & $openocd @connection -c "init; halt; dump_image $backup 0x08000000 0x100000; verify_image $backup 0x08000000 bin; resume; shutdown"
     if ($LASTEXITCODE -ne 0) { throw 'Backup failed. Check the SWD connection and retry.' }
     if ((Get-Item -LiteralPath $backup).Length -ne 0x100000) { throw 'Incomplete backup' }
     $image = 'build/Debug/robot.hex'
+    if ($Mode -eq 'Manual') { $image = 'build/Manual/robot.hex' }
+    if ($Mode -eq 'ManualStandalone') { $image = 'build/ManualStandalone/robot.hex' }
     if ($Mode -eq 'Steering') { $image = 'build/Steering/robot.hex' }
+    if ($Mode -eq 'Can2Query') { $image = 'build/Can2Query/robot.hex' }
     if ($Mode -eq 'ZeroTest') { $image = 'build/ZeroTest/robot.hex' }
     & $openocd @connection -c "program $image verify reset exit"
     if ($LASTEXITCODE -ne 0) { throw 'Flash or verification failed' }

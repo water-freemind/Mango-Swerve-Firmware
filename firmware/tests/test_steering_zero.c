@@ -3,6 +3,7 @@
 #include "bus_motor/dm_motor.h"
 #include "commissioning.h"
 #include "log.h"
+#include "steering_calibration.h"
 
 #include <assert.h>
 #include <math.h>
@@ -52,7 +53,7 @@ const BusMotorInterface dm_motor_instance = {
     .update_feedback = update_motor, .set_pos_vel = command_motor
 };
 SystemStatus assemble_steering_diagnostics(void) {
-    static const float zero[4] = {0.001335164f, -3.131723507f, 3.127908751f, 2.075799191f};
+    static const float zero[4] = STEERING_FORWARD_ZERO_RAD;
     memset((void*)&g_commissioning, 0, sizeof(g_commissioning));
     g_commissioning.bus[0].id_count = 4u;
     for(unsigned i = 0u; i < 4u; ++i) {
