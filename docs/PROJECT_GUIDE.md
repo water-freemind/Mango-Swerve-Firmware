@@ -535,6 +535,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 
 **遥控许可沿用现有底盘约定。** 遥控在线，SWA=1000/SWD=2000，SWC不为1000，VRA>1200，VRB≤1200，平移/旋转杆均回中±10。遥控只提供许可和撤销，不用杆量决定测试速度；与ManualStandalone的许可切换流程区分。截图remote=0时ARM会被拒绝，不会仅因串口连通而运动。心跳不是唯一停止手段，退出遥控许可同样终止。
 
+**FS-i6S屏幕“飞行模式关闭”。** 若使用FS-i6S，该提示表示发射机的飞行模式预设功能未启用；厂家手册第5.3节将其定义为通过开关组合选择同一通道的预设输出值。本底盘直接判断SWA/SWD/SWC、VRA/VRB及摇杆通道，不依赖该功能，保持关闭即可。`RC_SWITCH`应通过TEST_REMOTE的实际通道值排查，不能用屏幕的飞行模式状态代替行驶许可判断。用户目前仅表示“好像是FS-i6S”，型号仍待机身标识确认。依据：[FS-i6S官方手册](https://www.flyskytech.com/u_file/photo/20210420/FS-i6S%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E%E4%B9%A620210416.pdf)。
+
 **现场操作顺序。** 发射机开机并与车载接收机正常绑定，接收机仍连接DM的i.BUS输入；不需要把遥控器连电脑。以接收原始值核对开关，不凭“向上/向下”猜位置。两杆回中，SWC可取1500或2000；先保持VRB>1200禁止启动，检查日志后再切至≤1200，确认TEST_STATUS healthy=1、stopped=1、cmd=0。PING回显只证明指令下行，不能代替健康检查。此模式无需用摇杆给前进量，拨动摇杆离开中心反而撤销许可。
 
 首次先做短距离STOP演练：ARM收到ok=1和token后5秒内GO，缓慢起步后发STOP或按Escape，确认实际停稳以及result=ABORT。再把车恢复到右墙平行的起点，重新ARM取得新token，执行完整1m。保持串口工具运行，不与VOFA+抢占同一端口；不要在收到ARM回显之前批量发送ARM和GO。phase=4且result=TARGET_REACHED才是完整到点，phase=4且ABORT表示主动中止。结束后不会返回，也不能用测试模式的遥控杆开回；需要人工重新布置时先确认停稳，涉及搬车/摆轮先失能或断电。记录真实距离、横向偏移、车头方向和日志，再决定下一次测试。
