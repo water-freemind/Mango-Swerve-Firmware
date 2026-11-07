@@ -345,6 +345,10 @@ ImuStatus bmi088_get_attitude_debug(Bmi088AttitudeDebug* debug) {
     debug->gyro_temp_coeff.z = attitude->config.gyro_z_temp_coeff;
     debug->zru_enabled = attitude->zru_enabled;
     debug->zru_active = attitude->zru_active;
+    debug->calib_count = attitude->calib_count;
+    debug->calib_target = attitude->config.gyro_calib_samples;
+    debug->calibrated = attitude->calibrated;
+    debug->has_angle = attitude->has_angle;
 
     return IMU_STATUS_OK;
 }

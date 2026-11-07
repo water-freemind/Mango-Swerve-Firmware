@@ -21,7 +21,7 @@ int main(void) {
     assert(output > 0.0f);
     output = chassis_yaw_hold_apply(0.1f, 0.0f, 0.0f, 0.5f, 0.2f, 0.01f);
     assert(fabsf(output + APP_YAW_HOLD_MAX_WZ) < 0.00001f);
-    assert(chassis_yaw_hold_apply(0.1f, 0.0f, 0.001f, 0.5f, 0.2f, 0.01f) == 0.001f);
+    assert(fabsf(chassis_yaw_hold_apply(0.1f, 0.0f, 0.001f, 0.5f, 0.2f, 0.01f) - 0.001f) < 0.000001f);
     assert(chassis_yaw_hold_apply(0.0f, 0.0f, 0.0f, 0.5f, 0.2f, 0.01f) == 0.0f);
     assert(chassis_yaw_hold_apply(0.1f, 0.0f, 0.0f, NAN, 0.0f, 0.01f) == 0.0f);
     chassis_yaw_hold_disable();

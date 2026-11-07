@@ -164,6 +164,23 @@ if ($entry -match 'arm\.h|pc_comms|pi_comms|asr_comms|thinning') {
 }
 Write-Host 'CHASSIS_SCOPE_TEST_OK'
 
+$straightExe = Join-Path $outputDir 'test_straight_test.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    (Join-Path $PSScriptRoot 'test_straight_test.c') `
+    (Join-Path $firmwareRoot 'src\service\straight_test.c') '-lm' '-o' $straightExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight test compilation failed.' }
+& $straightExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight test failed.' }
+$programExe = Join-Path $outputDir 'test_test_programs.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    (Join-Path $PSScriptRoot 'test_test_programs.c') `
+    (Join-Path $firmwareRoot 'src\service\straight_test.c') '-lm' '-o' $programExe
+if ($LASTEXITCODE -ne 0) { throw 'Test programs compilation failed.' }
+& $programExe
+if ($LASTEXITCODE -ne 0) { throw 'Test programs failed.' }
+
 $zeroExe = Join-Path $outputDir 'test_steering_zero.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `
     "-I$(Join-Path $PSScriptRoot 'fakes')" `
@@ -178,7 +195,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Steering zero test compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Steering zero test failed.' }
 
 $standaloneExe = Join-Path $outputDir 'test_work_link_standalone.exe'
-& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' '-DAPP_RUN_MODE=5' `
+foreach ($standaloneMode in @(5, 6)) {
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' "-DAPP_RUN_MODE=$standaloneMode" `
     "-I$(Join-Path $PSScriptRoot 'fakes')" `
     "-I$(Join-Path $firmwareRoot 'src\app')" `
     "-I$(Join-Path $firmwareRoot 'src\service')" `
@@ -188,6 +206,7 @@ $standaloneExe = Join-Path $outputDir 'test_work_link_standalone.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Standalone work link compilation failed.' }
 & $standaloneExe
 if ($LASTEXITCODE -ne 0) { throw 'Standalone work link test failed.' }
+}
 
 $offsetExe = Join-Path $outputDir 'test_chassis_zero_offsets.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `
@@ -234,3 +253,50 @@ $gearsExe = Join-Path $outputDir 'test_manual_speed_gears.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear compilation failed.' }
 & $gearsExe
 if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_straight_console.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Straight console loopback test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_vofa_panel.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'VOFA command panel test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_vofa_setup.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'VOFA saved context setup test failed.' }
+
+$diagnosticIncludes = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-DTEST_CAN_HAL',
+    "-I$(Join-Path $PSScriptRoot 'fakes')",
+    "-I$(Join-Path $firmwareRoot 'src/app')", "-I$(Join-Path $firmwareRoot 'src/service')",
+    "-I$(Join-Path $firmwareRoot 'src/platform')", "-I$(Join-Path $firmwareRoot 'src/infra')",
+    "-I$(Join-Path $firmwareRoot 'src/device')", "-I$(Join-Path $firmwareRoot 'src/domain')")
+$logTransportExe = Join-Path $outputDir 'test_log_transport.exe'
+foreach ($logMode in @(6,5)) {
+    & $compiler.Source @diagnosticIncludes "-DAPP_RUN_MODE=$logMode" `
+        (Join-Path $PSScriptRoot 'test_log_transport.c') '-o' $logTransportExe
+    if ($LASTEXITCODE -ne 0) { throw "Log transport compilation failed (mode=$logMode)." }
+    & $logTransportExe
+    if ($LASTEXITCODE -ne 0) { throw "Log transport test failed (mode=$logMode)." }
+}
+$diagnosticExe = Join-Path $outputDir 'test_straight_diagnostics.exe'
+$sourceExe = Join-Path $outputDir 'test_drive_source.exe'
+& $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
+    (Join-Path $PSScriptRoot 'test_drive_source.c') `
+    (Join-Path $firmwareRoot 'src/service/drive_source.c') '-lm' '-o' $sourceExe
+if ($LASTEXITCODE -ne 0) { throw 'Drive source compilation failed.' }
+& $sourceExe
+if ($LASTEXITCODE -ne 0) { throw 'Drive source test failed.' }
+& $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
+    (Join-Path $PSScriptRoot 'test_straight_diagnostics.c') `
+    (Join-Path $firmwareRoot 'src/service/straight_test.c') `
+    (Join-Path $firmwareRoot 'src/service/drive_source.c') `
+    (Join-Path $firmwareRoot 'src/service/chassis_yaw_hold.c') `
+    (Join-Path $firmwareRoot 'src/infra/pid.c') '-lm' '-o' $diagnosticExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics compilation failed.' }
+& $diagnosticExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics test failed.' }
+$biasExe = Join-Path $outputDir 'test_imu_boot_bias.exe'
+foreach ($biasMode in @(6, 5)) {
+    & $compiler.Source @diagnosticIncludes "-DAPP_RUN_MODE=$biasMode" `
+        (Join-Path $PSScriptRoot 'test_imu_boot_bias.c') `
+        (Join-Path $firmwareRoot 'src/device/imu/imu.c') `
+        (Join-Path $firmwareRoot 'src/device/imu/imu_attitude.c') '-lm' '-o' $biasExe
+    if ($LASTEXITCODE -ne 0) { throw "IMU boot policy compilation failed (mode=$biasMode)." }
+    & $biasExe
+    if ($LASTEXITCODE -ne 0) { throw "IMU boot policy test failed (mode=$biasMode)." }
+}

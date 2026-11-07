@@ -1,6 +1,6 @@
 param(
     [string]$Toolchain = '',
-    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest', 'StraightTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,7 +11,8 @@ if (!$Toolchain) {
     $pathCompiler = Get-Command arm-none-eabi-gcc.exe -ErrorAction SilentlyContinue
     if ($pathCompiler) { $candidates += Split-Path (Split-Path $pathCompiler.Source -Parent) -Parent }
     foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate 'bin\arm-none-eabi-gcc.exe'))) {
+        if ($candidate -and [System.IO.Directory]::Exists($candidate) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\arm-none-eabi-gcc.exe'))) {
             $Toolchain = $candidate
             break
         }
@@ -26,6 +27,7 @@ foreach ($tool in @($compiler, $objcopy, $size)) {
 }
 Write-Host "ARM_TOOLCHAIN $Toolchain"
 $output = 'build/Debug'
+if ($Mode -eq 'StraightTest') { $output = 'build/StraightTest' }
 if ($Mode -eq 'Manual') { $output = 'build/Manual' }
 if ($Mode -eq 'ManualStandalone') { $output = 'build/ManualStandalone' }
 if ($Mode -eq 'Steering') { $output = 'build/Steering' }
@@ -37,6 +39,7 @@ try {
     New-Item -ItemType Directory -Force "$output/obj" | Out-Null
     # Match the Debug target in .eide/eide.yml and keep diagnostic mode explicit.
     $runMode = 0
+    if ($Mode -eq 'StraightTest') { $runMode = 6 }
     if ($Mode -eq 'Manual') { $runMode = 1 }
     if ($Mode -eq 'ManualStandalone') { $runMode = 5 }
     if ($Mode -eq 'Steering') { $runMode = 2 }

@@ -4,7 +4,7 @@
 #include "app_config.h"
 
 /* Standalone commissioning is selected explicitly by its own firmware image. */
-#define WORK_LINK_ENABLED (APP_RUN_MODE != APP_MODE_MANUAL_STANDALONE)
+#define WORK_LINK_ENABLED (APP_RUN_MODE != APP_MODE_MANUAL_STANDALONE && APP_RUN_MODE != APP_MODE_STRAIGHT_TEST)
 
 /* Initial commissioning values. Calibrate with the wheels unloaded first. */
 #define WORK_APPROACH_SPEED_MPS 0.10f

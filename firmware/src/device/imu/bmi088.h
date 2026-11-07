@@ -76,6 +76,10 @@ typedef struct {
     ImuGyro gyro_temp_coeff;   /**< 当前三轴温漂补偿系数，单位 rad/s/℃ */
     bool zru_enabled;          /**< true 表示当前允许执行静止 ZRU */
     bool zru_active;           /**< true 表示当前已进入静止 ZRU 修正 */
+    uint16_t calib_count;      /**< 已累计的启动零偏标定样本 */
+    uint16_t calib_target;     /**< 启动标定目标样本数 */
+    bool calibrated;          /**< 启动零偏标定完成 */
+    bool has_angle;           /**< 已产生姿态估计；不能单独代替 calibrated */
 } Bmi088AttitudeDebug;
 
 /**

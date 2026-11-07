@@ -8,6 +8,8 @@
 #include "log.h"
 #include "stm32_hal_can.h"
 #include "steering_calibration.h"
+#include "app_config.h"
+#include "straight_test.h"
 
 #include <stddef.h>
 
@@ -61,6 +63,12 @@ SystemStatus assemble_chassis(void) {
         }
     };
 
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    /* Nominal 102 mm wheel; verify physical distance before claiming 2 m accuracy. */
+    chassis_config.model.wheel_radius = STRAIGHT_TEST_WHEEL_RADIUS_M;
+    /* The test planner still caps at 0.50; manual ownership uses SWB gears. */
+    chassis_config.model.max_wheel_linear_speed = APP_MANUAL_MAX_LINEAR_MPS;
+#endif
     log_info("CHASSIS assemble begin");
     if(can_register_rx_callback(CHASSIS_STEER_CAN, chassis_steer_can_rx_callback, NULL) != STM32_HAL_CAN_OK)
         return SYSTEM_STATUS_ERROR;
@@ -130,6 +138,11 @@ static bool chassis_drive_can_send(uint32_t id, const uint8_t* data, uint8_t len
 }
 
 static BusMotorStatus chassis_prepare_steer_motor(uint16_t id) {
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    /* Both motor drivers are initialized here. Clear the complete drive group first. */
+    for(uint16_t drive_id = 1u; drive_id <= 4u; ++drive_id)
+        if(drive_motor.stop(drive_id) != MOTOR_STATUS_OK) return MOTOR_STATUS_PORT_ERROR;
+#endif
     if(dm_motor_clear_error(id) != MOTOR_STATUS_OK) {
         return MOTOR_STATUS_ERROR;
     }
@@ -141,12 +154,22 @@ static BusMotorStatus chassis_prepare_steer_motor(uint16_t id) {
     if(steer_motor.switch_mode(id, DM_MOTOR_MODE_POS_VEL) != MOTOR_STATUS_OK) {
         return MOTOR_STATUS_ERROR;
     }
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    /* Do not apply the driver's initial raw position=0 while waiting for GO. */
+    BusMotorFeedback current;
+    can_poll_rx(CHASSIS_STEER_CAN);
+    if(steer_motor.update_feedback(id, &current) != MOTOR_STATUS_OK) {
+        (void)steer_motor.disable(id);
+        return MOTOR_STATUS_NO_FEEDBACK;
+    }
+#else
     if(steer_motor.set_spd(id, 0.0f) != MOTOR_STATUS_OK) {
         return MOTOR_STATUS_ERROR;
     }
     if(steer_motor.set_tor(id, 0.0f) != MOTOR_STATUS_OK) {
         return MOTOR_STATUS_ERROR;
     }
+#endif
     if(steer_motor.brake(id) != MOTOR_STATUS_OK) {
         return MOTOR_STATUS_ERROR;
     }

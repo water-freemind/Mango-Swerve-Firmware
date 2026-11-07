@@ -36,7 +36,7 @@
             "id": "firmwareSerialPort",
             "type": "promptString",
             "description": "DM USART1 USB serial port",
-            "default": "COM12"
+            "default": "COM19"
         }
     ]
 }
