@@ -311,3 +311,17 @@ foreach ($biasMode in @(6, 5)) {
     & $biasExe
     if ($LASTEXITCODE -ne 0) { throw "IMU boot policy test failed (mode=$biasMode)." }
 }
+
+# Pure-C autonomous foundation and offline reports. No serial or probe access.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run_autonomy_tests.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous foundation regression failed.' }
+$repoRoot = Split-Path $firmwareRoot -Parent
+Push-Location $repoRoot
+try {
+    & py -3 -B -m unittest discover -s tools -p 'test_*.py' -v
+    if ($LASTEXITCODE -ne 0) { throw 'Offline route/report Python regression failed.' }
+    & py -3 -B tools/autonomy_report.py mission firmware/build/autonomy-prep/traces --output firmware/build/autonomy-prep/reports
+    if ($LASTEXITCODE -ne 0) { throw 'Autonomous trace report failed.' }
+    & py -3 -B tools/autonomy_report.py ramp tools/fixtures/ramp-synthetic.csv --output firmware/build/autonomy-prep/reports/ramp-synthetic.json
+    if ($LASTEXITCODE -ne 0) { throw 'Synthetic ramp report failed.' }
+} finally { Pop-Location }

@@ -38,6 +38,15 @@ int main(void) {
     in=sample(c,p,slipped,1000);
     out=auto_observation_step(&m,&c.geometry,&c.route,c.geometry.stowed,in);
     assert(out.pose_consistent && !out.required_ready && out.reason[AUTO_LEFT]==AUTO_GEOM_RESIDUAL);
+    m=(AutoObservation){0};
+    for(unsigned tick=0;tick<60;++tick) {
+        slipped=p;slipped.y+=tick*.001f;
+        in=sample(c,p,slipped,1000+tick*10);
+        out=auto_observation_step(&m,&c.geometry,&c.route,c.geometry.stowed,in);
+        assert(out.pose_consistent); /* each delta is below the jump threshold */
+        if(!out.required_ready) break;
+    }
+    assert(!out.required_ready && (out.reason[AUTO_LEFT]==AUTO_GEOM_RESIDUAL || out.reason[AUTO_RIGHT]==AUTO_GEOM_RESIDUAL));
     m=(AutoObservation){0};in=sample(c,p,p,1000);
     auto_observation_step(&m,&c.geometry,&c.route,c.geometry.stowed,in);
     in.pose.pose.x+=.1f; /* same stamp, different sample */

@@ -11,7 +11,7 @@
 | 项目 | 已有结果与边界 |
 | --- | --- |
 | 自主路线 | 先沿左侧直达远端，再G7至G1下降S形、底沟回门；共享C状态机及仿真已实现，未绑定实车运行入口 |
-| 自主基础代码（进行中） | 四向净空、观测校验、线段控制、17段任务状态机及独立作业事务；9个共享C场景、轨迹/首因/时间报告通过，H723全量91源构建通过。最终回归与交付核验继续推进，见指南9.15–9.16 |
+| 自主基础代码（离线交付） | 四向净空、观测校验、线段控制、17段任务状态机及独立作业事务；9个共享C场景、完整主机回归、32项Python回归通过；H723三模式各91源构建通过。尚未接入/烧录/实测，见指南9.15–9.17 |
 | 底盘基础 | 电机通信、轮位、架空前后左右方向、独立零位回位及低速航向保持已有现场记录 |
 | 原单次1米 | 两轮正常到点；用户地面近似实测约103.2cm，未据此修改轮径，重复性待测 |
 | 新测试 | 1/2/4米普通往返、右墙定距往返、前方靠近停车已实现、编译并部署，完整运动验收待做 |
@@ -30,6 +30,7 @@
 | 理解赛题与从出发到结束的逻辑 | [完整自主路线设计](docs/PROJECT_GUIDE.md#roadmap)，含逐段坐标、作业互锁、时间预算与待测参数 |
 | 按步骤调车 | [详细调试流程：上电、检查、行走与恢复](docs/PROJECT_GUIDE.md#quick-start) |
 | 处理三档满杆起步易翻车 | [手动缓加减速候选及验收](docs/PROJECT_GUIDE.md#manual-ramp)，未烧录，不代表防翻已验证 |
+| 复现自主仿真、给队友交接 | [轨迹与日志报告](docs/PROJECT_GUIDE.md#autonomy-offline-replay)、[交付证据与现场记录表](docs/PROJECT_GUIDE.md#autonomy-handoff) |
 | 排查无线距离/隔墙影响 | [静态链路对照](docs/PROJECT_GUIDE.md#debug-link) |
 | 查看yaw波形与零漂 | [yaw核验步骤](docs/PROJECT_GUIDE.md#debug-yaw) |
 | 做1米、往返、右墙和靠近停车 | [现场测试步骤](docs/PROJECT_GUIDE.md#debug-one-meter)与[参数及保护](docs/PROJECT_GUIDE.md#test-programs-v2) |
@@ -80,7 +81,7 @@ firmware/
 
 ## 构建和调试入口
 
-以下命令在仓库根目录执行，使用Windows PowerShell 5.1；主机回归依赖MinGW GCC，固件依赖Arm GNU GCC。
+以下命令在仓库根目录执行，使用Windows PowerShell 5.1；主机回归依赖MinGW GCC及Python 3.10以上（`py -3`），固件依赖Arm GNU GCC。主机回归包含共享C自主测试和报告生成，不连接串口或下载器。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\tests\run_host_tests.ps1

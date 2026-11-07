@@ -191,6 +191,10 @@ int main(int argc,char** argv) {
     }
     c=auto_fixture(); /* Center crossed gate, rear remains in field. */
     assert(!auto_envelope_inside(c.geometry.stowed,(AutoPose){.2f,-.05f,1.5707963268f},0,-1,.4f,0,.01f));
+    m=started();m.out.segment_index=16;m.completed_segments=0xffff;m.out.coverage=0x7f;
+    m.motion.out.phase=AUTO_MOTION_DONE; /* Even a DONE primitive cannot bypass full-body parking. */
+    in=auto_fixture_input((AutoPose){.2f,-.05f,1.5707963268f},20);
+    assert(auto_mission_step(&m,in).first_fault==AUTO_MISSION_PARKING);
     assert(!auto_route_pose_clear(&c.route,c.geometry.stowed,(AutoPose){1.5f,.3f,0},.01f)); /* body overlaps R1 */
     m=started();in=auto_fixture_input((AutoPose){1.5f,.3f,0},20);
     assert(auto_mission_step(&m,in).first_fault==AUTO_MISSION_ENVELOPE);

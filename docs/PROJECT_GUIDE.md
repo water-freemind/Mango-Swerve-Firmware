@@ -703,9 +703,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 
 ## 9. 赛题分析与完整自主路线设计
 
-本章把比赛拆成三项独立验收：**走完规定通道、完成实际疏果、全车退出并停好**。建议先实现固定车头的七沟蛇形路线，再接入逐树作业；不把已通过的1米试验直接放大成比赛程序。以下为2026-11-07完成的设计和离线核查，**尚未接入H723，不是可烧录的自主比赛固件**。同轮手动缓加减速代码是独立变更，见2.1.1，未改变本章路线的未部署状态。
+本章把比赛拆成三项独立验收：**走完规定通道、完成实际疏果、全车退出并停好**。固定车头的七沟蛇形路线与逐树作业已落实为共享C核心并通过离线仿真；不把已通过的1米试验直接放大成比赛程序。截至2026-11-07，**核心已通过H723编译，尚未绑定实车运行入口，不是可直接烧录运行的自主比赛固件**。手动缓加减速候选另见2.1.1；当前车上版本与本轮编译产物分别管理。
 
-章节导航：[规则](#competition-rules) · [坐标地图](#competition-map) · [逐段路线](#competition-route) · [整车与作业包络](#competition-envelope) · [定位与测距](#competition-localization) · [状态机](#competition-state-machine) · [疏果协作](#competition-work) · [时间预算](#competition-budget) · [代码落地](#competition-integration) · [调试验收](#competition-validation) · [待确认参数](#competition-open-items) · [离线工具](#competition-offline)
+章节导航：[规则](#competition-rules) · [坐标地图](#competition-map) · [逐段路线](#competition-route) · [整车与作业包络](#competition-envelope) · [定位与测距](#competition-localization) · [状态机](#competition-state-machine) · [疏果协作](#competition-work) · [时间预算](#competition-budget) · [代码落地](#competition-integration) · [调试验收](#competition-validation) · [待确认参数](#competition-open-items) · [离线工具](#competition-offline) · [共享C回放](#autonomy-offline-replay) · [交付与现场交接](#autonomy-handoff)
 
 <a id="competition-rules"></a>
 
@@ -1114,7 +1114,7 @@ py -3 -B tools/competition_route.py --speed 0.30 --accel 0.30 --tree-dwell 8 --o
 
 本次Python 3.10离线回归通过24项，涵盖先直达远端后开始G7、首段不计沟覆盖、G7至G1下降顺序、中途穿垄（起终点安全仍拒绝）、门口部分车身越界、长车体投影、漏沟、完整路线、三角/梯形时间与无法满足300秒的情景。默认和95%缩放的假定几何通过；270mm方体45°投影在380mm沟中即使零余量也被拒绝。默认时间情景未通过300秒预算，这是分析结果，不是被掩盖的测试失败。
 
-默认270×270mm包络只是演示假设，`deployment_ready=false`始终保留。几何检查使用固定车头并覆盖yaw误差的保守矩形投影；不模拟完整动力学、轮滑、视觉识别、三维枝果碰撞或完整任务状态机。状态机的故障场景仍需未来固件/主机回归实现，不能把路线工具测试数当作这些功能已实现。
+默认270×270mm包络只是演示假设，`deployment_ready=false`始终保留。该Python几何工具使用固定车头并覆盖yaw误差的保守矩形投影，不模拟完整动力学、轮滑、视觉识别、三维枝果碰撞或任务状态机。后续共享C状态机和故障测试见9.15–9.16，两套证据分别报告，不能把24项Python几何测试数当作控制器验证数。
 
 当前证据：原件文本/图片及工作记录在`firmware/build/competition-analysis/`，完整原件另存GDGCS/References。指南中的路线图来自工具生成；实际路线数值、测试结果和时间参数以本节命令复现。当前车上仍为第8节的已部署固件，本次没有烧录或实车动作。
 
@@ -1132,7 +1132,7 @@ py -3 -B tools/competition_route.py --speed 0.30 --accel 0.30 --tree-dwell 8 --o
 | C 任务状态机 | [auto_route.c](../firmware/src/service/auto_route.c)/[auto_mission.c](../firmware/src/service/auto_mission.c)：17段路线、顺序/覆盖、起跑、暂停、预算、作业停稳和全车退出；逐段限速同时进入预算，运行中检查完整收拢包络；测试通过 | 地图布局仍是有版本的示例；尚未绑定电机/传感器 |
 | D 作业协同 | [auto_work.c](../firmware/src/service/auto_work.c)：复用v1状态/任务/region字段，停止/工作/收回/总事务独立期限，去重与错误任务拒绝；替身测试通过 | 收回、实际动作、会话证据均为本机适配输入，不存在于v1帧，需双方确认，未修改现有work_link或对端 |
 | E 场景仿真/回放 | [auto_observation.c](../firmware/src/service/auto_observation.c)、共享C整场9场景、CSV轨迹、状态/时间/首因JSON、SVG及手动起停分析工具，见9.16 | 仅仿真和日志计算；开口降速策略是fixture假设，不能证明实际无障碍或定位可观 |
-| F 集成交付 | 进行中 | 最终整套回归、H723构建/旧模式隔离、教程和逐项完成核验 |
+| F 集成交付 | 完整主机回归、32项Python回归、H723三模式各91源构建通过；旧运行入口差异为空、模式5/6 BIN不变；交接见9.17 | 自主实车适配、关键参数确认及场地验收不在本轮离线交付结论内 |
 
 几何核心没有HAL、串口、CAN和电机调用。`auto_config_valid()`只检查计算配置是否可用；`auto_config_hardware_ready()`还拒绝仿真配置、任一缺失确认的轮组/包络/制动/激光/起跑/作业契约，不能用前者放行硬件。测试中的轮轴、包络、激光安装值均为有明确来源标记的虚构fixture，不是机械队友提供的新数据。
 
@@ -1204,6 +1204,52 @@ py -3 -B tools/autonomy_report.py ramp tools/fixtures/ramp-synthetic.csv --outpu
 如另有同步测得的车体速度，使用CSV列：`t_ms,target_vx,target_vy,target_wz,output_vx,output_vy,output_wz,measured_vx,measured_vy,measured_wz,reversing`。平移单位m/s、旋转rad/s，时间为同一个板端时基；三项measured均可留空，不允许只填一项后猜其余。报告区分命令与反馈的平均加速度、松杆首个采样时刻、命令/反馈首次近零时刻；时间回退分段，不跨重启求导。没有同步反馈时实际起停与防翻表现为UNKNOWN，不从命令曲线推算实测停车距离。现场仍需记录卷尺距离、载荷、速度档和车体姿态。
 
 本轮没有增加车端UART输出或VOFA按钮。原`TEST_RAMP`仍属于HEALTH分类，ACK/主动查询规则不变；新增CSV/JSON只由电脑测试进程生成。报告不覆盖部署归档，`build/autonomy-prep`均为本机可再生证据。
+
+<a id="autonomy-handoff"></a>
+
+### 9.17 本轮交付核验与下一次现场操作顺序
+
+本轮交付是**可编译、可离线验证的自主控制基础**，不是已部署比赛程序。新增模块全部位于`src/service/auto_*`，只通过输入/输出结构与外部交互；不调用HAL、电机、串口或CAN发送。现有`APP_RUN_MODE`仍为0..6，默认Diagnostics。`auto_mission_init()`在硬件配置缺少机械、测距、制动、起跑、地图或作业契约确认时拒绝初始化；现场入口尚未组装，因此也不存在可用的“自主开始”VOFA按钮。
+
+**一次完整离线检查：** 在根目录执行`powershell.exe -NoProfile -ExecutionPolicy Bypass -File firmware/tests/run_host_tests.ps1`。现已包含原底盘/CAN/IMU/手动坡道/控制来源/VOFA回归、自主五组C测试、32项Python测试以及九场景报告生成。UDP测试仅使用随机本机回环端口，VOFA安装测试写入测试目录，不打开COM19、不启动真实面板、不连接下载器。Python需3.10以上及`py -3`可用，其他依赖见第7节。构建分别执行`firmware/build-local.ps1 -Mode Diagnostics`、`-Mode ManualStandalone`、`-Mode StraightTest`，不会烧录。
+
+| 交付要求 | 当前证据及边界 |
+| --- | --- |
+| 参数来源/四向净空/55与65场景 | `auto_geometry`、几何单测及6/9.4节；未确认参数拒绝硬件放行，未改旧110mm部署配置 |
+| 任意方向与起停/对齐/反向 | `auto_motion`四方向含误差仿真；新增慢yaw漂移越界、反向等待实际停稳、取消清零测试；手动坡道回归保留 |
+| 先直达远端，再G7→G1、回门停车 | `auto_route/auto_mission`、九场景CSV与报告；出程不计沟，完整收拢包络检查，中心出门而后缘未出门被停车判据拒绝 |
+| 作业协作 | `auto_work`使用原v1解析；任务/会话/动作/收回证明、重放、独立期限和取消测试；可靠收回与会话仍需对端契约 |
+| 定位和异常 | `auto_observation`逐路有效性、墙面残差、缓慢滑移、位姿跳变、短R4和开口测试；没有假装解决单墙不可观测问题 |
+| 预算与完成 | 逐段限速计入必走预算；作业/收回限时；预算不足拒绝新作业、硬截止锁停；空跑不合格，FINISHED与qualified分离 |
+| 报告与维护 | `tools/autonomy_report.py`、fixture元数据、原CSV哈希、状态/覆盖/时间/首因JSON、SVG；阶段本地提交，README与本指南集中维护 |
+| 硬件隔离 | 从`b66c1ab`至本轮，app入口、HAL/CubeMX、原底盘/遥控/测距/work_link无改动；本轮无烧录、串口或实车指令 |
+
+2026-11-07最终构建均为91源，日志位于`build/autonomy-prep/final-*.log`。三模式BIN SHA256如下；新增核心没有运行引用，被链接器裁除，所以BIN不变只是旧入口隔离证据，**不是自主功能已在车端执行的证据**。
+
+| 模式 | text/data/bss 字节 | BIN SHA256 |
+| --- | --- | --- |
+| Diagnostics | 48436 / 676 / 11016 | `7914E26F914EB35BADEEE844ED17781FFB3E0C92E04854C9A203705112C1AE0D` |
+| ManualStandalone | 93712 / 692 / 13640 | `3AA47CB9380589857E5F3966097C49DF807BF61A943C8A0A5586C250CFCADD3D` |
+| StraightTest | 101392 / 692 / 11680 | `30D288E46DF75CD77C408B84C6C44440AFB506F18A7DDB8867BC13313F5252F3` |
+
+模式5哈希与既有独立手动基线一致；模式6与未烧录的`b66c1ab`缓加减速候选一致。车端仍以第8节部署记录`8555a15`为准。完整主机日志为`build/autonomy-prep/final-host-tests.log`；本轮不改写旧部署归档。源码阶段：`e356832`几何、`5d19b78`线段控制、`c8a0285`任务/作业、`25f076d`观测/报告；最后交付提交可用`git log --oneline`查看。
+
+**下一次现场，按以下次序推进。当前没有自主硬件入口，不跳过前置确认直接运行整场。**
+
+1. **核对版本和场地。** 记录车端固件/源码版本、载荷、电池、地面、通道长度、车头定义和四路方向。将SWD置1000、摇杆回中、车与DM板放稳。若要验证缓加减速候选，先单独安排获得授权的烧录与静态IMU标定，不能把本轮“编译成功”当成已更新车辆。
+2. **静态确认配置。** 按9.13索取整车各高度收拢/伸出外廓、四轴坐标、四路光学基准与方向、零位及收回反馈；前后左右边缘偏移分别记录。贴边读数只用于几何核对，不用碰撞找墙，不要求另做0–7cm专项标定。确认地图尺寸/启动规则/对端契约后，才把对应确认标记置真。
+3. **验证手动坡道。** 使用确认烧录的候选，遵循第2节：SWA1000、VRA>1200、SWC2000、SWB1000低档、保持VRB≤1250，先SWD1000等待就绪，再SWD2000。先短距离低档起步、松杆、反向、横移和旋转；记录目标/输出/反馈。SWD关闭或VRB松开进入原安全停车路径，不是普通坡道减速。出现翘轮、振荡、明显侧滑或净空不足立即停止；二档通过后再单独评估三档，不以“斜率已限制”宣称不会翻车。
+4. **原HOST复测。** 先停车回中，SWC1500，按第2/3节先0.05–0.10m/s与1m，再往返/2m/4m；手动SWB档与HOST速度独立。保留航向闭环、距离保护及遥控许可，GO后不依赖电脑心跳。左右横移目前没有自主VOFA入口，用明确的手动低速测量或后续单段适配验收，不能把已有前后指令当作横移指令。
+5. **CAN3原地协作。** 与对端负责人先验证实际协议、重复任务、失联、重启、超时和可靠收回证据。机构伸出或收回状态未知时不移动底盘。保留原S21C程序及协议；不能靠复用GO字段假装提供新增证明。
+6. **后续自主适配验收。** 另行把唯一位姿生产者、单一速度仲裁、真实调轮到位、逐路测距健康和合法本机启动接入核心。先架空验证零输出/取消/切换，再地面单段前后左右，再单次换沟、整场空载、单树，最后整场带作业；按9.12每级通过再升级。当前离线结果不跳过这些步骤。
+
+验收阈值在每次试验前按已确认净空、停止距离和比赛目标登记，不能试后放宽。建议每个低速方向至少三次记录，保留失败记录。以下表格可复制给队友；未测项写“未测”，不填0。
+
+| 试验ID/日期 | 固件SHA/模式/档位 | 地面/载荷/电压 | 目标方向/距离/速度 | 实际距离/横漂/yaw偏差 | 松杆至停稳时间/距离 | 四向原始距离/边缘偏移/最小净空 | 停止方式/首个故障 | 日志路径/结论 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 待填 | 待填 | 待填 | 待填 | 未测 | 未测 | 未测 | 待填 | 待填 |
+
+自主单段另记录：`segment_id、进入/退出时刻、coverage_mask、实际动作数、work_task、收回证据来源、剩余预算、完整车体离场结果`。真实起停距离由地面标记/卷尺及同步反馈核对，报告工具的区间平均导数不能代替实车稳定性验收。
 
 <a id="references"></a>
 

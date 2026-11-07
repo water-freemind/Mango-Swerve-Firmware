@@ -76,5 +76,27 @@ int main(void) {
     assert(m.out.phase==AUTO_MOTION_HOLD && m.out.command.vx<previous && m.out.command.vx>0);
     for(unsigned t=6020;t<=8000;t+=10) { in=input((AutoPose){.3f,0,0},t); in.stop_requested=true; auto_motion_step(&m,in); }
     assert(m.out.command.vx==0 && m.out.phase==AUTO_MOTION_HOLD);
+    /* Slow accumulated yaw bias must not evade the absolute heading guard. */
+    assert(auto_motion_begin(&m,&c,s,0));
+    for(unsigned tick=1;tick<=300;++tick) {
+        in=input((AutoPose){0,0,tick*.001f},tick*10);
+        auto_motion_step(&m,in);
+        if(m.out.phase==AUTO_MOTION_FAULT) break;
+    }
+    assert(m.out.error==AUTO_MOTION_DEVIATION && m.out.command.wz==0);
+    /* Reverse an endpoint lateral correction while feedback still moves in
+     * the old direction: demand must reach zero and wait for measured stop. */
+    assert(auto_motion_begin(&m,&c,s,0));
+    for(unsigned t=10;t<=500;t+=10) { in=input((AutoPose){1,.03f,0},t);auto_motion_step(&m,in); }
+    assert(m.out.command.vy<0);
+    for(unsigned t=510;t<=1000;t+=10) {
+        in=input((AutoPose){1,-.03f,0},t);in.measured.vy=-.02f;in.stationary=false;
+        auto_motion_step(&m,in);assert(m.out.command.vy<=0);
+    }
+    assert(m.reversing && m.out.command.vy==0);
+    in=input((AutoPose){1,-.03f,0},1010);auto_motion_step(&m,in);
+    assert(!m.reversing && m.out.command.vy==0);
+    in=input((AutoPose){1,-.03f,0},1020);auto_motion_step(&m,in);assert(m.out.command.vy>0);
+    auto_motion_cancel(&m);assert(m.out.command.vx==0&&m.out.command.vy==0&&m.out.command.wz==0);
     puts("AUTO_MOTION_TEST_OK (four noisy lagged runs, alignment, safety, restart, stale/NaN/deviation, normal hold)");
 }
