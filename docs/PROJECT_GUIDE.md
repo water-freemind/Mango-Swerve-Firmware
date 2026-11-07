@@ -23,11 +23,11 @@
 
 | 项目 | 截至本次整理的状态 |
 | --- | --- |
-| 本机仓库 | `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`；本次按用户要求使用临时分支 `feat/dual-control-one-shot-debug` 提交PR |
+| 本机仓库 | `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`；PR #4已合并，原临时功能分支已清理 |
 | 远端 | [water-freemind/Mango-Swerve-Firmware](https://github.com/water-freemind/Mango-Swerve-Firmware)，本机提交与远端同步状态以 `git status` 为准 |
 | 代码来源 | [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`；提取基线 `65088f94be15c69ccfa647779d7f847b06b95735`。原仓库仅作参考，不修改 |
-| 当前车端固件 | 最近已烧录 `f5bc3da` 对应的 `StraightTest` 模式6组合固件、协议2；SWC切换HOST/MANUAL/STOP，`hb_required=0`；Flash校验通过，部署标识见8.2 |
-| 最新源码与车端差异 | MANUAL新增VRB≤1250许可，超过即撤销；手动自由运动取消自动yaw修正，保留电机闭环和SWB限速。HOST不要求VRB，仍保留航向保持。此修改尚未烧录或实车验收，第2节已按新行为更新 |
+| 当前车端固件 | 已烧录PR #4合并提交 `8555a15` 的 `StraightTest` 模式6、协议2；SWC切换HOST/MANUAL/STOP，`hb_required=0`；1MB备份及新镜像校验通过，部署标识见8.2 |
+| 本次车端更新 | MANUAL新增VRB≤1250许可，超过即撤销；手动自由运动取消自动yaw修正，保留电机闭环和SWB限速。HOST不要求VRB，仍保留航向保持，WAIT段不再清空参考；已部署，运动验收待做 |
 | 部署后检查 | 旧测试版本曾确认IDLE、healthy=1、停稳和零命令；新版烧录后另查当前来源、标定和SWD，历史状态不能当实时许可 |
 | 已有实车结果 | 电机通信、轮位与架空方向、四路激光方向、独立零位回位、低速航向保持、旧单次1米程序到点及SWD撤销许可停车 |
 | 新功能验证层级 | 双来源互斥、无需心跳的车端测试、1/2/4米往返、沿墙和靠近均已实现并部署；新增切换和运动效果仍需现场操作验收 |
@@ -57,7 +57,7 @@
 
 ### 2.1 同一固件的手动与上位机开关
 
-以下约定适用于新增VRB保护后的组合固件 `StraightTest / APP_RUN_MODE=6`；最近已部署的 `f5bc3da` 尚无此手动VRB保护，部署状态见第8节。硬件仍用接收机i.BUS接DM板，遥控器无需接电脑。发射机型号疑似FS-i6S，以实物为准；“飞行模式关闭”不是车端许可，应看接收通道原始值。
+以下约定适用于已部署的 `8555a15` 组合固件 `StraightTest / APP_RUN_MODE=6`；旧 `f5bc3da` 尚无手动VRB保护，回退时应区分版本，部署状态见第8节。硬件仍用接收机i.BUS接DM板，遥控器无需接电脑。发射机型号疑似FS-i6S，以实物为准；“飞行模式关闭”不是车端许可，应看接收通道原始值。
 
 | 开关/输入 | 设置与用途 |
 | --- | --- |
@@ -575,10 +575,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 单次1米 | 旧SWD版本token=2/3正常TARGET_REACHED，里程估计0.991/0.992m；用户地面实测更正为约103.2cm | 约+3.2%是一次近似测量，未指定对应编号，未据此改半径；首轮0.953m是SWD中止，不是正常到点 |
 | 贴边基准 | 左侧挡板接触时108/109/109/108mm，帧龄82–93ms | 四向共用110mm按用户要求采用，其他方向未独立标定 |
 | 上一版组合源码f5bc3da | 完整主机回归；StraightTest及ManualStandalone各84源文件构建通过 | 覆盖全程无HB、互斥所有权、实际串口分发、旧命令/串口错误隔离、遥控失联、重新放行；不包含本次VRB保护验收 |
-| 本次手动VRB保护与自由遥控 | 完整主机回归通过，覆盖1250允许/1251拒绝、保护时清零/重新放行、手动旋转仅由摇杆给定、HOST不受VRB影响且保留航向环；StraightTest和ManualStandalone各84源文件构建通过 | 尚未烧录或实车验证；旧版手动正常的用户反馈不能作为新门槛或自由遥控已生效的证据 |
+| 本次手动VRB保护与自由遥控 | 完整主机回归通过，覆盖1250允许/1251拒绝、保护时清零/重新放行、手动旋转仅由摇杆给定、HOST不受VRB影响且保留航向环；StraightTest和ManualStandalone各84源文件构建通过 | 已烧录校验；新保护和自由遥控完整运动验收待做，旧版正常反馈不能替代本版验收 |
 | PR审查：往返航向参考 | 修复WAIT阶段误清零GO航向参考；实际主循环回归覆盖ROUND/WALL以±0.6rad起步、等待停轮、返程纠偏及STOP撤销，输出ROUND_HEADING_ADAPTER_TEST_OK | 最终完整回归与模式6的84源构建通过；实车往返仍待验收 |
 | 手动配置隔离 | ManualStandalone BIN SHA256与扩展前一致 | 模式1/5不变；模式6新增组合手动，沿用其102mm名义轮径及启动零偏策略 |
-| 最近部署f5bc3da | 无线DAP备份/校验1MB、写入、Verified OK、复位；COM19看到proto=2、hb_required=0、停稳、零命令 | 尚不包含本次VRB保护；新往返/沿墙/快档效果仍未完成实车验收 |
+| 上一版部署f5bc3da | 无线DAP备份/校验1MB、写入、Verified OK、复位；COM19看到proto=2、hb_required=0、停稳、零命令 | 不包含本次VRB保护，仅作历史记录 |
+| 最新部署8555a15 | 2026-11-07重新完整构建、备份校验1MB、烧录Verified OK；恢复COM19桥接后约87.21秒872/872条状态完整，IMU ready=1、cal=2000/2000、imu_errors=0 | 期间出现来源切换与姿态变化，不作为静止零漂或运动验收；工具未发ARM/GO，末次HOST healthy=1且stopped=1 |
 | 组合手动与SWD | 用户2026-11-07反馈“swd安全开关还有遥控模式没有问题”；原始日志确认SWC=2000、SWD=1000时MANUAL、manual_armed=0、停稳 | 末次审查补充停车/交接时清零内部速度缓存并完成回归；不把此反馈扩大为所有切换与高速场景已验收 |
 | 上一版面板与UDP | f5bc3da的74按钮源文件与D盘/context副本曾核对一致；实际PING、遥控快照、日志预设经过链路 | 本次仅更新仓库内VRB/自由遥控说明，未覆盖运行中的VOFA配置；退出后经联合启动器重新安装 |
 | 桥接准备会话 | 回归复现旧DONE/FAULT抢先清除ARM等待，修正后通过；用户随后token=11准备已显示arm_ready | 4秒主机开始窗口、5秒车端ARM有效期和其他超时保护保留 |
@@ -591,29 +592,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 
 ### 8.2 源码版本与最近部署标识
 
-本次新增手动VRB保护、取消手动航向修正及往返等待段航向修复的源码尚未烧录。下表记录的是最近实际部署的 `f5bc3da`，不是后续重新构建产物的部署凭证；需要核对该版本时使用部署归档中的镜像和清单，不以可被重建覆盖的 `build/StraightTest/robot.hex`代替。
+当前已部署 `8555a15`（PR #4合并提交，固件内容与审查提交 `6513e51` 一致），包含VRB保护、自由遥控及往返等待段航向修复。下表先保留上一版 `f5bc3da` 的历史记录；实际部署凭证使用各归档中的镜像和清单，不以可被重新构建覆盖的 `build/StraightTest/robot.hex`代替。
 
 | 项目 | 记录 |
 | --- | --- |
-| 源码追溯 | 初版多程序91989bd、无线日志93c455a；最近部署的组合版本为f5bc3da，完整提交号保存在归档清单 |
+| 源码追溯 | 初版多程序91989bd、无线日志93c455a；上一版组合版本为f5bc3da，完整提交号保存在归档清单 |
 | 已部署模式6 HEX SHA256 | `4C7DFAC84F8A4EA9D706AD62579037271F072F9BA23347754056A3508AC72847` |
 | 已部署StraightTest构建尺寸 | text=99736、data=692、bss=11632；84源文件 |
 | 未改变的独立手动BIN SHA256 | `3AA47CB9380589857E5F3966097C49DF807BF61A943C8A0A5586C250CFCADD3D` |
 | 该次烧录前备份 | `firmware/build/backup/before-flash-20261107-164138-326.bin`，1048576字节，已校验 |
 | 已部署清单 | `firmware/build/deployed/20261107-dual-control-one-shot/manifest.json`，flash_verified=true；该标志仅适用于清单内对应哈希的镜像 |
-| 最近部署归档 | `firmware/build/deployed/20261107-dual-control-one-shot/`，保存已部署HEX/ELF/BIN及清单，避免后续构建覆盖现场版本 |
+| 上一版组合归档 | `firmware/build/deployed/20261107-dual-control-one-shot/`，保存当时HEX/ELF/BIN及清单，避免后续构建覆盖现场版本 |
 | 上一版分段日志镜像 | `firmware/build/deployed/20261107-programs-v2-paced-uart/`，旧HEX哈希0FAC1800开头；当时仍需心跳 |
 | 更早的多程序镜像 | `firmware/build/deployed/20261107-programs-v2/`，旧HEX哈希4052F159开头，仅作回溯 |
 | 旧已部署1米镜像 | `firmware/build/deployed/20261107-swd-latch/`，源码基线9996357、旧HEX哈希6A9E7BE4开头，仅作回溯 |
 
-本次**尚未部署**的VRB保护/手动自由遥控及往返航向修复构建标识：
+本次**已部署**的VRB保护/手动自由遥控及往返航向修复标识：
 
 | 项目 | 记录 |
 | --- | --- |
 | 模式6 HEX | `firmware/build/StraightTest/robot.hex`，SHA256=`7453769E490ACBA2F998C5D9D2719A371490AEF3F8984ACA6F000CC17A300611` |
 | 模式6构建尺寸 | text=99776、data=692、bss=11632；84源文件完整构建通过 |
 | 独立手动隔离 | ManualStandalone完整84源文件构建通过，BIN SHA256仍为上表的`3AA47CB9…3D`，与本次修改前一致 |
-| 现场状态 | 此次未烧录、未进行新保护/自由遥控实车验收；构建成功不表示车端已经更新 |
+| 本次备份 | `firmware/build/backup/before-flash-20261107-172215-655.bin`，1048576字节，写入前校验通过 |
+| 当前部署归档 | `firmware/build/deployed/20261107-pr4-main/`，HEX/ELF/BIN及manifest.json；source_commit=8555a15、flash_verified=true |
+| 现场状态 | 新镜像Verified OK、复位后IMU标定完成，保护日志字段已回传；尚未完成新保护、自由遥控或往返效果验收 |
 
 ### 8.3 本机证据索引
 
@@ -631,7 +634,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 无线日志修复回归 | `build/straight-review/wireless-log-host-tests.log`、`wireless-log-build-StraightTest.log`、`wireless-log-build-ManualStandalone.log`；模拟120字节突发接收、写失败与普通模式接口保持 |
 | ARM会话时序回归 | `build/straight-review/panel-arm-race-before.log`（复现失败）、`panel-arm-race-after.log`、`panel-arm-race-udp.log` |
 | 已部署f5bc3da组合固件检查 | `build/straight-review/dual-mode-host-tests.log`、`dual-mode-build-StraightTest.log`、`dual-mode-build-ManualStandalone.log`、`dual-mode-flash.log`（首版）、`dual-mode-final-flash.log`（最终缓存清零版）、`dual-mode-uart-static.log`（首版静态）、`dual-mode-final-static-summary.json`（最终静态） |
-| 本次VRB保护与自由遥控检查 | `build/straight-review/manual-vrb-host-tests.log`、`manual-vrb-build.log`、`manual-vrb-standalone-build.log`；仅离线回归和构建，无本次烧录/实车记录 |
+| 本次VRB保护与自由遥控检查 | `build/straight-review/manual-vrb-host-tests.log`、`manual-vrb-build.log`、`manual-vrb-standalone-build.log`；初次离线回归和构建，部署记录另列 |
+| 8555a15烧录与启动检查 | `build/straight-review/pr4-main-flash.log`、`pr4-main-runtime-summary.json`；原始UART为`build/logs/straight-console-20261107-172410.log`，桥接PID 19672仅为本次记录 |
 | PR4最终复核 | `build/straight-review/pr4-final-host-tests.log`、`pr4-final-build.log`；包含往返WAIT→BACK实际主循环航向回归，最终模式6 HEX为8.2节的7453769E开头版本 |
 | 上一版无线日志静态检查 | `build/straight-review/wireless-log-flash.log`、`wireless-log-static-summary.json`；静态UART文件名见`wireless-log-static-runtime-name.txt` |
 | 上一版面板与查询 | `build/straight-review/dual-mode-panel-install.log`、`dual-mode-panel-live.json`；UART文件名见`dual-mode-runtime-log-name.txt` |
