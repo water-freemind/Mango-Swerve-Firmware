@@ -9,3 +9,10 @@ $exe = Join-Path $out 'test_auto_geometry.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Autonomous geometry compilation failed' }
 & $exe
 if ($LASTEXITCODE -ne 0) { throw 'Autonomous geometry tests failed' }
+$exe = Join-Path $out 'test_auto_motion.exe'
+& $compiler -std=c11 -Wall -Wextra -Werror "-I$firmwareRoot/src/service" `
+    "$PSScriptRoot/test_auto_motion.c" "$firmwareRoot/src/service/auto_motion.c" `
+    "$firmwareRoot/src/service/auto_geometry.c" -lm -o $exe
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous motion compilation failed' }
+& $exe
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous motion tests failed' }
