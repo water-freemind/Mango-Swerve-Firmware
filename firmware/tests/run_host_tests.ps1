@@ -247,3 +247,28 @@ if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear test failed.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_straight_console.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Straight console loopback test failed.' }
+
+$diagnosticIncludes = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-DTEST_CAN_HAL',
+    "-I$(Join-Path $PSScriptRoot 'fakes')",
+    "-I$(Join-Path $firmwareRoot 'src/app')", "-I$(Join-Path $firmwareRoot 'src/service')",
+    "-I$(Join-Path $firmwareRoot 'src/platform')", "-I$(Join-Path $firmwareRoot 'src/infra')",
+    "-I$(Join-Path $firmwareRoot 'src/device')", "-I$(Join-Path $firmwareRoot 'src/domain')")
+$diagnosticExe = Join-Path $outputDir 'test_straight_diagnostics.exe'
+& $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
+    (Join-Path $PSScriptRoot 'test_straight_diagnostics.c') `
+    (Join-Path $firmwareRoot 'src/service/straight_test.c') `
+    (Join-Path $firmwareRoot 'src/service/chassis_yaw_hold.c') `
+    (Join-Path $firmwareRoot 'src/infra/pid.c') '-lm' '-o' $diagnosticExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics compilation failed.' }
+& $diagnosticExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics test failed.' }
+$biasExe = Join-Path $outputDir 'test_imu_boot_bias.exe'
+foreach ($biasMode in @(6, 5)) {
+    & $compiler.Source @diagnosticIncludes "-DAPP_RUN_MODE=$biasMode" `
+        (Join-Path $PSScriptRoot 'test_imu_boot_bias.c') `
+        (Join-Path $firmwareRoot 'src/device/imu/imu.c') `
+        (Join-Path $firmwareRoot 'src/device/imu/imu_attitude.c') '-lm' '-o' $biasExe
+    if ($LASTEXITCODE -ne 0) { throw "IMU boot policy compilation failed (mode=$biasMode)." }
+    & $biasExe
+    if ($LASTEXITCODE -ne 0) { throw "IMU boot policy test failed (mode=$biasMode)." }
+}

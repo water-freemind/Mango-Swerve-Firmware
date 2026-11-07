@@ -21,6 +21,12 @@ try {
     if (![MangoStraightConsole]::ForwardStatus($sender, $port, ([char]27 + '[94m' + $status + [char]27 + "[0m`r"))) { throw 'Status log rejected' }
     $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
     if ($actual -cne ($status + "`n")) { throw 'Status log content changed' }
+    foreach ($tag in @('HEALTH','REMOTE','IMU','IMU_RAW','IMU_BIAS','MOTOR','CAN','LASER','TIMING','DRIFT')) {
+        $detail = '[INFO] TEST_' + $tag + ' t_ms=1234 value=1'
+        if (![MangoStraightConsole]::ForwardStatus($sender, $port, $detail)) { throw "Detail rejected $tag" }
+        $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
+        if ($actual -cne ($detail + "`n")) { throw "Detail payload changed $tag" }
+    }
     foreach ($line in @('FW: 1,2,3,4', 'unrelated: 1,2,3,4', '[INFO] TEST_STATUS note:invalid')) {
         if ([MangoStraightConsole]::ForwardStatus($sender, $port, $line)) { throw 'Unexpected log forwarded as status' }
     }

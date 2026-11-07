@@ -1,6 +1,6 @@
 # 芒果疏果机器人底盘电控项目总览
 
-> 更新：2026-11-07。本文件是本仓库**唯一持续维护的技术总览**。当前默认构建仍为通信诊断模式；新增ManualStandalone独立遥控、正常控制零位补偿和航向保持，Manual用于疏果器CAN握手联动。今天的单侧走廊直行计划见第8节。本文区分源码、离线测试和既有现场记录；本轮未操作硬件。比赛附件为2026-09-10版，最终规则以赛前官方版本为准。
+> 更新：2026-11-07。本文件是本仓库**唯一持续维护的技术总览**。默认构建为通信诊断模式，实车已烧录待命的StraightTest；ManualStandalone用于独立遥控，Manual用于疏果器CAN握手联动。今天的直行计划、测试指令与新增状态日志见第8节。本文区分源码、离线测试和现场证据；尚未执行单次2米运动测试。比赛附件为2026-09-10版，最终规则以赛前官方版本为准。
 
 ## 目录
 
@@ -19,6 +19,7 @@
    - [本机开发命令与构建验证](#本机开发命令2026-11-05)
    - [今天的单侧走廊直行计划（2026-11-07）](#今天的单侧走廊直行计划2026-11-07)
    - [指令启动的单次2米测试固件](#指令启动的单次2米测试固件2026-11-07)
+   - [状态日志与静态漂移排查](#状态日志与静态漂移排查2026-11-07)
    - [明日调车与长距离直行计划（2026-11-06）](#明日调车与长距离直行计划2026-11-06)
 9. [向机械队友确认的项目](#9-向机械队友确认的项目)
 10. [资料依据与状态说明](#10-资料依据与状态说明)
@@ -529,9 +530,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 
 **异常与日志。** 电机四个转向、四个驱动均须100ms内收到合格式反馈，转向state=1，IMU采样年龄≤100ms；CAN发送失败、Bus-Off/Error Passive、UART错误/缓冲溢出、控制间隔>50ms、航向误差>0.15rad、倒向速度<-0.03m/s、速度绝对值>0.30m/s、运行>45s或行程>2.10m均终止并请求停车。停车3秒仍未确认则FAULT。发送链路故障时不能保证停车命令到达，FAULT也不表示车已物理停稳；须核实反馈和现场状态。故障/结束不自动续跑，恢复反馈/链路后须重新ARM；CAN发送故障锁定至重启。
 
-TEST_STATUS每100ms记录phase、token、healthy、stopped、估计行程s、实测vx、目标cmd、yaw/ref/correction、right_mm/laser_fresh及result。phase依次0=IDLE、1=ARMED、2=RUNNING、3=STOPPING、4=DONE、5=FAULT；result=TARGET_REACHED才是正常到点，ABORT是主动停止。该模式仅单次前进，无自动后退或往复。
+TEST_STATUS每100ms记录phase、token、healthy、stopped、估计行程s、实测vx、目标cmd、yaw_deg/ref_deg、角速度wz、首个阻塞原因blocked及result。激光与更多状态分时记录，字段见下节。phase依次0=IDLE、1=ARMED、2=RUNNING、3=STOPPING、4=DONE、5=FAULT；result=TARGET_REACHED才是正常到点，ABORT是主动停止。该模式仅单次前进，无自动后退或往复。
 
-**VOFA+波形（2026-11-07）。** RawData只显示原始文本，原YAW_CHECK/TEST_STATUS不能仅通过把控件命名为yaw变成数值曲线。模式6现每100ms额外发送FireWater帧，示例为`FW: -7.7,-7.6,0.1,0.003`后接实际换行。通道0=yaw角度，1=参考航向角，2=环绕归一化后的航向误差，单位均为度；通道3=角速度修正，单位rad/s。文本日志的yaw/ref仍以rad记录。未激活航向保持时参考/误差/修正会清零，不代表当前yaw为零。
+**VOFA+波形（2026-11-07）。** RawData只显示原始文本，原YAW_CHECK/TEST_STATUS不能仅通过把控件命名为yaw变成数值曲线。模式6现每100ms额外发送FireWater帧，示例为`FW: -7.7,-7.6,0.1,0.003`后接实际换行。通道0=yaw角度，1=参考航向角，2=环绕归一化后的航向误差，单位均为度；通道3=角速度修正，单位rad/s。增强版TEST_STATUS用yaw_deg/ref_deg记录度；更早的yaw/ref字段为rad。未激活航向保持时参考/误差/修正会清零，不代表当前yaw为零。
 
 VOFA+选择FireWater而非RawData，数据到达后在波形图右键“绑定Y轴”，选第0路实际数据通道，再将显示名称改为yaw；可同时绑定第1路比较参考。点Auto调整Y轴，当前约-7.7°不会显示在固定-5～5°窗口内。协议要求逗号分隔数值并以换行结束，见[FireWater协议](https://www.vofa.plus/docs/learning/dataengines/firewater/)及[官方波形绑定步骤](https://www.vofa.plus/docs/learning/start/quick_start/)。
 
@@ -541,11 +542,59 @@ VOFA+选择FireWater而非RawData，数据到达后在波形图右键“绑定Y�
 powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.ps1 -Port COM19 -WavePort 1347
 ```
 
-不传WavePort或传0则不转发；采样帧须以FW:开头且恰好4个有限数值。另外保留TEST_STATUS/TEST_ACK/TEST_READY/TEST_INIT_FAILED状态文本，去除ANSI颜色后传给VOFA+，文本白名单不含冒号，避免被当成冒号后的数值帧。原始串口全部内容仍显示在控制台并保存到文件。UDP失败只记录绘图错误，不终止串口心跳；串口异常仍触发退出/车端超时。离线回环测试验证畸形数值拒绝、关闭转发、4通道保真、状态文字保留及去色，没有打开串口。GUI曲线和无线下行指令仍待现场确认。
+不传WavePort或传0则不转发；采样帧须以FW:开头且恰好4个有限数值。同时转发TEST_STATUS/TEST_ACK/TEST_READY/TEST_INIT_FAILED及下节列出的详细日志，去除ANSI颜色后传给VOFA+，文本白名单不含冒号，避免被当成冒号后的数值帧。原始串口全部内容仍显示在控制台并保存到文件。UDP失败只记录绘图错误，不终止串口心跳；串口异常仍触发退出/车端超时。离线回环测试验证畸形数值拒绝、关闭转发、4通道保真、状态文字保留及去色，没有打开串口。GUI曲线和无线下行指令仍待现场确认。
 
 **图上全0的排查记录。** 用户截图收到`FW: -30.16,0,0,0`，但yaw通道显示0且Y轴仅-5～5。只读检查本机VOFA保存配置`AppData/Local/vofa+/100/context/vofa+.config.json`，发现yaw的`settings_ctx[0].scale=0`、yoffset=0；保存配置可能早于当前界面，需以界面复核为准。优先在右侧yaw属性的“增益与偏移”将增益设1、偏移设0，再点Auto。不得仅把现象归咎于混发日志：官方文档允许其他文本数据，上述FW数值格式符合协议。保留状态日志，无需为调整增益重烧。确认依据是右侧实际数值恢复且曲线显示正确，当前未代替用户完成该UI验证。
 
 **离线验证范围。** 完整主机回归通过，StraightTest/ManualStandalone/Manual/Diagnostics各83源文件完整ARM构建通过；日志在`build/straight-review/`。主机状态机测试覆盖默认静止、无许可拒绝、ARM过期、重复/旧/错误编号、心跳过期、定速限幅、2m完成与连续停稳、STOP、逆行/非数反馈、超程/运行/停车超时及计时回绕。模式5/6均验证关闭作业握手。真实UART收发、无线时延、运动、轮径和到点精度尚未实测；串口工具只编译C#和校验脚本语法，没有打开端口。
+
+### 状态日志与静态漂移排查（2026-11-07）
+
+**现场证据与原因边界。** 用户已确认观察期间车身及DM板全程静止，VOFA通道增益已恢复为1，yaw依然持续减小。截图中相邻约4个100ms输出由-96.404063°变化到-96.487801°，估算约-0.21°/s（约-12.6°/min）；此值来自截图和名义日志周期，精确值应使用新增的板端5秒统计。-96°累计角本身不能用来判断漂移速率。先观察IMU，再执行2米试验。
+
+代码核查发现默认BMI088配置继承固定公式`bias_z=0.00090+0.000038*温度`（rad/s）。该模型启用时，融合算法实际不采用启动2000帧测到的Z轴均值；本车尚无该公式的拟合证据。因此**仅模式6**清除固定模型系数，采用本次上电静止均值。模式0/1/5保留原策略。上电标定2000样本，在4ms读取周期下约8秒，干扰或异常可能延长；须保持整车与控制板静止，观察`ready=1`后再判断。不自动清零yaw、不自动在线改零偏，实际升温后的残余漂移仍需观测。
+
+还修正模式6两处时效判断：BMI088 `get_sample()`消费新帧标志，改为更新IMU后读取一次并缓存，以时间戳检查100ms新鲜度；电机反馈时间戳先复制再读取当前时刻，避免SPI读取期间到达的新反馈被旧循环时刻算成无符号负年龄。`calibrated && has_angle`明确作为测试许可条件，有限角度值不能代替标定完成。
+
+**日志安排。** `TEST_STATUS`和原4通道`FW`帧保持100ms周期。每周期额外发一条详细行，15个时隙轮流，因此每类/每轮约1.5秒更新一次；一组详细行具有各自时间戳，不是同时刻的原子快照。沿用256字节行缓冲，不通过集中输出十几行阻塞控制。UDP工具同步转发下表白名单，原始串口全文继续保存。
+
+| 日志前缀 | 观察内容与解释 |
+| --- | --- |
+| `TEST_STATUS` | phase/token、healthy、stopped、s/vx/cmd、yaw_deg/ref_deg、wz、blocked、result；距离m、速度m/s、角度度、wz为rad/s。blocked仅显示首个原因。 |
+| `TEST_HEALTH` | 板端t_ms、全部阻塞位blocked、首因first、电机seen位图、转向使能位图、遥控/IMU许可、串口/发送错误。 |
+| `TEST_REMOTE` | online、switches_ok、centered、source，以及SWA/B/C/D、VRA/B、右杆RX/RY和左杆LX原始值。offline时缓存的通道值不代表当前遥控有效。 |
+| `TEST_IMU` | ready、cal样本进度、采样年龄us、当前/标定温度℃、yaw/pitch/roll度、修正后的gz(rad/s)。 |
+| `TEST_IMU_RAW` | 原始三轴角速度、启动标定均值、融合修正后的三轴角速度，均为rad/s；Mahony可额外修正x/y轴。 |
+| `TEST_IMU_BIAS` | Z轴实际扣除零偏、温度项、系数与截距、ZRU开关/活跃状态，当前policy=BOOT_MEAN。 |
+| `TEST_MOTOR` | 逐个ID1/2/3/4=FL/FR/RR/RL，两类反馈是否收到及年龄ms、达妙原始state（1为使能）、转向原始rad/扣零位后的环绕角rad、输出轴驱动rad/s、C620电流协议原始值。电流不标为A或Nm。 |
+| `TEST_CAN` | 物理bus1/2/3的接收、提交、完成、失败、丢帧、Bus-Off/Error-Passive和HAL错误计数；累计值应结合相邻输出比较。 |
+| `TEST_LASER` | CAN帧新鲜度/计数/年龄及左、右、后、前mm；control=OBSERVE_ONLY，未加入沿墙控制。fresh仅说明0x601整帧时效。 |
+| `TEST_TIMING` | 控制间隔/历史最大值ms、IMU采样间隔/最大值us、采样数、更新错误数、最近更新状态；运行中HB年龄ms及750ms租期。 |
+| `TEST_DRIFT` | 有效连续窗口≥5秒时valid=1，yaw/gyro平均变化率°/s及yaw °/min；非运动阶段、反馈新鲜且轮速接近零才统计。wheel_still不证明整车没被搬动，body_static需人工确认；auto_zero=0。 |
+
+`TEST_HEALTH blocked`为按位组合：0x0001转向反馈、0x0002驱动反馈、0x0004转向state、0x0008遥控离线、0x0010开关许可、0x0020摇杆回中、0x0040IMU采样、0x0080IMU陈旧、0x0100IMU标定、0x0200非有限反馈、0x0400串口、0x0800电机发送、0x1000CAN总线。多个条件可同时失败；first/TEST_STATUS只显示表中优先出现的一项。遥控缺失不妨碍读取IMU诊断，但不能ARM。
+
+**离线验证。** 完整主机回归通过，新增测试直接调用模式6适配代码，覆盖新帧只消费一次、遥控离线仍可诊断、未标定禁行、IMU陈旧、反馈时钟先后关系、5秒角度跨±π统计及日志长度；真实装配配置和融合算法通过30秒恒定静态零偏仿真，并确认模式5保留原模型。UDP回环验证全部新标签保真、去色及非数值文本转发。StraightTest、ManualStandalone、Manual、Diagnostics四种模式各83源文件ARM构建通过。构建/测试证据在`firmware/build/straight-review/diagnostics-*.log`。
+
+**烧录与静态实测。** 增强版经无线DAP备份1MB、备份校验、写入和Verified OK后复位；原镜像为`firmware/build/backup/before-flash-20261107-113500-929.bin`（1048576字节），烧录日志为`firmware/build/straight-review/diagnostics-flash.log`。HEX SHA256为`F5875D0B824EACE0B9FFA2D77B90689237785CCA8E1BAC7021359DEA2C6021E0`。首段COM19日志确认启动标定完成，实际扣除Z轴均值-0.000627rad/s，固定温度项为0；首个有效5004ms窗口yaw速率-0.001633°/s。日志为`firmware/build/logs/uart-20261107-113547-857.log`。
+
+用户随后将车搬回实验室狭小区域，此后确认放稳且未断电、未再移动。网络恢复后再次只读COM19，得到以下59.8秒静态结果（板端上电时间920.186～979.986秒）。每个FW帧与同周期详细行的t_ms配对，采用板端时间，不使用VOFA图上的显示时间轴。
+
+| 实测项 | 结果 |
+| --- | --- |
+| 样本数 / 时长 | 599 / 59.8秒 |
+| 起点 / 终点 yaw | -1.008673° / -1.036799° |
+| 净变化 / 全段最大最小差 | -0.028126° / 0.109995°（最小-1.072296°、最大-0.962301°） |
+| 全段最小二乘趋势 | +0.000899°/s，约+0.0539°/min；端点净变化为负，说明短时波动明显，不能把一段5秒斜率外推为长期恒定漂移 |
+| 5秒窗口变化率范围 | -0.006974～+0.008974°/s；日志每1.5秒报告最近一次5秒结果，重复报告不视为独立窗口 |
+| 温度 / 启动标定参考 | 29.75～30.00℃ / 36.94℃；本段有升温/冷却背景差异，长期温漂仍需观察 |
+| IMU及控制时效 | ready=1，cal=2000/2000，采样年龄最大40us；末次日志imu_errors=0，控制最大间隔10ms、IMU最大间隔4799us |
+| 电机与总线 | 四转向/四驱动均收到；三路CAN的tx_fail、rx_fail、lost、off、passive均为0 |
+| 许可与动作 | 全段phase=0、stopped=1、cmd=0；唯一阻塞0x0008=RC_OFFLINE，imu_ok=1；未发送ARM、GO或其他运动指令 |
+
+本次静态记录证明之前约0.21°/s的快速单向漂移已明显改善；当前绝对yaw约-1.04°不等于“又有1°/秒零漂”，应结合时长和变化率判断。上电后曾搬车，不能把全部累计角归为静态误差。此时仅允许狭小区域的小角度原地检查，不执行2米、往复或大幅度动作；小角度方向/比例、冷启动重复性及更长时间稳定性尚未验证。
+
+完整日志为`firmware/build/logs/uart-20261107-115130-152.log`；采集输出、599点CSV、统计JSON分别为`firmware/build/straight-review/yaw-static-resume-capture.txt`、`yaw-static-resume.csv`、`yaw-static-resume-summary.json`。COM19采集结束后已关闭并释放。上述本机证据位于Git忽略的build目录，关键结果保存在本文。
 
 ### 今天的单侧走廊直行计划（2026-11-07）
 

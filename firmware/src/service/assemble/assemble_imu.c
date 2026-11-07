@@ -1,4 +1,5 @@
 #include "assemble.h"
+#include "app_config.h"
 
 #include "imu/bmi088.h"
 #include "imu/imu.h"
@@ -22,6 +23,16 @@ SystemStatus assemble_imu(void) {
     }
 
     stm32_bmi088_register_callbacks();
+
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    /* This chassis has not validated the inherited board-specific temperature fit.
+     * Use this boot's measured bias, rather than replacing it with that fixed fit. */
+    bmi088_config.attitude.gyro_x_temp_coeff = 0.0f;
+    bmi088_config.attitude.gyro_y_temp_coeff = 0.0f;
+    bmi088_config.attitude.gyro_z_temp_coeff = 0.0f;
+    bmi088_config.attitude.gyro_z_bias_offset = 0.0f;
+    bmi088_config.attitude.gyro_z_bias_temp_coeff = 0.0f;
+#endif
 
     status = imu.init(&bmi088_config);
     if(status != IMU_STATUS_OK) {
