@@ -9,6 +9,7 @@ typedef struct { unsigned unused; } UART_HandleTypeDef;
 uint32_t g_test_tick_ms;
 static uint32_t fake_us;
 static bool fake_online = true, fake_calibrated = true, fresh_flag;
+static uint16_t fake_swd = 2000u, fake_vrb = 1500u;
 static unsigned sample_reads;
 static float fake_yaw;
 static char last_line[1024];
@@ -63,12 +64,12 @@ ImuStatus bmi088_get_attitude_debug(Bmi088AttitudeDebug* d) {
 }
 void remote_process(void) {}
 bool remote_get_state(RemoteState* r) {
-    *r = (RemoteState){.online = fake_online, .manual_request = true,
+    *r = (RemoteState){.online = fake_online, .manual_request = fake_swd == 2000u,
         .manual_source = REMOTE_MANUAL_SOURCE_CHASSIS};
     for(unsigned i = 0u; i < FS_IA10B_CHANNEL_COUNT; ++i) r->rc_data.channel[i] = 1500u;
     r->rc_data.channel[REMOTE_CH_SWA] = 1000u;
-    r->rc_data.channel[REMOTE_CH_SWD] = 2000u;
-    r->rc_data.channel[REMOTE_CH_VRB] = 1000u;
+    r->rc_data.channel[REMOTE_CH_SWD] = fake_swd;
+    r->rc_data.channel[REMOTE_CH_VRB] = fake_vrb;
     return true;
 }
 bool remote_is_online(uint32_t timeout) { (void)timeout; return fake_online; }
@@ -112,6 +113,17 @@ int main(void) {
     feedback(1000u);
     StraightInput in = input(1000u);
     assert(in.healthy && sample_reads == 1u);
+    /* Mode 6 ignores the spring-return VRB wheel; SWD remains the stop gate. */
+    fake_vrb = 2000u;
+    assert(input(1000u).healthy);
+    fake_vrb = 1000u;
+    assert(input(1000u).healthy);
+    fake_vrb = 1500u;
+    fake_swd = 1000u;
+    in = input(1000u);
+    assert(!in.healthy && (blockers & BLOCK_RC_SWITCH));
+    fake_swd = 2000u;
+    assert(input(1000u).healthy);
     fake_us += 2000u;
     in = input(1002u);
     assert(in.healthy && sample_reads == 1u); /* A consumed NEW flag is not a stale frame. */

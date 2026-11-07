@@ -117,8 +117,9 @@ static bool remote_permit(void) {
     rc_online = remote_get_state(&rc_state) && remote_is_online(100u);
     rc_switches = rc_state.manual_request && rc_state.manual_source == REMOTE_MANUAL_SOURCE_CHASSIS &&
         rc_state.rc_data.channel[REMOTE_CH_SWC] != REMOTE_SW_HIGH &&
-        rc_state.rc_data.channel[REMOTE_CH_VRA] > REMOTE_VR_LOW_THRESHOLD &&
-        rc_state.rc_data.channel[REMOTE_CH_VRB] <= REMOTE_VR_LOW_THRESHOLD;
+        rc_state.rc_data.channel[REMOTE_CH_VRA] > REMOTE_VR_LOW_THRESHOLD;
+    /* Mode 6 uses the latching SWD switch as permit/stop. The FS-i6S VRB
+     * wheel springs back to centre; normal manual mode keeps its own VRB gate. */
     rc_centered = true;
     const unsigned channels[] = {REMOTE_CH_RIGHT_X, REMOTE_CH_RIGHT_Y, REMOTE_CH_LEFT_X};
     for(unsigned i = 0u; i < 3u; ++i)
@@ -259,7 +260,7 @@ static void log_detail(uint32_t now, StraightInput in) {
             (unsigned)rx_fault, (unsigned)tx_fault);
     } else if(slot == 1u) {
         const uint16_t* ch = rc_state.rc_data.channel;
-        log_info("TEST_REMOTE t_ms=%lu online=%u switches_ok=%u centered=%u source=%u SWA=%u SWB=%u SWC=%u SWD=%u VRA=%u VRB=%u RX=%u RY=%u LX=%u",
+        log_info("TEST_REMOTE t_ms=%lu online=%u switches_ok=%u centered=%u source=%u SWA=%u SWB=%u SWC=%u SWD=%u VRA=%u VRB=%u RX=%u RY=%u LX=%u vrb_required=0",
             (unsigned long)now, (unsigned)rc_online, (unsigned)rc_switches, (unsigned)rc_centered,
             (unsigned)rc_state.manual_source, ch[REMOTE_CH_SWA], ch[REMOTE_CH_SWB], ch[REMOTE_CH_SWC],
             ch[REMOTE_CH_SWD], ch[REMOTE_CH_VRA], ch[REMOTE_CH_VRB], ch[REMOTE_CH_RIGHT_X],
@@ -350,6 +351,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY mode=6 target=%.2fm speed<=0.10m/s radius=0.051 NOMINAL laser_limit=0; PING ARM GO <token> HB <token> STOP; no automatic restart",
         (double)STRAIGHT_TEST_TARGET_M);
     log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1500 FW_period_ms=100");
+    log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 vrb_required=0");
 }
 void straight_test_app_loop(void) {
     const uint32_t now = HAL_GetTick();

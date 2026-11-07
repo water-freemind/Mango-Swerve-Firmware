@@ -99,6 +99,10 @@ foreach ($item in $items) {
     if ($command.Trim() -notin @('UI ARM','UI GO')) { Assert $accepted ('JSON command unsupported - ' + $command) }
 }
 Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' }).Count -eq 0) 'Static panel sent a motion command'
+$messages.Clear()
+Assert ($static.Command('UI SNAPSHOT REMOTE', 4000)) 'Stale snapshot command rejected as unknown'
+Assert ($messages[-1].Contains('UART_STATUS_STALE')) 'Stale UART data was presented as a current snapshot'
+Assert (@($messages | Where-Object { $_.StartsWith('cached ') }).Count -eq 0) 'Stale cached channels were returned'
 
 # Actual bidirectional sockets through the production receive/forward functions.
 $server = [Net.Sockets.UdpClient]::new([Net.IPEndPoint]::new([Net.IPAddress]::Loopback,0))

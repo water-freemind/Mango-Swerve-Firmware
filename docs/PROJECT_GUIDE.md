@@ -495,11 +495,13 @@ PR #1已合并，提交为 `b37d15c613f54bebc4ed467441d9ecf7939ff3b5`。本地�
 
 **当前1米配置（最新）。** 用户确认本次场地先走1米，且不启用激光限位。`straight_test.h`集中定义目标1.00m、超程阈值1.10m、运行时限25秒；保持0.10m/s上限及起步/制动包络，估计达到0.99m时请求停车，继续累计停车阶段行程。激光仍只在TEST_LASER记录，`control=OBSERVE_ONLY`；没有将距离、新鲜度或激光失联加入本次行驶许可/停车判断。TEST_READY明确`laser_limit=0`，TEST_STATUS周期上报`target_m=1.00`，主机桥接不接受2米或缺少目标声明的旧固件。保留遥控、电机/IMU时效、航向、心跳和超程保护，不自动开始、不自动返回。
 
-VOFA源JSON和安装副本均已改名为单次1米，启动入口为`Mango-VOFA-1m-OPEN-AREA.cmd`；旧`Mango-VOFA-2m-OPEN-AREA.cmd`已改名为`.retired-20261107-131438-155.bak`归档。用户需在已打开的VOFA中重新载入命令文件；不会替用户覆盖波形/端口配置。主机测试覆盖1米完成、超程/超时，以及旧固件距离不匹配时拒绝ARM，83源文件ARM构建通过。车端已完成备份、写入和Verified OK，未发送ARM/GO或运动命令。
+**最新SWD许可版本部署。** 新固件通过主机回归及StraightTest/ManualStandalone各83源文件构建；烧录日志`firmware/build/straight-review/swd-latch-flash.log`含Verified OK和FLASH_OK。原板备份为`firmware/build/backup/before-flash-20261107-141646-675.bin`（1048576字节），新HEX SHA256为`6A9E7BE4E1D9256D96B30860DA681614F05C887430E5DDBAEF6C71F01A5D7BAA`。COM19桥接日志`firmware/build/logs/straight-console-20261107-141910.log`确认VRB=1500、SWC=1500、SWD=2000时healthy=1、blocked=NONE；随后用户实际启动首轮，停车原因见下文。构建/回归记录为`swd-latch-build-StraightTest.log`、`swd-latch-build-ManualStandalone.log`、`swd-latch-host-tests.log`。
 
-本次首次HID烧录在读取设备信息CMD_INFO时失败，USB Bulk只读探测同样失败，均在擦写前退出。用户重新插拔电脑端USB后，HID只读探测恢复，随后完整备份并校验`firmware/build/backup/before-flash-20261107-131807-854.bin`（1048576字节），烧录日志`firmware/build/straight-review/one-meter-flash-retry.log`含Verified OK和FLASH_OK。1米HEX的SHA256为`A1380B68DBB868C096924D0845F1687869E5B5D323B114DD43984BD7E79A3B73`，完整构建和主机回归记录为`one-meter-build.log`、`one-meter-host-tests.log`。
+VOFA源JSON已改为单次1米，启动入口为`Mango-VOFA-1m-OPEN-AREA.cmd`；旧2米入口归档。最新联合启动器在VOFA完全退出后备份并设置默认UDP/FireWater和命令文件，保留其他设置，见[中文命令面板](#vofa中文命令面板2026-11-07)。主机测试覆盖1米完成、超程/超时，以及旧固件距离不匹配时拒绝ARM。
 
-只读COM19记录`firmware/build/logs/uart-20261107-131953-331.log`及`firmware/build/straight-review/one-meter-postflash-uart.log`确认：全段phase=0、token=0、stopped=1、target_m=1.00、s/vx/cmd=0；四轮转向/驱动均收到，imu_ok=1、imu_errors=0；TEST_LASER仍为OBSERVE_ONLY。当前唯一阻塞为RC_OFFLINE，需打开并绑定遥控器、满足既有开关与回中条件后才可准备/开始。上述记录只证明1米固件已部署并待命，不证明已经行走或到点精度。
+**首次1米部署（历史）。** 首次HID烧录在读取设备信息CMD_INFO时失败，USB Bulk只读探测同样失败，均在擦写前退出。用户重新插拔电脑端USB后，HID只读探测恢复，随后完整备份并校验`firmware/build/backup/before-flash-20261107-131807-854.bin`（1048576字节），烧录日志`firmware/build/straight-review/one-meter-flash-retry.log`含Verified OK和FLASH_OK。该版HEX的SHA256为`A1380B68DBB868C096924D0845F1687869E5B5D323B114DD43984BD7E79A3B73`，完整构建和主机回归记录为`one-meter-build.log`、`one-meter-host-tests.log`。
+
+当时只读COM19记录`firmware/build/logs/uart-20261107-131953-331.log`及`firmware/build/straight-review/one-meter-postflash-uart.log`确认：全段phase=0、token=0、stopped=1、target_m=1.00、s/vx/cmd=0；四轮转向/驱动均收到，imu_ok=1、imu_errors=0；TEST_LASER仍为OBSERVE_ONLY。该次采集的唯一阻塞为RC_OFFLINE；后来已恢复遥控，见最新SWD版本记录。上述历史采集不证明行走或到点精度。
 
 随后在Static桥接模式完成真实COM19和本机UDP双向检查：从UDP发送PING并收到MCU的`TEST_ACK ok=1 phase=0`；六类缓存快照、静态yaw开始/结束标记和四路FW波形均通过。测试全程IDLE，未发送ARM/GO，末尾关闭串口并成功重新打开以确认释放。结果记录为`firmware/build/straight-review/one-meter-panel-live-result.log`，UDP及工具输出在`one-meter-vofa-panel-live-retry-*.log`，结果为VOFA_PANEL_LIVE_OK。此前初版面板的COM超时属于历史失败记录，当前实际连通已恢复；VOFA界面命令文件仍需用户重新载入。
 
@@ -509,11 +511,13 @@ VOFA源JSON和安装副本均已改名为单次1米，启动入口为`Mango-VOFA
 
 复位后只读COM19四秒，日志保存在`build/straight-review/post-flash-uart.log`：phase=0、token=0、stopped=1、s=0、cmd=0、result=IDLE，healthy=0，右侧627–632mm且laser_fresh=1；FW第0路当时约-4.35至-4.40度。程序处于待命，启动条件尚未全部满足，不能由上行正常认定已可运动。真实1m、GUI绑定和下行命令仍待现场验证。
 
-**产物与入口。** `build-local.ps1 -Mode StraightTest`输出`build/StraightTest/robot.hex/.elf/.bin`，APP_RUN_MODE=6。默认构建/烧录仍为Diagnostics，烧录脚本只新增显式StraightTest选项，本轮没有执行。逻辑在`src/service/straight_test.*`，硬件与串口适配在`src/app/straight_test_app.*`。初始化会使能电机并发送静止保持命令，但不主动前进、回零或驻车转向；仍需避开机构运动空间。启动失败不会进入测试调度。
+**产物与入口。** `build-local.ps1 -Mode StraightTest`输出`build/StraightTest/robot.hex/.elf/.bin`，APP_RUN_MODE=6。默认构建/烧录仍为Diagnostics；本次已显式选择StraightTest部署。逻辑在`src/service/straight_test.*`，硬件与串口适配在`src/app/straight_test_app.*`。初始化会使能电机并发送静止保持命令，但不主动前进、回零或驻车转向；ARM也只准备，不改变轮向。GO后才执行直行转向目标，并由`steer_then_drive`检查四轮角度到位后放行驱动。上电不转向符合该测试模式的待命设计，不能单凭外观看作CAN或零位失效。启动失败不会进入测试调度。
 
 **直行与停车。** 模式6采用10ms控制/状态机周期、约4ms IMU更新，不改Manual的TIM6调度。测试用BMI088本体姿态yaw和修正gyro_z，GO时锁定yaw_ref，沿用Kp=0.8/Kd=0.1、角速度修正限幅±0.03rad/s；vx最高0.10m/s、vy=0，起步加速度0.05m/s²，近终点按减速度0.10m/s²的速度包络降低目标。行程为四轮带安装符号的输出轴角速度乘有效半径、投影到车体前向后的平均值积分，估计达到0.99m时请求零速，继续累计停机阶段行程。连续200ms四轮输出轴速度均小于0.05rad/s且反馈健康才显示DONE；这不替代外部停车距离测量。
 
 测试半径统一为`straight_test.h:STRAIGHT_TEST_WHEEL_RADIUS_M=0.051m`，是102mm名义轮径初值，仅覆盖模式6的控制/测距尺度，其他模式旧配置保留。实际载荷、轮径和滑移未标定，因此不能把程序报告1m当作实际已经走准1m。右侧激光`distance_mm[1]`只记录，不参与转向/横移，也不是本模式的避障保证；首轮须核对真实行程、离墙变化和车头方向。
+
+**控制链路与首轮行走。** 模式6同时使用轮速里程积分和IMU航向角环：M3508反馈已在驱动层按3591/187减速比换算为输出轴rad/s，再乘0.051m、转向角前向投影及安装符号，四轮平均后积分为`s`；不把IMU加速度二次积分作为本次行程。GO时锁定当前yaw，运行中以Kp=0.8及gyro_z阻尼Kd=0.1修正wz，限幅±0.03rad/s。用户首轮反馈“挺直”。日志token=1起步锁定约1.86°，运行中wz有非零修正；在`s=0.953m`附近SWD变为1000，进入phase=5、`blocked=RC_SWITCH result=FEEDBACK_OR_PERMIT`并请求零速，随后反馈停稳。这是许可撤销停车，未出现TARGET_REACHED；故障后`s`不继续累计滑行，0.953m也不是卷尺实测的最终停距。证据摘要为`firmware/build/straight-review/swd-latch-runtime-verification.json`。后续token=2/3均正常完成TARGET_REACHED，最终里程估计分别0.991m/0.992m。用户将地面实测更正为约103.2cm（未指定对应编号），比100cm目标多3.2cm、约3.2%。该结果属一次近似实测，暂不修改轮径或PID，待同一起止基准的重复测量后再确定尺度校准。
 
 **接收协议。** USART1双向921600、8N1，ASCII大写，行尾LF或CRLF均可。接收中断只入128字节环形缓冲，主循环处理最长47字节命令。命令如下。
 
@@ -533,11 +537,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 
 工具打开串口后不自动ARM/GO；输入PING检查下行，满足许可后输入ARM，看到本次编号再输入`GO 编号`（工具也允许简写GO，使用收到的ARM编号）。工具在GO之后自动发送200ms心跳，Escape或STOP请求中止，QUIT退出时尝试STOP。意外关闭或无线中断时依靠车端租期退出；心跳超时按车端最后有效包的到达时刻计算，不能据此证明无线传输没有排队延迟。日志保存在`build/logs/straight-console-*.log`。VOFA+若手动GO却没有持续心跳，车会在超时后终止，不能完成约12秒的试验。
 
-**遥控许可沿用现有底盘约定。** 遥控在线，SWA=1000/SWD=2000，SWC不为1000，VRA>1200，VRB≤1200，平移/旋转杆均回中±10。遥控只提供许可和撤销，不用杆量决定测试速度；与ManualStandalone的许可切换流程区分。截图remote=0时ARM会被拒绝，不会仅因串口连通而运动。心跳不是唯一停止手段，退出遥控许可同样终止。
+**1米测试遥控许可（SWD保持式）。** 用户确认FS-i6S的VRB会回中，随后明确授权仅模式6取消VRB保持要求。遥控在线、SWA=1000、SWD=2000、SWC不为1000、VRA>1200，右杆X/Y及左杆X回中1500±10；VRB仅记录，`vrb_required=0`。SWD切到1000撤销许可并请求停车；恢复到2000不自动续跑，仍需重新准备/开始。遥控在该模式仅提供许可和撤销，杆量不决定测试速度。正常Manual/ManualStandalone保留队友原VRB条件及重新使能流程，未修改发射机本身设置。
 
 **FS-i6S屏幕“飞行模式关闭”。** 若使用FS-i6S，该提示表示发射机的飞行模式预设功能未启用；厂家手册第5.3节将其定义为通过开关组合选择同一通道的预设输出值。本底盘直接判断SWA/SWD/SWC、VRA/VRB及摇杆通道，不依赖该功能，保持关闭即可。`RC_SWITCH`应通过TEST_REMOTE的实际通道值排查，不能用屏幕的飞行模式状态代替行驶许可判断。用户目前仅表示“好像是FS-i6S”，型号仍待机身标识确认。依据：[FS-i6S官方手册](https://www.flyskytech.com/u_file/photo/20210420/FS-i6S%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E%E4%B9%A620210416.pdf)。
 
-**现场操作顺序。** 发射机开机并与车载接收机正常绑定，接收机仍连接DM的i.BUS输入；不需要把遥控器连电脑。以接收原始值核对开关，不凭“向上/向下”猜位置。两杆回中，SWC可取1500或2000；先保持VRB>1200禁止启动，检查日志后再切至≤1200，确认TEST_STATUS healthy=1、stopped=1、cmd=0。PING回显只证明指令下行，不能代替健康检查。此模式无需用摇杆给前进量，拨动摇杆离开中心反而撤销许可。
+**现场操作顺序。** 发射机开机并与车载接收机正常绑定，接收机仍连接DM的i.BUS输入；不需要把遥控器连电脑。先让SWD保持1000停止端，以接收原始值核对SWA=1000、SWC=1500或2000、VRA>1200，右杆X/Y和左杆X回中。准备好后将SWD切至2000许可端，确认TEST_STATUS healthy=1、stopped=1、cmd=0；VRB可以松手回中。再用VOFA准备/开始，运行中切回SWD=1000或点STOP均请求停车，需结合新鲜反馈确认停稳。PING只证明指令下行。此模式无需推前进杆，摇杆离开中心会撤销许可。
 
 首次先做短距离STOP演练：ARM收到ok=1和token后5秒内GO，缓慢起步后发STOP或按Escape，确认实际停稳以及result=ABORT。再把车恢复到右墙平行的起点，重新ARM取得新token，执行完整1m。保持串口工具运行，不与VOFA+抢占同一端口；不要在收到ARM回显之前批量发送ARM和GO。phase=4且result=TARGET_REACHED才是完整到点，phase=4且ABORT表示主动中止。结束后不会返回，也不能用测试模式的遥控杆开回；需要人工重新布置时先确认停稳，涉及搬车/摆轮先失能或断电。记录真实距离、横向偏移、车头方向和日志，再决定下一次测试。
 
@@ -615,10 +619,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 
 **首次使用。**
 
-1. 断开VOFA对COM19的占用，双击`D:\Vofa +\x64\Mango-VOFA-Static.cmd`。工具独占COM19，监听127.0.0.1:1348，向1347转发波形和日志。该入口只允许观察、记录、PING及STOP，不允许ARM/GO。
-2. VOFA选择FireWater和UDP，本地端口1347、远端IP127.0.0.1、远端端口1348，打开接口。
-3. 在命令面板载入`D:\Vofa +\x64\vofa+.cmds.json`，展开分组，点需要的中文命令。不需编辑命令文字或输入编号；每项均带说明及实际LF字节，单项只发送一次。分组关闭批量循环，避免将检查和启动步骤作为循环脚本。
-4. 仅观察时使用Static入口。本次场地允许1米测试后，先关闭静态工具，再双击`Mango-VOFA-1m-OPEN-AREA.cmd`。两种入口都不自动ARM/GO，也不能同时占用COM19。桥接确认车端`target_m=1.00`，再依次点“步骤1 准备直行”、等待`arm_ready=1`、4秒内点“步骤2 开始”；目标不符、没有就绪许可或状态陈旧会拒绝。停止按钮可随时取消。激光只记录，不作限位。
+1. 完全退出VOFA后，双击`D:\Vofa +\x64\Mango-VOFA-Static.cmd`，或本次1米测试使用`Mango-VOFA-1m-OPEN-AREA.cmd`。入口会联合打开VOFA及后台桥接，不自动ARM/GO。Static只允许观察、记录、PING及STOP。
+2. 默认FireWater/UDP和中文命令会从备份后的保存配置恢复。VOFA本地端口1347、远端127.0.0.1:1348；点左上角连接按钮即可。桥接独占COM19，不要让VOFA再连接串口。
+3. 展开命令分组，点对应项的发送按钮。无需手工载入、编辑指令或输入编号；每项带说明及真实LF字节。仓库源JSON位于`firmware/vofa/vofa+.cmds.json`，安装副本位于D盘及VOFA实际默认context目录。
+4. 已提供许可后，确认车端`target_m=1.00`和healthy=1，再依次点“步骤1 准备直行”、等待`arm_ready=1`、4秒内点“步骤2 开始”。目标不符、没有就绪许可或状态陈旧会拒绝。SWD=1000或STOP撤销本次测试；VRB在新模式6中不要求保持。激光只记录，不作限位。
 
 | 分组 | 中文命令及实际作用 |
 | --- | --- |
@@ -627,9 +631,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 | yaw观察记录 | 开始静置记录、开始手动小角度旋转记录、结束记录，共3项。仅在主机日志打标并计算FW角度的累计变化，正确跨越±180°；不清零yaw、不驱动电机。手动旋转需转整车而非仅转舵轮。输出时长为主机时间，精确漂移仍以板端TEST_DRIFT为准。 |
 | 单次1米直行 | 准备和开始，共2项。工具自动解析ARM ACK中的编号，GO确认后每200ms发本次HB；错误编号、不成功的ACK或超时不会继续。遥控/电机/IMU许可仍由车端检查。没有增加原地电机旋转、自动往复或参数修改指令。 |
 
-桥接仅绑定本机回环地址，采用有限命令白名单，不接受UDP下发任意串口文本或手填编号。状态超过400ms未更新、GO确认超过500ms则发STOP并停止心跳；结束、故障、STOP或复位清除会话。VOFA关闭后若工具仍运行，已确认的单次试验会继续按车端距离/时限结束；停止手段仍为STOP、终止工具及遥控许可撤销。串口/无线断开时无法保证STOP送达，车端仍按既有750ms租期故障停车，不自动重连续跑。
+桥接仅绑定本机回环地址，采用有限命令白名单，不接受UDP下发任意串口文本或手填编号。状态超过400ms未更新、GO确认超过500ms则发STOP并停止心跳；结束、故障、STOP或复位清除会话。联合入口带`-ExitWithVofa`，每500ms检查VOFA进程，完全退出后桥接尝试STOP并结束；独立启动且未带该参数的工具不会随VOFA退出。停止手段仍为STOP、终止工具及遥控许可撤销。串口/无线断开时无法保证STOP送达，车端仍按既有750ms租期故障停车，不自动重连续跑。
 
-**维护与验证。** 唯一源文件为`firmware/vofa/vofa+.cmds.json`，安装脚本`firmware/vofa/install-vofa-panel.ps1`复制至指定VOFA目录并生成两个启动入口。初次备份为`D:\Vofa +\x64\vofa+.cmds.before-mango-20261107-120445-806.json`；安装文件与仓库源文件SHA256一致。VOFA原有波形/串口配置文件未被覆盖；载入命令的GUI步骤需用户执行。本环境无可调用的computer-use node_repl，未代替用户操作界面。
+**维护与验证。** 命令源为`firmware/vofa/vofa+.cmds.json`，`install-vofa-panel.ps1`生成两个入口，`start-vofa-panel.ps1`负责联合启动。`-ConfigureContext`只在VOFA完全退出后备份并修改其实际保存目录`AppData/Local/vofa+/100/context`：设置PAL的UDP/FireWater字段并复制默认命令文件，其余配置保留。原始配置备份在`mango-backup-20261107-135327-824`，后续启动另留备份；实际JSON语义比较确认其他设置未变，自动化测试也覆盖保存配置、备份与安装副本一致性。本环境没有可调用的computer-use node_repl，因此未模拟鼠标键盘，连接/查询按钮由用户实际点击。
+
+**查询链路现场修复。** 用户截图`UI SNAPSHOT REMOTE → TEST_ACK ok=0`表明命令误发给MCU；当时没有桥接进程/1348监听，VOFA默认命令仍是368字节旧示例。修复保存配置与联合启动后，VOFA实际监听1347，桥接监听1348；用户点击发送后，日志收到`TEST_PANEL snapshot=REMOTE`及对应`TEST_REMOTE`，双方均能读取通道。出现串口乱码时，旧缓存曾已过期，因此查询增加500ms状态新鲜度检查，过期时报告`UART_STATUS_STALE`，不再回传旧通道当作当前状态；电脑端桥接重连后恢复正常数据。后台完整日志保存于`firmware/build/logs/straight-console-*.log`，可由助手读取，无需抢占VOFA串口。
+
+**遥控策略范围与验证。** 与队友基线`2035c58`比较，remote.c/h、正常遥控入口、CAN映射、三档速度、转向零位和航向保持参数保留。本次经用户明确选择，仅在独立的straight_test_app.c中移除VRB门槛，并在日志声明`remote_policy=SWD_LATCH`及`vrb_required=0`。主机测试验证VRB三种位置均允许测试许可，SWD=1000仍撤销许可；正常手动的VRB回归继续通过。StraightTest和ManualStandalone各83源文件构建通过；ManualStandalone改动前后BIN SHA256同为`3AA47CB9380589857E5F3966097C49DF807BF61A943C8A0A5586C250CFCADD3D`，对比记录为`firmware/build/straight-review/manual-swd-change-comparison.json`。新测试固件已烧录并确认VRB回中许可通过，用户首轮行走也验证了SWD撤销触发停车；后续两轮到点通过，用户实测约103.2cm；重复性及精确标定仍待验证。
 
 初版离线测试逐项解码13个原生命令，验证真实换行、单次发送、中文说明和处理器支持；覆盖静态禁行、动态编号更新、GO确认后心跳、超时停止、复位失效、角度跨界，以及通过生产接收/转发函数的双向UDP回环。初版实机测试曾出现COM19驱动“信号灯超时”，之后单独4秒只读监视也未收到车端字节，历史记录在`firmware/build/straight-review/vofa-panel-live-*.log`和`vofa-direct-serial-check.log`；初版面板仅改主机工具，没有修改MCU镜像。后续1米版本已完成对应MCU修改、烧录和实际双向连通，见上节最新部署证据；仍未执行运动。
 

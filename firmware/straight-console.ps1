@@ -7,6 +7,7 @@ param(
     [ValidateRange(0,65535)][int]$CommandPort = 0,
     [switch]$AllowMotion,
     [switch]$UiOnly,
+    [switch]$ExitWithVofa,
     [ValidateRange(0,3600)][int]$RunSeconds = 0
 )
 $ErrorActionPreference = 'Stop'
@@ -62,7 +63,7 @@ public static class MangoStraightConsole {
                 panel.Command(Encoding.ASCII.GetString(packet), now);
         }
     }
-    public static void Run(string port, int baud, string logPath, int wavePort, int commandPort, bool allowMotion, bool uiOnly, int runSeconds) {
+    public static void Run(string port, int baud, string logPath, int wavePort, int commandPort, bool allowMotion, bool uiOnly, int runSeconds, bool exitWithVofa) {
         using (SerialPort serial = new SerialPort(port, baud, Parity.None, 8, StopBits.One))
         using (UdpClient wave = commandPort == 0 ? new UdpClient() :
             new UdpClient(new IPEndPoint(IPAddress.Loopback, commandPort)))
@@ -76,6 +77,7 @@ public static class MangoStraightConsole {
             StringBuilder input = new StringBuilder();
             StringBuilder pending = new StringBuilder();
             Stopwatch clock = Stopwatch.StartNew(); long nextHb = 0;
+            long nextAppCheck = 0;
             Action<string> panelLog = delegate(string text) {
                 string message = "[INFO] TEST_PANEL " + text;
                 Console.WriteLine(message); log.WriteLine(message);
@@ -89,6 +91,13 @@ public static class MangoStraightConsole {
             try {
                 while (true) {
                     if (runSeconds != 0 && clock.ElapsedMilliseconds >= runSeconds * 1000L) break;
+                    if (exitWithVofa && clock.ElapsedMilliseconds >= nextAppCheck) {
+                        Process[] apps = Process.GetProcessesByName("vofa+");
+                        bool closed = apps.Length == 0;
+                        foreach (Process app in apps) app.Dispose();
+                        if (closed) break;
+                        nextAppCheck = clock.ElapsedMilliseconds + 500;
+                    }
                     string rx = serial.ReadExisting();
                     if (rx.Length != 0) {
                         Console.Write(rx); log.Write(rx); pending.Append(rx);
@@ -225,6 +234,10 @@ public sealed class VofaTestSession {
                 case "CAN": pattern = @"^TEST_CAN_"; break;
                 default: report("rejected=UNKNOWN_SNAPSHOT"); return false;
             }
+            if (now - lastStatus > 500) {
+                report("snapshot=" + category + " ready=0 reason=UART_STATUS_STALE status_age_ms=" + (now - lastStatus));
+                return true;
+            }
             report("snapshot=" + category + " status_age_ms=" + (now - lastStatus) + " source=CACHED_UART");
             foreach (KeyValuePair<string, string> item in cache) if (Regex.IsMatch(item.Key, pattern)) report("cached " + item.Value);
             return true;
@@ -269,4 +282,4 @@ public sealed class VofaTestSession {
     }
 }
 '@
-[MangoStraightConsole]::Run($Port, $BaudRate, $logPath, $WavePort, $CommandPort, $AllowMotion.IsPresent, $UiOnly.IsPresent, $RunSeconds)
+[MangoStraightConsole]::Run($Port, $BaudRate, $logPath, $WavePort, $CommandPort, $AllowMotion.IsPresent, $UiOnly.IsPresent, $RunSeconds, $ExitWithVofa.IsPresent)

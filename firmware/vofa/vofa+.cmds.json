@@ -201,7 +201,7 @@
       {
         "name": "03 单次1米直行（确认前方有净空）",
         "intro_on": true,
-        "intro": "需启动1m-OPEN-AREA入口；Static入口拒绝。必须确认固件target_m=1.00及遥控、IMU、电机就绪。激光仅记录，不参与限位停车。",
+        "intro": "需1m入口及target_m=1.00；SWD=2000许可，1000停止，1米模式不要求保持VRB。仍需SWA=1000、SWC不为1000、VRA>1200及摇杆回中。激光仅记录。",
         "hex_on": true,
         "loop_on": false,
         "loop_ms": 100,
