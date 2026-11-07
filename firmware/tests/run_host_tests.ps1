@@ -247,6 +247,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear test failed.' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_straight_console.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'Straight console loopback test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_vofa_panel.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'VOFA command panel test failed.' }
 
 $diagnosticIncludes = @('-std=c11', '-Wall', '-Wextra', '-Werror', '-DTEST_CAN_HAL',
     "-I$(Join-Path $PSScriptRoot 'fakes')",

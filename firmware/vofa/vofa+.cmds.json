@@ -1,0 +1,243 @@
+{
+  "type": "cmds",
+  "vnumber": 100,
+  "ctx": {
+    "name": "Mango底盘测试面板",
+    "intro_on": true,
+    "intro": "先双击Mango-VOFA-Static.cmd。VOFA用FireWater、UDP本地1347、远端127.0.0.1:1348；导入此文件。每个命令只发送一次，不用编辑内容或填写编号。",
+    "hex_on": true,
+    "loop_on": false,
+    "loop_ms": 100,
+    "loop_count": 1,
+    "cmd_hex": "",
+    "is_group": true,
+    "down": true,
+    "subCmds": [
+      {
+        "name": "00 停止与连通",
+        "intro_on": true,
+        "intro": "只点单项；停止始终可用，连通检查不运动。",
+        "hex_on": true,
+        "loop_on": false,
+        "loop_ms": 100,
+        "loop_count": 1,
+        "cmd_hex": "",
+        "is_group": true,
+        "down": true,
+        "subCmds": [
+          {
+            "name": "停止／取消本次测试",
+            "intro_on": true,
+            "intro": "发送停止并取消待启动编号及自动心跳。仍需看 stopped=1 确认停稳。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 54 4F 50 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "连通检查（不运动）",
+            "intro_on": true,
+            "intro": "经串口发送 PING，观察 TEST_ACK ok=1。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 50 49 4E 47 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          }
+        ]
+      },
+      {
+        "name": "01 静态状态检查（不运动）",
+        "intro_on": true,
+        "intro": "显示最近收到的详细日志，文字保留原板端时间；缓存不代表新查询采样。",
+        "hex_on": true,
+        "loop_on": false,
+        "loop_ms": 100,
+        "loop_count": 1,
+        "cmd_hex": "",
+        "is_group": true,
+        "down": true,
+        "subCmds": [
+          {
+            "name": "整车状态与未就绪原因",
+            "intro_on": true,
+            "intro": "查看状态、许可阻塞和控制时序。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 4E 41 50 53 48 4F 54 20 53 54 41 54 45 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "IMU／yaw／零漂／温度",
+            "intro_on": true,
+            "intro": "查看标定进度、原始陀螺、实际零偏及5秒漂移。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 4E 41 50 53 48 4F 54 20 49 4D 55 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "四路激光距离",
+            "intro_on": true,
+            "intro": "接口1左、2右、3后、4前，单位mm；仅观察。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 4E 41 50 53 48 4F 54 20 4C 41 53 45 52 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "遥控器开关与摇杆",
+            "intro_on": true,
+            "intro": "查看在线、开关许可及回中情况。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 4E 41 50 53 48 4F 54 20 52 45 4D 4F 54 45 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "四轮电机反馈",
+            "intro_on": true,
+            "intro": "查看各轮角度、速度、反馈年龄和电流原始值。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 4E 41 50 53 48 4F 54 20 4D 4F 54 4F 52 53 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "CAN1／CAN2／CAN3诊断",
+            "intro_on": true,
+            "intro": "查看三路接收、发送失败、丢帧及总线故障。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 53 4E 41 50 53 48 4F 54 20 43 41 4E 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          }
+        ]
+      },
+      {
+        "name": "02 yaw观察记录（不驱动车辆）",
+        "intro_on": true,
+        "intro": "仅标记日志，软件不转动电机、不清零yaw。旋转记录需人工转动整车。",
+        "hex_on": true,
+        "loop_on": false,
+        "loop_ms": 100,
+        "loop_count": 1,
+        "cmd_hex": "",
+        "is_group": true,
+        "down": true,
+        "subCmds": [
+          {
+            "name": "开始静置漂移记录",
+            "intro_on": true,
+            "intro": "保持整车静止，约60秒后点结束记录。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 52 4B 20 53 54 41 54 49 43 5F 42 45 47 49 4E 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "开始手动小角度旋转记录",
+            "intro_on": true,
+            "intro": "只记录yaw；由人工转动整车，勿只转舵轮。旋转后点结束记录。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 52 4B 20 52 4F 54 41 54 45 5F 42 45 47 49 4E 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "结束记录并显示角度变化",
+            "intro_on": true,
+            "intro": "输出本段时长及累计yaw变化角度，记录进串口工具日志。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 52 4B 20 45 4E 44 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          }
+        ]
+      },
+      {
+        "name": "03 单次2米直行（仅开阔区域）",
+        "intro_on": true,
+        "intro": "需启动2m-OPEN-AREA入口；Static入口拒绝。必须遥控许可、IMU及电机全部就绪。当前狭小实验室不可执行。",
+        "hex_on": true,
+        "loop_on": false,
+        "loop_ms": 100,
+        "loop_count": 1,
+        "cmd_hex": "",
+        "is_group": true,
+        "down": true,
+        "subCmds": [
+          {
+            "name": "步骤1 准备直行（尚不运动）",
+            "intro_on": true,
+            "intro": "点一次，等 arm_ready=1；4秒内点步骤2。编号由工具自动记录。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 41 52 4D 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "步骤2 开始单次2米前进",
+            "intro_on": true,
+            "intro": "最高0.10m/s；工具自动带编号并维持200ms心跳；结束后不自动返回或重跑。随时点停止。",
+            "hex_on": true,
+            "loop_on": true,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 47 4F 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          }
+        ]
+      }
+    ]
+  }
+}
