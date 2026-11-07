@@ -29,6 +29,10 @@ static inline void entry_loop(void) {
 #endif
 }
 
+#elif APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+#include "straight_test_app.h"
+static inline void entry_init(void) { straight_test_app_init(); }
+static inline void entry_loop(void) { straight_test_app_loop(); }
 #else
 
 #include "chassis.h"

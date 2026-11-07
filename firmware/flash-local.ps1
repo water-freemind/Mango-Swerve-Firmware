@@ -3,7 +3,7 @@ param(
     [string]$Toolchain = '',
     [ValidateSet('auto', 'hid', 'usb_bulk')][string]$DapBackend = 'hid',
     [switch]$ProbeOnly,
-    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest', 'StraightTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -57,6 +57,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Backup failed. Check the SWD connection and retry.' }
     if ((Get-Item -LiteralPath $backup).Length -ne 0x100000) { throw 'Incomplete backup' }
     $image = 'build/Debug/robot.hex'
+    if ($Mode -eq 'StraightTest') { $image = 'build/StraightTest/robot.hex' }
     if ($Mode -eq 'Manual') { $image = 'build/Manual/robot.hex' }
     if ($Mode -eq 'ManualStandalone') { $image = 'build/ManualStandalone/robot.hex' }
     if ($Mode -eq 'Steering') { $image = 'build/Steering/robot.hex' }

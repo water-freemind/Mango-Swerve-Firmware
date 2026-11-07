@@ -4,6 +4,14 @@
 
 **技术文档统一维护在 [项目指南](docs/PROJECT_GUIDE.md)。**
 
+## 待烧录的单次2米测试（2026-11-07）
+
+新增`StraightTest`（模式6）：上电待命，串口`ARM`后用一次性编号`GO <token>`启动，锁定起步航向，最高0.10m/s、缓起步/近终点减速，停稳后结束，不自动往返。`STOP`中止；运行中须每200ms左右发送`HB <token>`，超过750ms无有效心跳则故障并请求停车。保留遥控许可与电机/IMU新鲜度检查。右侧靠墙，日志记录接口2测距，不自动横移。
+
+构建：`powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest`。产物为`firmware/build/StraightTest/robot.hex`及对应ELF。当前只完成离线构建/测试，**未连接目标、烧录或发送运动指令**。默认模式仍为Diagnostics；等待用户另行通知才进行烧录。
+
+距离以102mm名义轮径估算，须用地面标尺核验真实2m；名义半径仅在测试模式使用。无线DAPLink的COM19/921600日志接收由用户截图确认，SWD擦写校验及串口下行指令仍待实测。协议、Windows PowerShell 5.1交互工具及停机条件见[测试操作说明](docs/PROJECT_GUIDE.md#指令启动的单次2米测试固件2026-11-07)。先完成单次2m，再决定往复测试。
+
 **本轮拉取与今天安排（2026-11-07）：**已同步PR #3合并提交`2035c58`，并核对正常零位补偿、独立遥控和航向保持已接入。今天按[单侧走廊长距离直行计划](docs/PROJECT_GUIDE.md#今天的单侧走廊直行计划2026-11-07)执行：车身对墙平行 → 低速2m量化复测 → 分原因调参 → 延长距离。单墙测距闭环尚未实现，先将墙作为外部验收基准。
 
 本轮离线检查修复不存在E盘时的工具发现、入口stddef.h依赖及两处MinGW浮点断言兼容性；主机回归及ManualStandalone/Manual/Diagnostics各81源文件构建通过。本轮未烧录或执行硬件动作。下文的实机结论为仓库合入的既有现场记录。

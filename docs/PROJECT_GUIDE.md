@@ -18,6 +18,7 @@
    - [调车准备与现场检查（2026-11-05）](#调车准备与现场检查2026-11-05)
    - [本机开发命令与构建验证](#本机开发命令2026-11-05)
    - [今天的单侧走廊直行计划（2026-11-07）](#今天的单侧走廊直行计划2026-11-07)
+   - [指令启动的单次2米测试固件](#指令启动的单次2米测试固件2026-11-07)
    - [明日调车与长距离直行计划（2026-11-06）](#明日调车与长距离直行计划2026-11-06)
 9. [向机械队友确认的项目](#9-向机械队友确认的项目)
 10. [资料依据与状态说明](#10-资料依据与状态说明)
@@ -487,6 +488,42 @@ VOFA+文本日志使用COM12、921600 bit/s、8N1、无流控、RawData和UTF-8�
 PR #1已合并，提交为 `b37d15c613f54bebc4ed467441d9ecf7939ff3b5`。本地维护路径见上文；`main`跟踪`origin/main`，后续整理与修正使用独立分支和PR。二进制、日志及原板备份保留在Git忽略的`firmware/build/`，不删除用户现场证据。
 
 此前仓库规则要求PR和正式批准，且最近一次推送须由其他有权限的人批准。2026-11-05用户明确表示临时关闭规则，授权本轮把整理分支直接合入main并关闭PR #2；后续以仓库实时设置和用户授权为准。常规维护仍推荐PR审查。评论区写“Accept”不算批准；审查者在 `Files changed → Review changes → Approve → Submit review` 提交。检查默认模式、动作入口、反馈/失败处理、CubeMX与生成代码一致性及测试证据。PR作者不能批准自己的PR。[GitHub审查说明](https://docs.github.com/en/pull-requests/how-tos/review-pull-requests/reviewing-proposed-changes-in-a-pull-request)、[受保护分支规则](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches)。
+
+### 指令启动的单次2米测试固件（2026-11-07）
+
+**当前边界。** 用户明确先构建，后续另行通知烧录。车在门外、右侧靠墙，已尽量摆平行；无线DAPLink的COM19以921600、8N1收到ManualStandalone日志。截图中remote=0/armed=0。此次未打开串口、探测SWD、烧录或启动动作。串口上行成功不等于SWD擦写/校验成功，DAP的UART是独立通信功能，见[Arm CMSIS-DAP UART说明](https://arm-software.github.io/CMSIS-DAP/latest/group__DAP__uart__gr.html)。
+
+**产物与入口。** `build-local.ps1 -Mode StraightTest`输出`build/StraightTest/robot.hex/.elf/.bin`，APP_RUN_MODE=6。默认构建/烧录仍为Diagnostics，烧录脚本只新增显式StraightTest选项，本轮没有执行。逻辑在`src/service/straight_test.*`，硬件与串口适配在`src/app/straight_test_app.*`。初始化会使能电机并发送静止保持命令，但不主动前进、回零或驻车转向；仍需避开机构运动空间。启动失败不会进入测试调度。
+
+**直行与停车。** 模式6采用10ms控制/状态机周期、约4ms IMU更新，不改Manual的TIM6调度。测试用BMI088本体姿态yaw和修正gyro_z，GO时锁定yaw_ref，沿用Kp=0.8/Kd=0.1、角速度修正限幅±0.03rad/s；vx最高0.10m/s、vy=0，起步加速度0.05m/s²，近终点按减速度0.10m/s²的速度包络降低目标。行程为四轮带安装符号的输出轴角速度乘有效半径、投影到车体前向后的平均值积分，估计达到1.99m时请求零速，继续累计停机阶段行程。连续200ms四轮输出轴速度均小于0.05rad/s且反馈健康才显示DONE；这不替代外部停车距离测量。
+
+测试半径统一为`straight_test.h:STRAIGHT_TEST_WHEEL_RADIUS_M=0.051m`，是102mm名义轮径初值，仅覆盖模式6的控制/测距尺度，其他模式旧配置保留。实际载荷、轮径和滑移未标定，因此不能把程序报告2m当作实际已经走准2m。右侧激光`distance_mm[1]`只记录，不参与转向/横移，也不是本模式的避障保证；首轮须核对真实行程、离墙变化和车头方向。
+
+**接收协议。** USART1双向921600、8N1，ASCII大写，行尾LF或CRLF均可。接收中断只入128字节环形缓冲，主循环处理最长47字节命令。命令如下。
+
+| 命令 | 行为 |
+| --- | --- |
+| PING | 回显状态，无运动、不续期运行心跳 |
+| ARM | 仅健康且已静止时返回TEST_ACK phase=1及本次token；有效5秒，不动作 |
+| GO `<token>` | 仅匹配已ARM编号、仍在5秒内且反馈/许可健康才启动单次2m；同一编号不能重复启动 |
+| HB `<token>` | 运行中保持链路租期，建议每200ms发送；超过750ms租期后到达的旧包不能恢复本次运行 |
+| STOP | 无需编号，立即撤销运动目标；随后验证停稳或报告故障，不自动返回 |
+
+主机工具`straight-console.ps1`必须用Windows PowerShell 5.1交互终端运行。**以下仅为未来操作说明，当前不执行：**烧录并获准测试后先退出占用COM19的VOFA+，再运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.ps1 -Port COM19
+```
+
+工具打开串口后不自动ARM/GO；输入PING检查下行，满足许可后输入ARM，看到本次编号再输入`GO 编号`（工具也允许简写GO，使用收到的ARM编号）。工具在GO之后自动发送200ms心跳，Escape或STOP请求中止，QUIT退出时尝试STOP。意外关闭或无线中断时依靠车端租期退出；心跳超时按车端最后有效包的到达时刻计算，不能据此证明无线传输没有排队延迟。日志保存在`build/logs/straight-console-*.log`。VOFA+若手动GO却没有持续心跳，车会在超时后终止，不能完成长达约20余秒的试验。
+
+**遥控许可沿用现有底盘约定。** 遥控在线，SWA=1000/SWD=2000，SWC不为1000，VRA>1200，VRB≤1200，平移/旋转杆均回中±10。遥控只提供许可和撤销，不用杆量决定测试速度；与ManualStandalone的许可切换流程区分。截图remote=0时ARM会被拒绝，不会仅因串口连通而运动。心跳不是唯一停止手段，退出遥控许可同样终止。
+
+**异常与日志。** 电机四个转向、四个驱动均须100ms内收到合格式反馈，转向state=1，IMU采样年龄≤100ms；CAN发送失败、Bus-Off/Error Passive、UART错误/缓冲溢出、控制间隔>50ms、航向误差>0.15rad、倒向速度<-0.03m/s、速度绝对值>0.30m/s、运行>45s或行程>2.10m均终止并请求停车。停车3秒仍未确认则FAULT。发送链路故障时不能保证停车命令到达，FAULT也不表示车已物理停稳；须核实反馈和现场状态。故障/结束不自动续跑，恢复反馈/链路后须重新ARM；CAN发送故障锁定至重启。
+
+TEST_STATUS每100ms记录phase、token、healthy、stopped、估计行程s、实测vx、目标cmd、yaw/ref/correction、right_mm/laser_fresh及result。phase依次0=IDLE、1=ARMED、2=RUNNING、3=STOPPING、4=DONE、5=FAULT；result=TARGET_REACHED才是正常到点，ABORT是主动停止。该模式仅单次前进，无自动后退或往复。
+
+**离线验证范围。** 完整主机回归通过，StraightTest/ManualStandalone/Manual/Diagnostics各83源文件完整ARM构建通过；日志在`build/straight-review/`。主机状态机测试覆盖默认静止、无许可拒绝、ARM过期、重复/旧/错误编号、心跳过期、定速限幅、2m完成与连续停稳、STOP、逆行/非数反馈、超程/运行/停车超时及计时回绕。模式5/6均验证关闭作业握手。真实UART收发、无线时延、运动、轮径和到点精度尚未实测；串口工具只编译C#和校验脚本语法，没有打开端口。
 
 ### 今天的单侧走廊直行计划（2026-11-07）
 

@@ -164,6 +164,15 @@ if ($entry -match 'arm\.h|pc_comms|pi_comms|asr_comms|thinning') {
 }
 Write-Host 'CHASSIS_SCOPE_TEST_OK'
 
+$straightExe = Join-Path $outputDir 'test_straight_test.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    (Join-Path $PSScriptRoot 'test_straight_test.c') `
+    (Join-Path $firmwareRoot 'src\service\straight_test.c') '-lm' '-o' $straightExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight test compilation failed.' }
+& $straightExe
+if ($LASTEXITCODE -ne 0) { throw 'Straight test failed.' }
+
 $zeroExe = Join-Path $outputDir 'test_steering_zero.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `
     "-I$(Join-Path $PSScriptRoot 'fakes')" `
@@ -178,7 +187,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Steering zero test compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Steering zero test failed.' }
 
 $standaloneExe = Join-Path $outputDir 'test_work_link_standalone.exe'
-& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' '-DAPP_RUN_MODE=5' `
+foreach ($standaloneMode in @(5, 6)) {
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' "-DAPP_RUN_MODE=$standaloneMode" `
     "-I$(Join-Path $PSScriptRoot 'fakes')" `
     "-I$(Join-Path $firmwareRoot 'src\app')" `
     "-I$(Join-Path $firmwareRoot 'src\service')" `
@@ -188,6 +198,7 @@ $standaloneExe = Join-Path $outputDir 'test_work_link_standalone.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Standalone work link compilation failed.' }
 & $standaloneExe
 if ($LASTEXITCODE -ne 0) { throw 'Standalone work link test failed.' }
+}
 
 $offsetExe = Join-Path $outputDir 'test_chassis_zero_offsets.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `

@@ -1,6 +1,6 @@
 param(
     [string]$Toolchain = '',
-    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest', 'StraightTest')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +27,7 @@ foreach ($tool in @($compiler, $objcopy, $size)) {
 }
 Write-Host "ARM_TOOLCHAIN $Toolchain"
 $output = 'build/Debug'
+if ($Mode -eq 'StraightTest') { $output = 'build/StraightTest' }
 if ($Mode -eq 'Manual') { $output = 'build/Manual' }
 if ($Mode -eq 'ManualStandalone') { $output = 'build/ManualStandalone' }
 if ($Mode -eq 'Steering') { $output = 'build/Steering' }
@@ -38,6 +39,7 @@ try {
     New-Item -ItemType Directory -Force "$output/obj" | Out-Null
     # Match the Debug target in .eide/eide.yml and keep diagnostic mode explicit.
     $runMode = 0
+    if ($Mode -eq 'StraightTest') { $runMode = 6 }
     if ($Mode -eq 'Manual') { $runMode = 1 }
     if ($Mode -eq 'ManualStandalone') { $runMode = 5 }
     if ($Mode -eq 'Steering') { $runMode = 2 }
