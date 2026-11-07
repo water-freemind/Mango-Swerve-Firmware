@@ -17,7 +17,8 @@ if (!$OpenOcdRoot) {
     $pathOpenOcd = Get-Command openocd.exe -ErrorAction SilentlyContinue
     if ($pathOpenOcd) { $candidates += Split-Path (Split-Path $pathOpenOcd.Source -Parent) -Parent }
     foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate 'bin\openocd.exe'))) {
+        if ($candidate -and [System.IO.Directory]::Exists($candidate) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\openocd.exe'))) {
             $OpenOcdRoot = $candidate
             break
         }

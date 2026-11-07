@@ -11,7 +11,8 @@ if (!$Toolchain) {
     $pathCompiler = Get-Command arm-none-eabi-gcc.exe -ErrorAction SilentlyContinue
     if ($pathCompiler) { $candidates += Split-Path (Split-Path $pathCompiler.Source -Parent) -Parent }
     foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate 'bin\arm-none-eabi-gcc.exe'))) {
+        if ($candidate -and [System.IO.Directory]::Exists($candidate) -and
+            (Test-Path -LiteralPath (Join-Path $candidate 'bin\arm-none-eabi-gcc.exe'))) {
             $Toolchain = $candidate
             break
         }

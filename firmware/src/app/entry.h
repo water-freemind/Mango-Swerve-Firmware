@@ -43,6 +43,7 @@ static inline void entry_loop(void) {
 
 #include <math.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 static bool app_initialized = false;

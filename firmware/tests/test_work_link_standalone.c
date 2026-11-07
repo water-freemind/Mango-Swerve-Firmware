@@ -2,6 +2,7 @@
 #include "work_config.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 
 FDCAN_HandleTypeDef hfdcan1, hfdcan2, hfdcan3;
@@ -43,7 +44,9 @@ int main(void) {
     assert(!g_work_link.paired);
     work_link_process(10000u, false);
     work_link_limit_velocity(&vx, &vy, &wz);
-    assert(vx == 0.08f && vy == 0.06f && wz == 0.20f);
+    assert(fabsf(vx - 0.08f) < 0.000001f &&
+           fabsf(vy - 0.06f) < 0.000001f &&
+           fabsf(wz - 0.20f) < 0.000001f);
     assert(registrations == 0u && transmissions == 0u);
     assert(work_link_init() && !work_link_hold());
     puts("WORK_LINK_STANDALONE_TEST_OK");
