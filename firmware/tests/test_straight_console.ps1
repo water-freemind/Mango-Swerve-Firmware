@@ -21,7 +21,7 @@ try {
     if (![MangoStraightConsole]::ForwardStatus($sender, $port, ([char]27 + '[94m' + $status + [char]27 + "[0m`r"))) { throw 'Status log rejected' }
     $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
     if ($actual -cne ($status + "`n")) { throw 'Status log content changed' }
-    foreach ($tag in @('HEALTH','CONTROL','REMOTE','IMU','IMU_RAW','IMU_BIAS','MOTOR','CAN','LASER','TIMING','DRIFT','PLAN','RANGE','BRAKE')) {
+    foreach ($tag in @('HEALTH','CONTROL','RAMP','REMOTE','IMU','IMU_RAW','IMU_BIAS','MOTOR','CAN','LASER','TIMING','DRIFT','PLAN','RANGE','BRAKE')) {
         $detail = '[INFO] TEST_' + $tag + ' t_ms=1234 value=1'
         if (![MangoStraightConsole]::ForwardStatus($sender, $port, $detail)) { throw "Detail rejected $tag" }
         $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))

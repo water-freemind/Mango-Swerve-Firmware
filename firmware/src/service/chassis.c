@@ -1,6 +1,7 @@
 ﻿#include "chassis.h"
 
 #include "bus_motor/agv_motor.h"
+#include "app_config.h"
 #include "bus_motor/dji_motor.h"
 #include "log.h"
 #include "work_link.h"
@@ -187,6 +188,10 @@ static Chassis s_chassis = { 0 };
  * 避免直接暴露内部控制过程中的中间状态
  */
 static Chassis s_chassis_view = { 0 };
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+static bool s_drive_output_allowed;
+bool chassis_drive_output_allowed(void) { return s_drive_output_allowed; }
+#endif
 /**
  * @brief 每个舵轮的 S 曲线加速累计时间
  *
@@ -552,6 +557,9 @@ ChassisErrorCode chassis_init(const ChassisConfig* config) {
         .driver_config = &s_drive_motor_dji_config,
     };
     ChassisErrorCode config_status = chassis_check_config(config);
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    s_drive_output_allowed = false;
+#endif
 
     log_info("CHASSIS init begin");
 
@@ -626,6 +634,9 @@ ChassisErrorCode chassis_init(const ChassisConfig* config) {
  */
 ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz) {
     float wz_for_ik;
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    s_drive_output_allowed = false;
+#endif
 
     if(!s_chassis.initialized) {
         return ch.NOT_INITIALIZED;
@@ -664,6 +675,10 @@ ChassisErrorCode chassis_process(void) {
     bool drive_feedback_observed = true;
     uint8_t steer_missing_mask = 0u;
     uint8_t drive_missing_mask = 0u;
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    bool drive_output_allowed = false;
+    s_drive_output_allowed = false;
+#endif
 
     if(!s_chassis.initialized) {
         return ch.NOT_INITIALIZED;
@@ -759,6 +774,9 @@ ChassisErrorCode chassis_process(void) {
         }
 
         drive_ready = !s_chassis.steer_then_drive_enabled || chassis_drive_targets_reached();
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+        drive_output_allowed = drive_ready;
+#endif
 
         for(i = 0u; i < CHASSIS_MODULE_COUNT; ++i) {
             const ChassisModuleMap* map = &s_module_map[i];
@@ -777,6 +795,10 @@ ChassisErrorCode chassis_process(void) {
 
     chassis_sync_view();
 
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    s_drive_output_allowed = drive_output_allowed;
+#endif
+
     return ch.OK;
 }
 
@@ -786,6 +808,9 @@ ChassisErrorCode chassis_process(void) {
  */
 ChassisErrorCode chassis_stop(void) {
     uint8_t i;
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    s_drive_output_allowed = false;
+#endif
 
     if(!s_chassis.initialized) {
         return ch.NOT_INITIALIZED;
@@ -811,6 +836,9 @@ ChassisErrorCode chassis_stop(void) {
  * @return ChassisErrorCode 状态码
  */
 ChassisErrorCode chassis_brake(void) {
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    s_drive_output_allowed = false;
+#endif
     if(!s_chassis.initialized) {
         return ch.NOT_INITIALIZED;
     }

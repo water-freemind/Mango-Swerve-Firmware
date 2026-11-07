@@ -1,0 +1,6 @@
+t_ms,target_vx,target_vy,target_wz,output_vx,output_vy,output_wz,measured_vx,measured_vy,measured_wz,reversing
+0,0.2,0,0,0,0,0,0,0,0,0
+1000,0.2,0,0,0.2,0,0,0.1,0,0,0
+2000,0,0,0,0.1,0,0,0.08,0,0,0
+3000,0,0,0,0,0,0,0.04,0,0,0
+4000,0,0,0,0,0,0,0,0,0,0

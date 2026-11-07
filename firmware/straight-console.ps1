@@ -48,7 +48,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -182,7 +182,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
-        if (category == "CONTROL") category = "HEALTH";
+        if (category == "CONTROL" || category == "RAMP") category = "HEALTH";
         if (tag.Groups[1].Value != "INFO" || category == "ACK" || category == "READY" || category == "INIT_FAILED") return true;
         if (category == "CAN") {
             Match bus = Regex.Match(line, @"\bbus=([123])\b");
@@ -317,7 +317,7 @@ public sealed class VofaTestSession {
             string category = command.Substring(12);
             string pattern;
             switch (category) {
-                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|CONTROL|TIMING|PLAN)$"; break;
+                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|CONTROL|RAMP|TIMING|PLAN)$"; break;
                 case "IMU": pattern = @"^TEST_(IMU|IMU_RAW|IMU_BIAS|DRIFT)$"; break;
                 case "LASER": pattern = @"^TEST_(LASER|RANGE|PLAN|BRAKE)$"; break;
                 case "REMOTE": pattern = @"^TEST_REMOTE$"; break;

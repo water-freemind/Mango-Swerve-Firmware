@@ -288,6 +288,10 @@ const SteerWheelState* chassis_get_state(void);
  */
 const SteerWheelControl* chassis_get_control(void);
 
+/* Mode 6 only: last successful process allowed drive output through the real
+ * steering gate. A new command, stop, brake, init or failed process clears it. */
+bool chassis_drive_output_allowed(void);
+
 /**
  * @brief 将底盘状态码转换为静态字符串
  * @param status 底盘状态码
