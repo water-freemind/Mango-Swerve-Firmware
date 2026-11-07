@@ -519,6 +519,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 
 **遥控许可沿用现有底盘约定。** 遥控在线，SWA=1000/SWD=2000，SWC不为1000，VRA>1200，VRB≤1200，平移/旋转杆均回中±10。遥控只提供许可和撤销，不用杆量决定测试速度；与ManualStandalone的许可切换流程区分。截图remote=0时ARM会被拒绝，不会仅因串口连通而运动。心跳不是唯一停止手段，退出遥控许可同样终止。
 
+**现场操作顺序。** 发射机开机并与车载接收机正常绑定，接收机仍连接DM的i.BUS输入；不需要把遥控器连电脑。以接收原始值核对开关，不凭“向上/向下”猜位置。两杆回中，SWC可取1500或2000；先保持VRB>1200禁止启动，检查日志后再切至≤1200，确认TEST_STATUS healthy=1、stopped=1、cmd=0。PING回显只证明指令下行，不能代替健康检查。此模式无需用摇杆给前进量，拨动摇杆离开中心反而撤销许可。
+
+首次先做短距离STOP演练：ARM收到ok=1和token后5秒内GO，缓慢起步后发STOP或按Escape，确认实际停稳以及result=ABORT。再把车恢复到右墙平行的起点，重新ARM取得新token，执行完整2m。保持串口工具运行，不与VOFA+抢占同一端口；不要在收到ARM回显之前批量发送ARM和GO。phase=4且result=TARGET_REACHED才是完整到点，phase=4且ABORT表示主动中止。结束后不会返回，也不能用测试模式的遥控杆开回；需要人工重新布置时先确认停稳，涉及搬车/摆轮先失能或断电。记录真实距离、横向偏移、车头方向和日志，再决定下一次测试。
+
 **异常与日志。** 电机四个转向、四个驱动均须100ms内收到合格式反馈，转向state=1，IMU采样年龄≤100ms；CAN发送失败、Bus-Off/Error Passive、UART错误/缓冲溢出、控制间隔>50ms、航向误差>0.15rad、倒向速度<-0.03m/s、速度绝对值>0.30m/s、运行>45s或行程>2.10m均终止并请求停车。停车3秒仍未确认则FAULT。发送链路故障时不能保证停车命令到达，FAULT也不表示车已物理停稳；须核实反馈和现场状态。故障/结束不自动续跑，恢复反馈/链路后须重新ARM；CAN发送故障锁定至重启。
 
 TEST_STATUS每100ms记录phase、token、healthy、stopped、估计行程s、实测vx、目标cmd、yaw/ref/correction、right_mm/laser_fresh及result。phase依次0=IDLE、1=ARMED、2=RUNNING、3=STOPPING、4=DONE、5=FAULT；result=TARGET_REACHED才是正常到点，ABORT是主动停止。该模式仅单次前进，无自动后退或往复。
