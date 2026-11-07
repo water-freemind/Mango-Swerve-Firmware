@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static StraightInput good = {true, true, 0.0f};
+static StraightInput good = {.healthy = true, .stationary = true};
 static void start(StraightTest* t, uint32_t now) {
     char cmd[32];
     assert(straight_command(t, "ARM", now, good));

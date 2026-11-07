@@ -172,6 +172,14 @@ $straightExe = Join-Path $outputDir 'test_straight_test.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Straight test compilation failed.' }
 & $straightExe
 if ($LASTEXITCODE -ne 0) { throw 'Straight test failed.' }
+$programExe = Join-Path $outputDir 'test_test_programs.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src\service')" `
+    (Join-Path $PSScriptRoot 'test_test_programs.c') `
+    (Join-Path $firmwareRoot 'src\service\straight_test.c') '-lm' '-o' $programExe
+if ($LASTEXITCODE -ne 0) { throw 'Test programs compilation failed.' }
+& $programExe
+if ($LASTEXITCODE -ne 0) { throw 'Test programs failed.' }
 
 $zeroExe = Join-Path $outputDir 'test_steering_zero.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_CAN_HAL' `

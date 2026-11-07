@@ -44,9 +44,9 @@ $legacy = Join-Path $VofaDir 'Mango-VOFA-2m-OPEN-AREA.cmd'
 if (Test-Path -LiteralPath $legacy) {
     Move-Item -LiteralPath $legacy -Destination ($legacy + '.retired-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.bak')
 }
-foreach ($mode in @('Static', '1m-OPEN-AREA')) {
+foreach ($mode in @('Static', 'Test-OPEN-AREA', '1m-OPEN-AREA')) {
     $startMode = 'Static'
-    if ($mode -ne 'Static') { $startMode = 'OneMeter' }
+    if ($mode -ne 'Static') { $startMode = 'Motion' }
     $launcher = '@echo off' + "`r`n" +
         'title Mango VOFA ' + $mode + "`r`n" +
         'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $starter +

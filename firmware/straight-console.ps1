@@ -48,7 +48,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PANEL)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -87,6 +87,7 @@ public static class MangoStraightConsole {
                 delegate(string command) { serial.WriteLine(command); log.WriteLine("HOST_TX " + command); }, panelLog);
             if (commandPort != 0) panelLog("ready=1 command_port=" + commandPort + " wave_port=" + wavePort +
                 " motion_allowed=" + (allowMotion ? "1" : "0") + " auto_start=0");
+            if (commandPort != 0) panelLog("log_preset=DEFAULT STATUS_and_PLAN_max_hz=1 wave=0 ACK_and_snapshots=ALWAYS background_log=FULL");
             Console.WriteLine("No auto-start. Commands: PING, ARM, GO <token>, STOP, QUIT. HB every 200ms after GO. Escape = STOP.");
             try {
                 while (true) {
@@ -106,7 +107,9 @@ public static class MangoStraightConsole {
                             string line = text.Substring(0, end); text = text.Substring(end + 1);
                             panel.Observe(line, clock.ElapsedMilliseconds);
                             try {
-                                if (!ForwardWave(wave, wavePort, line)) ForwardStatus(wave, wavePort, line);
+                                if (line.StartsWith("FW:", StringComparison.Ordinal)) {
+                                    if (panel.WaveEnabled) ForwardWave(wave, wavePort, line);
+                                } else if (panel.ShouldForwardStatus(line, clock.ElapsedMilliseconds)) ForwardStatus(wave, wavePort, line);
                             }
                             catch (SocketException ex) { log.WriteLine("WAVE_FORWARD_ERROR " + ex.Message); }
                             Match m = Regex.Match(line, @"TEST_ACK ok=1 phase=1 token=(\d+)");
@@ -155,6 +158,17 @@ public sealed class VofaTestSession {
     private readonly Dictionary<string, string> cache = new Dictionary<string, string>();
     private long lastStatus = -10000, armSent, armAck, goSent, nextHb;
     private bool healthy, stopped, awaitingArm, armed, awaitingGo, running, targetMatches;
+    private bool firmwareV2, rangeFresh;
+    private long lastPlan = -10000, lastRange = -10000;
+    private double firmwareTarget;
+    private string selectedPlan = "FWD", observedPlan = "FWD";
+    private int selectedTarget = 1, phaseValue;
+    private readonly Dictionary<string, int> ranges = new Dictionary<string, int>();
+    private static readonly string[] logCategories = {"STATUS","HEALTH","REMOTE","MOTOR","CAN1","CAN2","CAN3",
+        "IMU","IMU_RAW","IMU_BIAS","DRIFT","LASER","RANGE","PLAN","BRAKE","TIMING","WAVE"};
+    private readonly Dictionary<string, bool> logEnabled = new Dictionary<string, bool>();
+    private readonly Dictionary<string, long> lastForward = new Dictionary<string, long>();
+    private bool compactLogs;
     private uint activeToken;
     private bool haveYaw, marking;
     private double yaw, markedChange;
@@ -162,8 +176,44 @@ public sealed class VofaTestSession {
     private string markKind;
     public VofaTestSession(bool motion, Action<string> send, Action<string> emit) {
         allowMotion = motion; tx = send; report = emit;
+        LogPreset("DEFAULT");
+    }
+    public bool WaveEnabled { get { return logEnabled["WAVE"]; } }
+    private void LogPreset(string preset) {
+        foreach (string category in logCategories) logEnabled[category] = preset == "ALL";
+        compactLogs = preset == "DEFAULT";
+        if (compactLogs) logEnabled["STATUS"] = logEnabled["HEALTH"] = logEnabled["PLAN"] = true;
+        lastForward.Clear();
+    }
+    public bool ShouldForwardStatus(string raw, long now) {
+        string line = Regex.Replace(raw, @"\x1b\[[0-9;]*m", "");
+        Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
+        if (!tag.Success) return false;
+        string category = tag.Groups[2].Value;
+        if (tag.Groups[1].Value != "INFO" || category == "ACK" || category == "READY" || category == "INIT_FAILED") return true;
+        if (category == "CAN") {
+            Match bus = Regex.Match(line, @"\bbus=([123])\b");
+            if (!bus.Success) return false;
+            category += bus.Groups[1].Value;
+        }
+        bool enabled;
+        if (!logEnabled.TryGetValue(category, out enabled) || !enabled) return false;
+        long last;
+        if (compactLogs && (category == "STATUS" || category == "PLAN") &&
+            lastForward.TryGetValue(category, out last) && now - last < 1000) return false;
+        lastForward[category] = now;
+        return true;
     }
     private void Clear() { awaitingArm = armed = awaitingGo = running = false; activeToken = 0; }
+    private bool SelectionMatches(string line) {
+        if (!firmwareV2 && selectedPlan == "FWD" && selectedTarget == 1) return true;
+        Match plan = Regex.Match(line, @"\bplan=(FWD|ROUND|WALL|APPROACH)\b");
+        Match distance = Regex.Match(line, @"\btarget_m=([0-9.]+)\b");
+        double target;
+        return plan.Success && plan.Groups[1].Value == selectedPlan && distance.Success &&
+            Double.TryParse(distance.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out target) &&
+            Math.Abs(target - selectedTarget) < 0.005;
+    }
     public void Observe(string raw, long now) {
         string line = Regex.Replace(raw, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         Match tag = Regex.Match(line, @"^\[(?:INFO|WARN|ERROR)\] (TEST_[A-Z_]+)\b");
@@ -173,7 +223,24 @@ public sealed class VofaTestSession {
             if (id.Success) key += "_" + id.Groups[1].Value;
             cache[key] = line;
         }
-        if (line.Contains("TEST_READY")) { Clear(); lastStatus = -10000; haveYaw = marking = false; cache.Clear(); }
+        if (line.Contains("TEST_READY")) {
+            Clear(); lastStatus = lastPlan = lastRange = -10000;
+            firmwareV2 = rangeFresh = haveYaw = marking = false; cache.Clear();
+        }
+        Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
+        if (planStatus.Success) { firmwareV2 = true; lastPlan = now; observedPlan = planStatus.Groups[1].Value; }
+        if (line.Contains("TEST_RANGE ")) {
+            lastRange = now; rangeFresh = Regex.IsMatch(line, @"\bfresh=1\b");
+            Match age = Regex.Match(line, @"\bage_ms=(\d+)");
+            uint ageMs;
+            rangeFresh = rangeFresh && age.Success && UInt32.TryParse(age.Groups[1].Value, out ageMs) && ageMs <= 300;
+            foreach (string direction in new string[] {"LEFT", "RIGHT", "REAR", "FRONT"}) {
+                Match mm = Regex.Match(line, @"\b" + direction.ToLowerInvariant() + @"_mm=(\d+)");
+                int value;
+                if (mm.Success && Int32.TryParse(mm.Groups[1].Value, out value)) ranges[direction] = value;
+                else rangeFresh = false;
+            }
+        }
         Match status = Regex.Match(line, @"TEST_STATUS phase=(\d+) token=(\d+) healthy=(\d+) stopped=(\d+)");
         if (status.Success) {
             lastStatus = now;
@@ -182,24 +249,29 @@ public sealed class VofaTestSession {
             double target;
             targetMatches = distance.Success && Double.TryParse(distance.Groups[1].Value,
                 NumberStyles.Float, CultureInfo.InvariantCulture, out target) && Math.Abs(target - 1.0) < 0.005;
+            firmwareTarget = distance.Success && Double.TryParse(distance.Groups[1].Value,
+                NumberStyles.Float, CultureInfo.InvariantCulture, out target) ? target : Double.NaN;
             string phase = status.Groups[1].Value;
+            phaseValue = Int32.Parse(phase, CultureInfo.InvariantCulture);
             if (phase == "3" || phase == "4" || phase == "5" || (phase == "0" && !awaitingArm)) Clear();
             // A matching status can confirm GO if only its ACK was lost.
-            if (awaitingGo && phase == "2" && status.Groups[2].Value == activeToken.ToString(CultureInfo.InvariantCulture)) {
+            if (awaitingGo && phase == "2" && status.Groups[2].Value == activeToken.ToString(CultureInfo.InvariantCulture) &&
+                Math.Abs(firmwareTarget - selectedTarget) < 0.005 && (selectedPlan == "FWD" || observedPlan == selectedPlan)) {
                 awaitingGo = false; running = true; nextHb = now;
             }
         }
         Match ack = Regex.Match(line, @"TEST_ACK ok=(\d+) phase=(\d+) token=(\d+)");
-        if (ack.Success && awaitingArm) {
+        bool sessionAck = ack.Success && !Regex.IsMatch(line, @"\bcmd=(SPEED|EDGE)\b");
+        if (sessionAck && awaitingArm) {
             awaitingArm = false;
             if (ack.Groups[1].Value == "1" && ack.Groups[2].Value == "1" && now - armSent <= 1000 &&
-                UInt32.TryParse(ack.Groups[3].Value, out activeToken)) {
-                armed = true; armAck = now; report("arm_ready=1 next=CLICK_GO expires_ms=4000");
-            } else Clear();
-        } else if (ack.Success && awaitingGo) {
+                UInt32.TryParse(ack.Groups[3].Value, out activeToken) && SelectionMatches(line)) {
+                armed = true; armAck = now; report("arm_ready=1 next=CLICK_GO expires_ms=4000 plan=" + selectedPlan + " target_m=" + selectedTarget);
+            } else { Clear(); report("rejected=ARM_ACK_MISMATCH_OR_NOT_READY"); }
+        } else if (sessionAck && awaitingGo) {
             awaitingGo = false;
             if (ack.Groups[1].Value == "1" && ack.Groups[2].Value == "2" &&
-                ack.Groups[3].Value == activeToken.ToString(CultureInfo.InvariantCulture) && now - goSent <= 500) {
+                ack.Groups[3].Value == activeToken.ToString(CultureInfo.InvariantCulture) && now - goSent <= 500 && SelectionMatches(line)) {
                 running = true; nextHb = now;
             } else { tx("STOP"); Clear(); }
         }
@@ -222,13 +294,28 @@ public sealed class VofaTestSession {
         string command = packet.Trim();
         if (command.IndexOf('\n') >= 0 || command.IndexOf('\r') >= 0) { report("rejected=BATCH_PACKET"); return false; }
         if (command == "UI STOP") { tx("STOP"); Clear(); report("stop_requested=1"); return true; }
+        if (command == "UI LOG QUIET" || command == "UI LOG DEFAULT" || command == "UI LOG ALL ON") {
+            string preset = command == "UI LOG QUIET" ? "QUIET" : command == "UI LOG DEFAULT" ? "DEFAULT" : "ALL";
+            LogPreset(preset);
+            report("log_preset=" + preset + " ACK_and_snapshots=ALWAYS background_log=FULL wave=" + (WaveEnabled ? "1" : "0"));
+            return true;
+        }
+        Match visibility = Regex.Match(command, @"^UI LOG ([A-Z0-9_]+) (ON|OFF)$");
+        if (visibility.Success) {
+            string category = visibility.Groups[1].Value;
+            if (!logEnabled.ContainsKey(category)) { report("rejected=UNKNOWN_LOG_CATEGORY"); return false; }
+            logEnabled[category] = visibility.Groups[2].Value == "ON";
+            lastForward.Remove(category);
+            report("log_category=" + category + " enabled=" + (logEnabled[category] ? "1" : "0") + " background_log=FULL");
+            return true;
+        }
         if (command.StartsWith("UI SNAPSHOT ", StringComparison.Ordinal)) {
             string category = command.Substring(12);
             string pattern;
             switch (category) {
-                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|TIMING)$"; break;
+                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|TIMING|PLAN)$"; break;
                 case "IMU": pattern = @"^TEST_(IMU|IMU_RAW|IMU_BIAS|DRIFT)$"; break;
-                case "LASER": pattern = @"^TEST_LASER$"; break;
+                case "LASER": pattern = @"^TEST_(LASER|RANGE|PLAN|BRAKE)$"; break;
                 case "REMOTE": pattern = @"^TEST_REMOTE$"; break;
                 case "MOTORS": pattern = @"^TEST_MOTOR_"; break;
                 case "CAN": pattern = @"^TEST_CAN_"; break;
@@ -261,13 +348,54 @@ public sealed class VofaTestSession {
             if (awaitingArm || awaitingGo) return false; // ACK has no command ID; keep it unambiguous.
             tx("PING"); return true;
         }
-        if (command != "UI ARM" && command != "UI GO") { report("rejected=UNKNOWN_COMMAND"); return false; }
+        Match speed = Regex.Match(command, @"^UI SPEED (0\.(?:05|08|10|20|30|50))$");
+        if (speed.Success) {
+            if (!firmwareV2 || now - lastPlan > 1000 || now - lastStatus > 500 || !stopped ||
+                phaseValue == 1 || phaseValue == 2 || phaseValue == 3 || awaitingArm || armed || awaitingGo || running) {
+                report("rejected=SPEED_NEEDS_IDLE_PROTOCOL_2"); return false;
+            }
+            tx("SPEED " + speed.Groups[1].Value); report("speed_requested=" + speed.Groups[1].Value + " confirm_device_ACK=1");
+            return true;
+        }
+        Match edge = Regex.Match(command, @"^UI EDGE (FRONT|RIGHT|REAR|LEFT)$");
+        if (edge.Success) {
+            string direction = edge.Groups[1].Value;
+            if (awaitingArm || armed || awaitingGo || running || phaseValue == 1 || phaseValue == 2 || phaseValue == 3 ||
+                !stopped || now - lastStatus > 500 || now - lastRange > 500 || !rangeFresh || !ranges.ContainsKey(direction)) {
+                report("rejected=EDGE_NEEDS_STOPPED_AND_FRESH_RANGE"); return false;
+            }
+            int mm = ranges[direction];
+            if (mm < 70 || mm > 1000) { report("rejected=EDGE_OUTSIDE_70_TO_1000_MM"); return false; }
+            report("edge_direction=" + direction + " contact_raw_mm=" + mm + " body_pose=USER_CONFIRMED range_age_ms=" + (now - lastRange));
+            if (direction == "LEFT") {
+                int common = ((mm + 4) / 5) * 5;
+                tx("EDGE ALL " + common); report("common_edge_requested_mm=" + common + " confirm_device_ACK=1 expires_on_reboot=1");
+            }
+            return true;
+        }
+        Match motion = Regex.Match(command, @"^UI (ARM|GO)(?: (ROUND|WALL) ([124])| (APPROACH))?$");
+        if (!motion.Success) { report("rejected=UNKNOWN_COMMAND"); return false; }
+        bool isArm = motion.Groups[1].Value == "ARM";
+        string requestedPlan = motion.Groups[2].Success ? motion.Groups[2].Value : motion.Groups[4].Success ? "APPROACH" : "FWD";
+        int requestedTarget = motion.Groups[3].Success ? Int32.Parse(motion.Groups[3].Value, CultureInfo.InvariantCulture) : 1;
         if (!allowMotion) { report("rejected=STATIC_MODE_USE_MOTION_LAUNCHER_IN_OPEN_AREA"); return false; }
-        if (!targetMatches) { report("rejected=FIRMWARE_TARGET_NOT_1M"); return false; }
+        if (requestedPlan != "FWD" && (!firmwareV2 || now - lastPlan > 1000)) {
+            report("rejected=FIRMWARE_PROTOCOL_2_REQUIRED"); return false;
+        }
+        if (!firmwareV2 && !targetMatches) { report("rejected=FIRMWARE_TARGET_NOT_1M"); return false; }
         if (now - lastStatus > 500 || !healthy || !stopped || awaitingArm || awaitingGo || running) {
             report("rejected=NOT_READY_OR_BUSY"); return false;
         }
-        if (command == "UI ARM") { Clear(); awaitingArm = true; armSent = now; tx("ARM"); return true; }
+        if (isArm) {
+            Clear(); selectedPlan = requestedPlan; selectedTarget = requestedTarget;
+            awaitingArm = true; armSent = now;
+            tx(selectedPlan == "FWD" ? "ARM" : "ARM " + selectedPlan +
+                (selectedPlan == "APPROACH" ? "" : " " + selectedTarget));
+            return true;
+        }
+        if (requestedPlan != selectedPlan || requestedTarget != selectedTarget || Math.Abs(firmwareTarget - selectedTarget) >= 0.005 || Double.IsNaN(firmwareTarget)) {
+            report("rejected=PLAN_OR_DISTANCE_MISMATCH"); return false;
+        }
         if (!armed || now - armAck > 4000) { report("rejected=CLICK_ARM_FIRST"); return false; }
         armed = false; awaitingGo = true; goSent = now;
         tx("GO " + activeToken.ToString(CultureInfo.InvariantCulture));

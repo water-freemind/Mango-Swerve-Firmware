@@ -36,7 +36,7 @@ foreach ($copy in @((Join-Path $fixture 'vofa+.cmds.json'),(Join-Path $context '
 }
 $backup = Get-ChildItem $context -Directory -Filter 'mango-backup-*' | Select-Object -Last 1
 if ((Get-Content -Raw (Join-Path $backup.FullName 'vofa+.config.json')) -cne $beforeText) { throw 'Original settings backup changed' }
-foreach ($mode in @('Static','1m-OPEN-AREA')) {
+foreach ($mode in @('Static','Test-OPEN-AREA','1m-OPEN-AREA')) {
     if ((Get-Content -Raw (Join-Path $fixture ('Mango-VOFA-' + $mode + '.cmd'))) -notmatch 'start-vofa-panel.ps1') {
         throw 'Installed shortcut does not start VOFA and its bridge together.'
     }

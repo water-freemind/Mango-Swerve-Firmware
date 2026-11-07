@@ -66,7 +66,7 @@ SystemStatus assemble_chassis(void) {
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
     /* Nominal 102 mm wheel; verify physical distance before claiming 2 m accuracy. */
     chassis_config.model.wheel_radius = STRAIGHT_TEST_WHEEL_RADIUS_M;
-    chassis_config.model.max_wheel_linear_speed = 0.10f;
+    chassis_config.model.max_wheel_linear_speed = STRAIGHT_TEST_SPEED_CEILING_MPS;
 #endif
     log_info("CHASSIS assemble begin");
     if(can_register_rx_callback(CHASSIS_STEER_CAN, chassis_steer_can_rx_callback, NULL) != STM32_HAL_CAN_OK)

@@ -108,6 +108,8 @@ static void feedback(uint32_t now) {
 }
 int main(void) {
     test.phase = ST_IDLE;
+    test.target_m = 4.0f;
+    test.body_edge_mm = 110u;
     fake_us = 1000000u;
     update_imu_sample();
     feedback(1000u);
@@ -167,6 +169,11 @@ int main(void) {
     test.phase = ST_IDLE;
     for(unsigned i = 0; i < 8; ++i) motor_age[i] = UINT32_MAX;
     for(unsigned i = 0; i < 15; ++i) log_detail(UINT32_MAX, in);
+    test.plan = ST_PLAN_APPROACH;
+    test.distance_m = test.outbound_m = 4.1f;
+    test.right_ref_mm = 3000.0f;
+    test.body_edge_mm = 1000u;
+    log_plan(in);
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     return 0;
 }

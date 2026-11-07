@@ -19,10 +19,11 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 static StraightTest test;
 static bool initialized;
-static uint32_t last_step, last_log, last_imu;
+static uint32_t last_step, last_log, last_imu, last_plan_log;
 static volatile uint32_t motor_ms[8];
 static volatile uint8_t seen, motor_state[4];
 static uint8_t byte;
@@ -167,10 +168,21 @@ static StraightInput input(uint32_t now) {
         if(!isfinite(speed) || !isfinite(angle)) blockers |= BLOCK_NONFINITE;
         in.stationary = in.stationary && fabsf(speed) < 0.05f;
         in.vx_mps += sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * cosf(angle) * 0.25f;
+        in.vy_mps -= sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * sinf(angle) * 0.25f;
     }
     const ImuAngle attitude = imu.get_angle();
     const ImuGyro gyro = imu_get_gyro_corrected();
     if(!isfinite(attitude.yaw) || !isfinite(gyro.z)) blockers |= BLOCK_NONFINITE;
+    LaserSnapshot laser = {0};
+    if(laser_get_snapshot(&laser)) {
+        in.laser_fresh = laser.frame_fresh && laser.frame_count != 0u;
+        in.left_mm = laser.distance_mm[0];
+        in.right_mm = laser.distance_mm[1];
+        in.rear_mm = laser.distance_mm[2];
+        in.front_mm = laser.distance_mm[3];
+        in.laser_frame = laser.frame_count;
+        in.laser_age_ms = HAL_GetTick() - laser.last_rx_ms;
+    }
     in.healthy = blockers == 0u;
     return in;
 }
@@ -197,8 +209,11 @@ static void commands(uint32_t now, StraightInput in) {
                 const ImuAngle a = imu.get_angle();
                 chassis_yaw_hold_set_target(a.yaw);
             }
-            if(line[0] != 'H') log_info("TEST_ACK ok=%u phase=%u token=%lu reason=%s",
-                (unsigned)ok, (unsigned)test.phase, (unsigned long)test.token, test.result);
+            const char* command_name = !strncmp(line, "SPEED ", 6u) ? "SPEED" : !strncmp(line, "EDGE ", 5u) ? "EDGE" :
+                !strncmp(line, "ARM", 3u) ? "ARM" : !strncmp(line, "GO ", 3u) ? "GO" : !strcmp(line, "STOP") ? "STOP" : "PING";
+            if(line[0] != 'H') log_info("TEST_ACK ok=%u phase=%u token=%lu reason=%s plan=%s target_m=%.2f body_edge_mm=%u vmax=%.2f cmd=%s",
+                (unsigned)ok, (unsigned)test.phase, (unsigned long)test.token, test.result,
+                straight_plan_name(test.plan), (double)test.target_m, test.body_edge_mm, (double)test.max_speed_mps, command_name);
             line_len = 0u;
         } else if(ch < 32u || ch > 126u || line_len >= sizeof(line) - 1u) {
             rx_fault = true;
@@ -306,10 +321,11 @@ static void log_detail(uint32_t now, StraightInput in) {
     } else if(slot == 12u) {
         LaserSnapshot laser = {0};
         (void)laser_get_snapshot(&laser);
-        log_info("TEST_LASER t_ms=%lu fresh=%u frames=%lu age_ms=%lu left_mm=%u right_mm=%u rear_mm=%u front_mm=%u control=OBSERVE_ONLY",
+        log_info("TEST_LASER t_ms=%lu fresh=%u frames=%lu age_ms=%lu left_mm=%u right_mm=%u rear_mm=%u front_mm=%u control=%s",
             (unsigned long)now, (unsigned)laser.frame_fresh, (unsigned long)laser.frame_count,
             (unsigned long)(now - laser.last_rx_ms), laser.distance_mm[0], laser.distance_mm[1],
-            laser.distance_mm[2], laser.distance_mm[3]);
+            laser.distance_mm[2], laser.distance_mm[3], test.plan == ST_PLAN_WALL ? "RIGHT_HOLD" :
+                test.plan == ST_PLAN_APPROACH ? "FRONT_STOP" : test.plan == ST_PLAN_ROUND ? "COLLISION_GUARD" : "OBSERVE_ONLY");
     } else if(slot == 13u) {
         log_info("TEST_TIMING t_ms=%lu control_dt_ms=%lu max_ms=%lu imu_dt_us=%lu imu_max_us=%lu imu_frames=%lu imu_errors=%lu update=%s HB_age_ms=%lu lease_ms=750",
             (unsigned long)now, (unsigned long)control_dt_ms, (unsigned long)control_dt_max_ms,
@@ -321,6 +337,19 @@ static void log_detail(uint32_t now, StraightInput in) {
             (unsigned long)now, (unsigned)drift_valid, (unsigned)in.stationary, (unsigned long)drift_window_ms,
             (double)drift_yaw_rate, (double)drift_gyro_rate, (double)drift_yaw_rate * 60.0);
     }
+}
+static void log_plan(StraightInput in) {
+    log_info("TEST_PLAN proto=2 plan=%s leg=%s target_m=%.2f x=%.3f out=%.3f vy=%.4f right_ref_mm=%.1f laser_ok=%u body_edge_mm=%u front_target_mm=%u vmax=%.2f",
+        straight_plan_name(test.plan), straight_leg_name(test.leg), (double)test.target_m,
+        (double)test.distance_m, (double)test.outbound_m, (double)test.lateral_mps,
+        (double)test.right_ref_mm, (unsigned)straight_laser_ready(test.plan, in), test.body_edge_mm,
+        straight_front_target_mm(&test), (double)test.max_speed_mps);
+    log_info("TEST_RANGE fresh=%u age_ms=%lu left_mm=%u right_mm=%u rear_mm=%u front_mm=%u",
+        (unsigned)in.laser_fresh, (unsigned long)in.laser_age_ms, in.left_mm, in.right_mm, in.rear_mm, in.front_mm);
+    uint16_t guards[4];
+    straight_guard_limits(&test, in, guards);
+    log_info("TEST_BRAKE left_mm=%u right_mm=%u rear_mm=%u front_mm=%u decel_mps2=0.10 delay_ms=300 active=%u",
+        guards[0], guards[1], guards[2], guards[3], (unsigned)(test.plan != ST_PLAN_FWD));
 }
 void straight_test_app_init(void) {
     initialized = false;
@@ -348,10 +377,11 @@ void straight_test_app_init(void) {
     stop_outputs();
     initialized = true;
     last_step = last_imu = HAL_GetTick();
-    log_info("TEST_READY mode=6 target=%.2fm speed<=0.10m/s radius=0.051 NOMINAL laser_limit=0; PING ARM GO <token> HB <token> STOP; no automatic restart",
+    log_info("TEST_READY mode=6 target=%.2fm default_speed=0.10 ceiling=0.50 radius=0.051 NOMINAL FWD_laser_limit=0; PING ARM GO <token> HB <token> STOP",
         (double)STRAIGHT_TEST_TARGET_M);
     log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1500 FW_period_ms=100");
     log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 vrb_required=0");
+    log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
 }
 void straight_test_app_loop(void) {
     const uint32_t now = HAL_GetTick();
@@ -379,14 +409,14 @@ void straight_test_app_loop(void) {
         if(control_dt_ms > control_dt_max_ms) control_dt_max_ms = control_dt_ms;
         last_step = now;
         straight_step(&test, now, in);
-        if(test.phase == ST_RUNNING) {
+        if(test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
-            const float wz = chassis_yaw_hold_apply(test.speed_mps, 0.0f, 0.0f, a.yaw, g.z, 0.01f);
-            if(chassis.set_velocity(test.speed_mps, 0.0f, wz) != chassis.OK || chassis.process() != chassis.OK)
+            const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, 0.01f);
+            if(chassis.set_velocity(test.speed_mps, test.lateral_mps, wz) != chassis.OK || chassis.process() != chassis.OK)
                 straight_fault(&test, "CHASSIS_CONTROL");
-        } else chassis_yaw_hold_disable();
-        if(test.phase != ST_RUNNING) {
+        } else if(test.phase != ST_RUNNING) chassis_yaw_hold_disable();
+        if(test.phase != ST_RUNNING || test.leg == ST_LEG_WAIT) {
             stop_outputs();
         }
         if(tx_fault || !can_healthy()) straight_fault(&test, "CAN_TX_OR_BUS");
@@ -396,7 +426,7 @@ void straight_test_app_loop(void) {
         const ImuAngle a = imu.get_angle();
         log_info("TEST_STATUS phase=%u token=%lu healthy=%u stopped=%u target_m=%.2f s=%.3f vx=%.3f cmd=%.3f yaw_deg=%.2f ref_deg=%.2f wz=%.4f blocked=%s result=%s",
             (unsigned)test.phase, (unsigned long)test.token, (unsigned)in.healthy, (unsigned)in.stationary,
-            (double)STRAIGHT_TEST_TARGET_M,
+            (double)test.target_m,
             (double)test.distance_m, (double)in.vx_mps, (double)test.speed_mps, (double)a.yaw * 57.295779513,
             (double)chassis_yaw_hold_get_yaw_ref() * 57.295779513, (double)chassis_yaw_hold_get_output_wz(),
             first_blocker(), test.result);
@@ -410,5 +440,6 @@ void straight_test_app_loop(void) {
         (void)log_vofa_write("FW", 4u, wave);
         log_detail(now, in);
     }
+    if(now - last_plan_log >= 200u) { last_plan_log = now; log_plan(in); }
 }
 #endif
