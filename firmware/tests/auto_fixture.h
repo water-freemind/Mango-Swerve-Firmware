@@ -25,6 +25,9 @@ static AutoMissionConfig auto_fixture(void) {
         .yaw_tolerance=.01f,.cross_abort=.15f,.yaw_abort=.25f,.settle_s=.15f,.stop_latency_s=.08f,.pose_max_age_ms=50};
     c.work=(AutoWorkConfig){1000,2000,1000,4000,100,100,true,false};
     auto_route_build(&c.route,1,1.5707963268f);
+    /* Known gate-facing open ray: map-only low-speed fixture policy, not a
+     * deployed clearance claim. Include these caps in the remaining-time budget. */
+    c.segment_vmax[5]=c.segment_vmax[9]=c.segment_vmax[13]=c.segment_vmax[16]=.05f;
     c.deadline_ms=300000;c.pause_timeout_ms=1500;c.pause_stable_ms=100;c.stop_work_ms=2000;
     c.segment_timeout_ms=90000;c.max_pauses=2;c.reserve_s=15;c.segment_allowance_s=.3f;c.footprint_margin=.01f;
     return c;

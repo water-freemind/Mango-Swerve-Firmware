@@ -14,8 +14,14 @@ static void fail(AutoMission* m,AutoMissionError error) {
 static bool stationary(AutoMissionInput in) {
     return in.motion.stationary && hypotf(in.motion.measured.vx,in.motion.measured.vy)<.01f && fabsf(in.motion.measured.wz)<.02f;
 }
+static AutoMotionConfig segment_config(const AutoMission* m,unsigned index) {
+    AutoMotionConfig c=m->config.motion;
+    if(m->config.segment_vmax[index]>0) c.vmax=m->config.segment_vmax[index];
+    return c;
+}
 static bool begin_segment(AutoMission* m,uint32_t now) {
-    return auto_motion_begin(&m->motion,&m->config.motion,m->config.route.segment[m->out.segment_index].line,now);
+    AutoMotionConfig c=segment_config(m,m->out.segment_index);
+    return auto_motion_begin(&m->motion,&c,m->config.route.segment[m->out.segment_index].line,now);
 }
 static float travel_time(float d,AutoMotionConfig c) {
     float inverse=1/c.accel+1/c.decel;
@@ -28,7 +34,7 @@ static float remaining(AutoMission* m) {
         AutoSegment s=m->config.route.segment[i].line;
         float length=hypotf(s.end.x-s.start.x,s.end.y-s.start.y);
         if(i==m->out.segment_index) length=fmaxf(0,length-fmaxf(0,m->motion.out.progress));
-        total+=travel_time(length,m->config.motion)+m->config.motion.settle_s+m->config.segment_allowance_s;
+        total+=travel_time(length,segment_config(m,i))+m->config.motion.settle_s+m->config.segment_allowance_s;
     }
     return total;
 }
@@ -44,6 +50,10 @@ bool auto_mission_init(AutoMission* m,const AutoMissionConfig* c,uint32_t now) {
         fail(m,AUTO_MISSION_CONFIG); return false;
     }
     m->config=*c;
+    for(unsigned i=0;i<AUTO_ROUTE_COUNT;++i) {
+        float speed=c->segment_vmax[i];
+        if(!isfinite(speed)||speed<0||speed>c->motion.vmax) { fail(m,AUTO_MISSION_CONFIG);return false; }
+    }
     if(!begin_segment(m,now)) { fail(m,AUTO_MISSION_CONFIG); return false; }
     AutoWork probe={0};
     if(!auto_work_begin(&probe,c->work,1,0,1,now)) { fail(m,AUTO_MISSION_CONFIG); return false; }
@@ -93,6 +103,9 @@ AutoMissionOutput auto_mission_step(AutoMission* m,AutoMissionInput in) {
     }
     if(m->out.segment_index>=AUTO_ROUTE_COUNT || m->completed_segments!=((1u<<m->out.segment_index)-1u)) {
         fail(m,AUTO_MISSION_COVERAGE); return m->out;
+    }
+    if(!auto_route_pose_clear(&m->config.route,m->config.geometry.stowed,in.motion.pose.pose,m->config.footprint_margin)) {
+        fail(m,AUTO_MISSION_ENVELOPE); return m->out;
     }
     m->out.mandatory_remaining_s=remaining(m);
     float available=(m->config.deadline_ms-in.penalty_ms)*.001f-m->out.elapsed_s;
@@ -178,6 +191,6 @@ const char* auto_mission_phase_name(AutoMissionPhase p) {
     return (unsigned)p<sizeof(names)/sizeof(names[0])?names[p]:"UNKNOWN";
 }
 const char* auto_mission_error_name(AutoMissionError e) {
-    static const char* names[]={"OK","CONFIG","START","HEALTH","DEADLINE","POSE","MOTION","WORK","PAUSE_TIMEOUT","PAUSE_LIMIT","COVERAGE","PARKING","SEGMENT_TIMEOUT","TIMING"};
+    static const char* names[]={"OK","CONFIG","START","HEALTH","DEADLINE","POSE","MOTION","WORK","PAUSE_TIMEOUT","PAUSE_LIMIT","COVERAGE","PARKING","SEGMENT_TIMEOUT","TIMING","ENVELOPE"};
     return (unsigned)e<sizeof(names)/sizeof(names[0])?names[e]:"UNKNOWN";
 }

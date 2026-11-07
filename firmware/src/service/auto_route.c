@@ -54,6 +54,22 @@ bool auto_route_clear(const AutoRoute* r,AutoEnvelope body,float margin) {
     }
     return true;
 }
+bool auto_route_pose_clear(const AutoRoute* r,AutoEnvelope body,AutoPose pose,float margin) {
+    if(!auto_route_valid(r)) return false;
+    float s=r->scale;
+    if(!auto_envelope_inside(body,pose,0,-s,3*s,4.6f*s,margin)) return false;
+    float xmin=pose.x-auto_envelope_support(body,auto_rotate((AutoVec2){-1,0},-pose.yaw))-margin;
+    float xmax=pose.x+auto_envelope_support(body,auto_rotate((AutoVec2){1,0},-pose.yaw))+margin;
+    float ymin=pose.y-auto_envelope_support(body,auto_rotate((AutoVec2){0,-1},-pose.yaw))-margin;
+    float ymax=pose.y+auto_envelope_support(body,auto_rotate((AutoVec2){0,1},-pose.yaw))+margin;
+    if(ymin<0 && xmax>.4f*s) return false;
+    for(unsigned row=1;row<=6;++row) {
+        float x0=(row==4?.6f:.4f)*s,x1=(row==4?2.4f:2.6f)*s;
+        float y0=(.4f+.7f*(row-1))*s,y1=y0+.3f*s;
+        if(xmax>=x0 && xmin<=x1 && ymax>=y0 && ymin<=y1) return false;
+    }
+    return true;
+}
 static void intersect(AutoVec2 sensor,AutoVec2 dir,AutoVec2 n,float offset,float low,float high,
                       uint32_t id,float* nearest,AutoPlane* plane) {
     float denom=n.x*dir.x+n.y*dir.y;

@@ -8,11 +8,12 @@ typedef enum { AUTO_MISSION_OK, AUTO_MISSION_CONFIG, AUTO_MISSION_START,
     AUTO_MISSION_HEALTH, AUTO_MISSION_DEADLINE, AUTO_MISSION_POSE,
     AUTO_MISSION_MOTION, AUTO_MISSION_WORK, AUTO_MISSION_PAUSE_TIMEOUT,
     AUTO_MISSION_PAUSE_LIMIT, AUTO_MISSION_COVERAGE, AUTO_MISSION_PARKING,
-    AUTO_MISSION_SEGMENT_TIMEOUT, AUTO_MISSION_TIMING } AutoMissionError;
+    AUTO_MISSION_SEGMENT_TIMEOUT, AUTO_MISSION_TIMING, AUTO_MISSION_ENVELOPE } AutoMissionError;
 typedef enum { AUTO_START_NONE, AUTO_START_LOCAL_APPROVED, AUTO_START_HOST_DEBUG } AutoStartKind;
 typedef struct {
     AutoConfig geometry; AutoMotionConfig motion; AutoWorkConfig work;
     AutoRoute route;
+    float segment_vmax[AUTO_ROUTE_COUNT]; /* 0 uses motion.vmax; otherwise lower segment cap, also used by budget. */
     uint32_t deadline_ms, pause_timeout_ms, pause_stable_ms, stop_work_ms, segment_timeout_ms;
     unsigned max_pauses; float reserve_s, segment_allowance_s, footprint_margin;
     bool simulation_only, map_confirmed;

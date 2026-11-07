@@ -9,6 +9,8 @@ typedef struct { AutoRouteSegment segment[AUTO_ROUTE_COUNT]; float scale; } Auto
 bool auto_route_build(AutoRoute* route,float scale,float heading);
 /* Conservative fixed-heading AABB continuous sweep, not endpoint-only check. */
 bool auto_route_clear(const AutoRoute* route,AutoEnvelope body,float margin);
+/* Conservative live AABB of the yawed footprint, including start/gate. */
+bool auto_route_pose_clear(const AutoRoute* route,AutoEnvelope body,AutoPose pose,float margin);
 bool auto_route_valid(const AutoRoute* route);
 /* First front-facing intersection with known field fence/ridge faces. False at openings. */
 bool auto_route_ray(const AutoRoute* route,AutoPose pose,AutoLaserMount mount,float max_range,

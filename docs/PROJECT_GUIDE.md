@@ -1047,7 +1047,7 @@ tick(now):
 
 ### 9.11 现有代码能复用什么，还缺什么
 
-路线审计基线为`be404da`，下面区分真实实现和建议接口。路线工作仅增加离线工具和文档，没有新增自主APP_RUN_MODE；同轮用户提出的手动缓加减速另外修改模式6相关代码，见2.1.1，不能将其当作自主路线已实现。
+路线审计基线为`be404da`，下表保留当时运行入口的复用分析。后续已经增加共享C自主基础模块，当前实现见9.15–9.16；仍没有新增自主APP_RUN_MODE或绑定硬件。手动缓加减速候选另见2.1.1，不能将其当作自主路线已部署。
 
 | 能力 | 当前源码事实 | 自主流程接入工作 |
 | --- | --- | --- |
@@ -1058,7 +1058,7 @@ tick(now):
 | 几何 | 普通装配旧半径0.035276，模式6才覆盖0.051；轮距仍旧值 | 新入口显式选择已确认标定集；先拿到四轴坐标，不借机修改队友手动配置 |
 | 模式入口 | `app_config.h`只定义0..6；模式6仍依赖遥控在线/开关许可 | 新增独立比赛模式及合法本机起跑，不全局删除现有遥控保护 |
 | CAN3作业 | work_link在模式6禁用，协议无收回证明 | 比赛组装/事务守卫/对端契约共同完成；S21C不用改 |
-| 地图与任务 | 无7沟路线、树表、任务级预算和全车停车判断 | 建competition_map、route_executor、mission/work/safety状态层；名称为建议非现存文件 |
+| 地图与任务 | 运行入口未绑定自主任务；共享C核心已有17段/7沟路线、任务预算和全车停车判断 | 核心为`auto_route`/`auto_mission`，后续仍需实际定位、目标和执行器适配；未接入硬件 |
 
 现有模式6初始化在GO之前会给达妙发送清错/使能/位置速度模式，并在收到反馈后保持原角；不能写成“未GO一定没有任何电机动作”。一般`chassis.brake()`还会转成驻车轮角。比赛的PRECHECK必须单独限制执行器行为，静态上电采样和允许动作之间设置明确边界。
 
@@ -1128,10 +1128,10 @@ py -3 -B tools/competition_route.py --speed 0.30 --accel 0.30 --tree-dwell 8 --o
 | 阶段 | 当前实现与证据 | 尚缺 |
 | --- | --- | --- |
 | A 参数与几何 | [auto_geometry.h](../firmware/src/service/auto_geometry.h)/[.c](../firmware/src/service/auto_geometry.c)：SI单位、四路独立外参、非对称收拢/伸出包络、来源及确认标记；净空/速度余量、位姿变换、整车入框；主机测试通过 | 当前没有任何实测自主配置；传感器逐路健康与地图表面关联由调用者提供，不从聚合帧猜测 |
-| B 线段控制 | [auto_motion.c](../firmware/src/service/auto_motion.c)：有向线段进度/横差、世界航向、速度斜率、到点停稳；调轮关闭时零驱动输出及独立方向提示，反向先减速/停稳；四方向含延迟/噪声主机仿真通过 | 未接入实车适配；方向提示不是行走许可，不能直接当电机命令。最终整场仿真仍待实现 |
-| C 任务状态机 | [auto_route.c](../firmware/src/service/auto_route.c)/[auto_mission.c](../firmware/src/service/auto_mission.c)：17段路线、完整顺序校验、逐段覆盖、起跑锁存、暂停/恢复、时间预算、作业停稳及全车退出；正常/空跑/异常主机测试通过 | 地图布局仍是有版本的示例；尚未绑定电机/传感器；完整故障矩阵及报告在阶段E继续 |
+| B 线段控制 | [auto_motion.c](../firmware/src/service/auto_motion.c)：有向线段进度/横差、世界航向、速度斜率、到点停稳；调轮关闭时零驱动输出及独立方向提示，反向先减速/停稳；四方向和整场仿真通过 | 未接入实车适配；方向提示不是行走许可，不能直接当电机命令 |
+| C 任务状态机 | [auto_route.c](../firmware/src/service/auto_route.c)/[auto_mission.c](../firmware/src/service/auto_mission.c)：17段路线、顺序/覆盖、起跑、暂停、预算、作业停稳和全车退出；逐段限速同时进入预算，运行中检查完整收拢包络；测试通过 | 地图布局仍是有版本的示例；尚未绑定电机/传感器 |
 | D 作业协同 | [auto_work.c](../firmware/src/service/auto_work.c)：复用v1状态/任务/region字段，停止/工作/收回/总事务独立期限，去重与错误任务拒绝；替身测试通过 | 收回、实际动作、会话证据均为本机适配输入，不存在于v1帧，需双方确认，未修改现有work_link或对端 |
-| E 场景仿真/回放 | 待实现 | 同份C控制核心驱动含误差/延迟的场景、异常与时间分解、起停日志分析 |
+| E 场景仿真/回放 | [auto_observation.c](../firmware/src/service/auto_observation.c)、共享C整场9场景、CSV轨迹、状态/时间/首因JSON、SVG及手动起停分析工具，见9.16 | 仅仿真和日志计算；开口降速策略是fixture假设，不能证明实际无障碍或定位可观 |
 | F 集成交付 | 进行中 | 最终整套回归、H723构建/旧模式隔离、教程和逐项完成核验 |
 
 几何核心没有HAL、串口、CAN和电机调用。`auto_config_valid()`只检查计算配置是否可用；`auto_config_hardware_ready()`还拒绝仿真配置、任一缺失确认的轮组/包络/制动/激光/起跑/作业契约，不能用前者放行硬件。测试中的轮轴、包络、激光安装值均为有明确来源标记的虚构fixture，不是机械队友提供的新数据。
@@ -1150,7 +1150,7 @@ py -3 -B tools/competition_route.py --speed 0.30 --accel 0.30 --tree-dwell 8 --o
 
 **CAN3接口提案，尚未双方确认：**保留原0x610请求/0x611回复、版本1、8字节布局与region=0..4；region不是沟号，G7..G1只在本机路线层保存。原协议是疏果端发SLOW/WAIT/WORKING/GO，底盘回复SLOW_ACK/STOPPING/STOPPED/GO_ACK。新核心只在本机复用这些状态值和解析格式，未发送任何新帧；本地目标如何对应对端WAIT尚需适配协调。`peer_epoch`（重启会话）、`retracted`（可靠收回）和`action`（真实动作证据）是明确待实现的适配输入，不占用或重解释现有保留位。可由双方认可的状态反馈/独立位置输入产生，具体传输方案未定；不能把现有GO或链路在线直接转换为收回完成。当前正式模式入口因此仍拒绝未确认契约。
 
-阶段C/D共享C仿真：在0.30m/s、加减速0.30m/s²、40ms执行响应和小幅测量扰动的示例条件下，空跑约129.43秒，12次快速替身作业约150.61秒。替身动作/收回耗时远小于第9.10节每树8秒分析，不能据此推翻351.6秒预算结果或宣称实车能完赛。空跑结果为`coverage=0x7f, actions=0, qualified=0`；带动作例为12次证据，七沟全覆盖。StraightTest全量90源构建通过，运行入口保持不变。
+阶段C/D早期仿真未加入开口段低速，历史结果为空跑129.43秒、12次替身作业150.61秒。阶段E加入观测和开口策略后的当前结果为**172.00秒/193.06秒**，详见9.16。替身动作/收回耗时远小于第9.10节每树8秒分析，不能据此推翻351.6秒预算结果或宣称实车能完赛。空跑`coverage=0x7f, actions=0, qualified=0`；带动作例为12次证据，七沟全覆盖。当前StraightTest全量91源构建通过，运行入口保持不变。
 
 阶段B仿真采用40ms一阶执行响应、±0.5mm位置扰动和0.003rad航向扰动，4个方向各1m在约6.50–6.55秒完成，模拟终点误差约8.2–9.1mm。结果只证明该测试模型，不代表地面精度或滑移上界；异常测试覆盖调轮后不突发大命令、起步时车未停、保护锁存、位姿过期、NaN、横漂/偏航和超调拒绝。StraightTest全量87源构建通过，新增核心仍未绑定运行入口，固件BIN未变化。
 
@@ -1161,6 +1161,49 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File firmware/tests/run_auton
 ```
 
 该测试使用H723源列表中的同份C代码，覆盖四向不等偏移、55/65mm场景、偏航/伸出、前后横移闭合速度、旋转保守余量、无效/过期/错墙数据、uint32时间回绕和全车停车；对0–7cm没有人为加量程下限。阶段A的StraightTest全量86源构建通过；因未接入运行入口，新函数被链接器裁除，BIN仍与缓加减速候选相同（`30D288E4…52F3`），这不表示自主功能已在车上运行。阶段工作记录与编译证据在本机`firmware/build/autonomy-prep/`，不修改旧固件运行入口、不烧录。
+
+<a id="autonomy-offline-replay"></a>
+
+### 9.16 离线仿真、首因报告与缓加减速日志教程
+
+**输入与真实性。** [test_auto_mission.c](../firmware/tests/test_auto_mission.c)直接链接将编入H723的`auto_*`核心，10ms步进，以一阶速度响应（每步趋近目标25%，约40ms尺度）积分模拟真实位姿，再叠加±0.3mm位置、0.002rad航向扰动。测距从模拟真实位姿产生，地图预测从扰动后的估计位姿产生；没有将车辆直接放到段终点。全部参数来自[auto_fixture.h](../firmware/tests/auto_fixture.h)，均为未实测示例：270mm方形收拢包络、激光距中心40mm、0.30m/s、加减速度0.30m/s²等，不能替换第6章实测记录。作业替身每个工作行提供两个目标，工作约500ms、收回证明延迟100ms；这不是树果数量/机械耗时的实测。
+
+**观测策略。** `auto_observation_step()`检查每路独立有效性、预期墙面和残差，汇总`valid_mask/opening_mask/stop_mask`；同一时间戳不得对应变化的位姿。位姿差分与已测速度不一致时拒绝，平滑滑移可能由独立墙距残差检出，但单墙不能保证所有方向的位置或yaw可观；它不替代定位融合。诊断跳变边界目前固定为线位移`0.01+0.5*dt`米、角度`0.03+0.2*dt`弧度，跨样本时间超过0.2秒拒绝，属于离线诊断阈值而非实测精度。测距有效后，分别用命令/反馈速度计算停车预算并取较大者。异常输出必须看有效位，不能把初始化的0当安全净空。
+
+在通向门口的左侧下降段和离场段（0基索引5/9/13/16），行进方向的地图射线没有墙面。fixture显式采用0.05m/s上限及地图/位姿包络检查，不伪造激光距离；这是仅供离线验证的策略，实车是否允许依赖定位低速通过需另行验收。`segment_vmax[]`同时用于控制与剩余时间估算，不能只在控制器中临时降速却继续按快速度计算回程预算。其余必要射线失效进入有限PAUSE；超时或重复暂停超过次数锁存故障。运行期间也检查当前yaw下的完整收拢外廓，防止仅路线中心在通道内却车身压垄。
+
+**复现步骤。** 在仓库根目录使用Windows PowerShell 5.1、MinGW GCC和Python 3.10以上。以下命令不访问串口、CAN或下载器：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File firmware/tests/run_autonomy_tests.ps1
+py -3 -B -m unittest discover -s tools -p test_autonomy_report.py -v
+py -3 -B tools/autonomy_report.py mission firmware/build/autonomy-prep/traces --output firmware/build/autonomy-prep/reports
+py -3 -B tools/autonomy_report.py ramp tools/fixtures/ramp-synthetic.csv --output firmware/build/autonomy-prep/reports/ramp-synthetic.json
+```
+
+1. 首条命令必须出现几何、运动、事务、观测、任务各自的`TEST_OK`；断言失败时命令返回非零，不继续当作验证成功。
+2. `traces/fixture.json`记录本次仿真参数，`scenarios.csv`记录场景终态，九份场景CSV保存逐步轨迹。`segment`表示本次执行的段，`state`表示返回状态，边界允许一个10ms采样周期的差别。
+3. 打开`reports/index.json`看终态、首个故障和作业错误码；每个场景另有JSON及SVG。JSON记录原CSV的SHA256、状态转移、覆盖事件、逐段/逐状态时间。SVG绿色为模拟真实轨迹、粉色为估计轨迹、红点为终点。这里的“回放”是按记录重建结果，不是Python重新实现另一套控制器。
+4. 每份报告必须保留`simulation_only=true/deployment_ready=false`。`local_qualified`只代表本地必要条件，不能称为正式有效成绩。
+
+| 场景 | 当前结果 | 验证目的 |
+| --- | --- | --- |
+| mission-empty | FINISHED，172.00s，七沟、0次动作、不合格 | 空跑不伪装有效作业 |
+| mission-work | FINISHED，193.06s，七沟、12次替身证据 | 全流程、收回后恢复、全车停车 |
+| range-loss | 21.50s，PAUSE_TIMEOUT | 必要测距丢失不能无限等待或盲走 |
+| yaw-jump / pose-slip | 20.00s，POSE | 位姿跳变锁停；另有独立观测测试验证平滑位移残差 |
+| peer-reboot | 38.42s，WORK，子码3（RESTART） | 对端会话变化不能续旧任务 |
+| no-retract | 40.02s，WORK，子码7（RETRACT_TIMEOUT） | 重复GO不替代收回证明、不刷新期限 |
+| work-deadline | 38.42s，DEADLINE | 作业期间同样执行整场硬截止 |
+| low-budget | FINISHED，172.00s，拒绝12个目标、不合格 | 预算不足拒绝新作业，仍区别于硬截止 |
+
+当前作业例时间分解：NAVIGATE 172.17s、STOP_WORK 12.36s、WORK_HOLD 7.32s、RETRACT_VERIFY 1.20s、终态采样0.01s。暂停、调轮、端点趋近和降速会影响实际耗时；预算模型是有余量的估算，不能证明真实机器一定满足300秒。故障场景同时断言命令为0、后续健康输入不自动解除锁存。单元层另测漏/重复沟、短R4/墙面切换、逐路健康、冻结测距残差、未确认配置、反复暂停、NaN、过期数据及车中心出门但后缘未出门。
+
+**手动起停日志分析。** `ramp-synthetic.csv`是人工构造测试样本，绝非实车记录。分析实际桥接日志时，把上述`ramp`输入替换为保存的日志路径。工具只解析带原始`t_ms`的`TEST_RAMP`，忽略带`cached`的查询回放；`TEST_CONTROL`的vx/vy/wz同样是命令，不冒充反馈。当前RAMP周期受详情轮询限制，稀疏日志只能看到区间平均斜率，不能测到所有瞬态峰值。
+
+如另有同步测得的车体速度，使用CSV列：`t_ms,target_vx,target_vy,target_wz,output_vx,output_vy,output_wz,measured_vx,measured_vy,measured_wz,reversing`。平移单位m/s、旋转rad/s，时间为同一个板端时基；三项measured均可留空，不允许只填一项后猜其余。报告区分命令与反馈的平均加速度、松杆首个采样时刻、命令/反馈首次近零时刻；时间回退分段，不跨重启求导。没有同步反馈时实际起停与防翻表现为UNKNOWN，不从命令曲线推算实测停车距离。现场仍需记录卷尺距离、载荷、速度档和车体姿态。
+
+本轮没有增加车端UART输出或VOFA按钮。原`TEST_RAMP`仍属于HEALTH分类，ACK/主动查询规则不变；新增CSV/JSON只由电脑测试进程生成。报告不覆盖部署归档，`build/autonomy-prep`均为本机可再生证据。
 
 <a id="references"></a>
 
