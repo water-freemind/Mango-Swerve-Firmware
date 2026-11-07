@@ -6,6 +6,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* No actuator I/O: restart time/alignment profiles after explicit owner stop. */
+void chassis_reset_control_history(void);
+
 // ! ========================= 接 口 变 量 / Typedef 声 明 ========================= ! //
 
 /**
@@ -31,7 +34,10 @@
     X(STEER_PREPARE_FAILED, "Steer Motor Prepare Failed") \
     X(DRIVE_PREPARE_FAILED, "Drive Motor Prepare Failed") \
     X(KINEMATICS_FAILED, "Steer Wheel Kinematics Failed") \
-    X(NOT_INITIALIZED, "Chassis Not Initialized")
+    X(NOT_INITIALIZED, "Chassis Not Initialized")         \
+    X(CONTROL_TIMING, "Chassis Control Timing Invalid")  \
+    X(FEEDBACK_INVALID, "Chassis Feedback Invalid")      \
+    X(MOTOR_OUTPUT_FAILED, "Chassis Motor Output Failed")
 
 /**
  * @brief 四个舵轮模块的固定顺序和总线映射

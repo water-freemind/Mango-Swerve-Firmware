@@ -20,6 +20,9 @@ typedef struct {
     AutoVec2 wheel[4]; float wheel_radius;
     AutoLaserMount laser[AUTO_LASER_COUNT];
     AutoEnvelope stowed, extended;
+    /* latency_s is ADDITIONAL unobserved sensor/processing/actuation delay.
+     * Observed max(range age, pose age) is budgeted separately, once. A S21C
+     * receive stamp is not a per-channel sample stamp: hidden delay belongs here. */
     float brake_decel, latency_s, clearance_margin, residual_limit;
     uint32_t range_max_age_ms, pose_max_age_ms;
     AutoEvidence wheels_evidence, envelope_evidence, brake_evidence;
@@ -43,6 +46,7 @@ typedef enum {
 typedef struct {
     float raw_m, expected_m, residual_m, edge_offset_m;
     float clearance_m, closing_mps, required_m;
+    float sample_age_s, response_budget_s;
     bool collision, protective_stop;
 } AutoClearance;
 
@@ -55,6 +59,12 @@ AutoVec2 auto_rotate(AutoVec2 v, float yaw);
 bool auto_pose_to_map(AutoPoseSample odom_pose, AutoPose map_from_odom,
                       uint32_t now_ms, uint32_t max_age_ms, AutoPoseSample* result);
 float auto_envelope_support(AutoEnvelope body, AutoVec2 normal_body);
+/* Exact footprint support over a fixed-center yaw interval [0, delta_yaw].
+ * normal_body is a unit plane normal in the INITIAL body frame. Includes both
+ * endpoints and corner extrema; negative/full turns supported. NAN on invalid
+ * input. This is geometric clearance, not proof of angular braking or coverage
+ * by a laser ray. Simultaneous translation needs its own swept path bound. */
+float auto_envelope_swept_support(AutoEnvelope body, AutoVec2 normal_body, float delta_yaw);
 bool auto_envelope_inside(AutoEnvelope body, AutoPose pose,
                           float xmin, float ymin, float xmax, float ymax, float margin);
 AutoGeomResult auto_laser_clearance(const AutoConfig* config, unsigned channel,

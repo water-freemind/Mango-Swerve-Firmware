@@ -24,6 +24,33 @@ Assert (!$static.Command("UI ARM`nUI GO", 50)) 'Batch command accepted'
 Assert (!$static.Command('GO 1', 60)) 'Raw device command accepted over UDP'
 Assert (!$static.Command('UI SNAPSHOT UNKNOWN', 70)) 'Unknown snapshot accepted'
 
+# Capture commands remain available from the static launcher, without requiring
+# an ARM token or transmitting motion. Device-side checks govern capture/export.
+$capture = [VofaTestSession]::new($false, $send, $report)
+$tx.Clear()
+foreach ($action in @('START','STOP','CLEAR','DUMP')) {
+    Assert ($capture.Command("UI TRACE $action`n", 80)) ('Static trace command rejected: ' + $action)
+    Assert ($tx[-1] -eq "TRACE $action") ('Trace command translated incorrectly: ' + $action)
+    Assert ($messages[-1] -match 'motor_command=NONE') 'Capture response claimed a motor command'
+}
+Assert (($tx -join ',') -eq 'TRACE START,TRACE STOP,TRACE CLEAR,TRACE DUMP') 'Capture emitted unexpected serial commands'
+$beforeCaptureRejects = $tx.Count
+foreach ($bad in @('UI TRACE','UI TRACE ERASE','UI TRACE START 1','TRACE START',"UI TRACE START`nUI GO",'UI TRACE START; UI GO')) {
+    Assert (!$capture.Command($bad, 81)) ('Invalid capture command accepted: ' + $bad)
+}
+Assert ($tx.Count -eq $beforeCaptureRejects) 'Rejected capture input reached serial'
+Assert ($capture.Command('UI LOG QUIET',82)) 'Quiet preset rejected for capture'
+foreach ($reply in @(
+    '[INFO] TEST_TRACE_META expected_count=2 first=0 next=2 overwritten=0 reason=STOPPED',
+    '[INFO] TEST_TRACE seq=0 part=0 total=1 data=0,1,2',
+    '[INFO] TEST_TRACE_STATE rejected=INVALID_BUSY_OR_NOT_STOPPED require=SWD_OFF_FRESH_STATIONARY',
+    '[INFO] TEST_TRACE_END sent_count=2')) {
+    Assert ($capture.ShouldForwardStatus($reply,83)) ('Quiet filter hid explicit capture reply: ' + $reply)
+    Assert ($capture.ShouldForwardStatus($reply,83)) 'Same-time capture chunks were throttled'
+}
+Assert (!$capture.ShouldForwardStatus($idle,83)) 'Capture support accidentally unmuted periodic status'
+Assert (!$capture.ShouldForwardStatus('[INFO] TEST_TRACE_UNKNOWN value=1',83)) 'Unknown trace category bypassed quiet filter'
+
 $motion = [VofaTestSession]::new($true, $send, $report)
 $tx.Clear()
 Assert (!$motion.Command('UI ARM', 0)) 'Missing status did not block ARM'
@@ -137,7 +164,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 74) 'Expected 74 named panel commands'
+Assert ($items.Count -eq 78) 'Expected 78 named panel commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -151,7 +178,7 @@ foreach ($item in $items) {
     $accepted = $static.Command($command, 3010)
     if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
 }
-Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' }).Count -eq 0) 'Static panel sent a motion command'
+Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
 $messages.Clear()
 Assert ($static.Command('UI SNAPSHOT REMOTE', 4000)) 'Stale snapshot command rejected as unknown'
 Assert ($messages[-1].Contains('UART_STATUS_STALE')) 'Stale UART data was presented as a current snapshot'
@@ -272,4 +299,4 @@ try {
     Assert ($reply -eq "[INFO] TEST_PANEL stop_requested=1`n") 'UDP reply bytes changed'
     Assert ($peer.Port -eq $server.Client.LocalEndPoint.Port) 'Replies did not come from the command socket'
 } finally { $server.Dispose(); $client.Dispose() }
-'VOFA_PANEL_TEST_OK (74 commands, 1/2/4m plans, fast speeds, matching ACK/GO, no HB or stale-status stop, mode switch isolation, edge/speed locks, detailed log filters, legacy/static gates, UDP)'
+'VOFA_PANEL_TEST_OK (78 commands, static TRACE capture and quiet export replies, invalid capture rejection, 1/2/4m plans, fast speeds, matching ACK/GO, no HB or stale-status stop, mode switch isolation, edge/speed locks, detailed log filters, legacy/static gates, UDP)'

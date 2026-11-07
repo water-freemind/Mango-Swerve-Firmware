@@ -20,6 +20,12 @@
  */
 #define DJI_MOTOR_MAX_ID 4u
 
+/* Existing gains are discrete gains tuned at 2ms. Elapsed-time normalization
+ * preserves that reference, not an assumed continuous-time Ki/Kd. */
+#define DJI_MOTOR_PID_REFERENCE_MS 2u
+#define DJI_MOTOR_CONTROL_MAX_GAP_MS 50u
+#define DJI_MOTOR_FEEDBACK_TIMEOUT_MS 100u
+
 /**
  * @brief DJI 电机型号
  */
@@ -50,6 +56,15 @@ typedef enum {
  * @brief DJI 电机统一接口实例
  */
 extern const BusMotorInterface dji_motor_instance;
+
+/* init requires send + monotonic now_ms. timeout_ms=0 selects 100ms feedback
+ * expiry (a positive value up to 1000ms overrides it). set_spd batches four
+ * currents. Invalid input, missing/stale feedback or a >50ms control gap clears
+ * ALL cached currents and attempts an immediate zero frame before returning an
+ * error. The caller owns the permission/fault latch; valid later commands alone
+ * must not authorize vehicle restart. stop/brake clear PID history and retain
+ * zero-speed feedback braking; without fresh feedback they send zero current.
+ * Same-time commands recompute P but never accumulate I or differentiate. */
 
 // ! ========================= 接 口 函 数 声 明 ========================= ! //
 

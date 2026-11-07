@@ -10,6 +10,8 @@ firmware/.mxproject
 *.map
 *.o
 *.d
+__pycache__/
+*.py[cod]
 
 # Keep the EIDE project configuration and workspace entry in version control.
 !firmware/.eide/

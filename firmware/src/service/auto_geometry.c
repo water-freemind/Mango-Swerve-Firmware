@@ -57,6 +57,29 @@ bool auto_pose_to_map(AutoPoseSample in, AutoPose t, uint32_t now, uint32_t age,
 float auto_envelope_support(AutoEnvelope b, AutoVec2 n) {
     return (n.x>=0 ? b.front*n.x : -b.rear*n.x) + (n.y>=0 ? b.left*n.y : -b.right*n.y);
 }
+float auto_envelope_swept_support(AutoEnvelope b, AutoVec2 n, float angle) {
+    const float turn=6.28318530718f;
+    const float normal_length=hypotf(n.x,n.y);
+    if(!envelope_valid(b) || !finite_vec(n) || !isfinite(angle) ||
+       fabsf(normal_length-1.0f)>.001f) return NAN;
+    const AutoVec2 corners[4]={{b.front,b.left},{b.front,-b.right},{-b.rear,b.left},{-b.rear,-b.right}};
+    const float low=fminf(0,angle), high=fmaxf(0,angle), normal_angle=atan2f(n.y,n.x);
+    float maximum=0;
+    for(unsigned i=0;i<4;i++) {
+        const AutoVec2 p=corners[i]; const float radius=hypotf(p.x,p.y)*normal_length;
+        if(!isfinite(radius)) return NAN;
+        float candidate;
+        if(fabsf(angle)>=turn) candidate=radius;
+        else {
+            candidate=fmaxf(dot(n,p),dot(n,auto_rotate(p,angle)));
+            const float phase=normal_angle-atan2f(p.y,p.x);
+            const float critical=phase+ceilf((low-phase)/turn)*turn;
+            if(critical<=high) candidate=fmaxf(candidate,radius);
+        }
+        maximum=fmaxf(maximum,candidate);
+    }
+    return maximum;
+}
 bool auto_envelope_inside(AutoEnvelope b, AutoPose p, float xmin,float ymin,float xmax,float ymax,float margin) {
     if(!envelope_valid(b) || !finite_pose(p) || !isfinite(xmin) || !isfinite(ymin) ||
        !isfinite(xmax) || !isfinite(ymax) || xmin>=xmax || ymin>=ymax || !nonnegative(margin)) return false;
@@ -96,7 +119,10 @@ AutoGeomResult auto_laser_clearance(const AutoConfig* c,unsigned ch,AutoEnvelope
     out->clearance_m=out->raw_m*incidence-out->edge_offset_m;
     float radius=hypotf(fmaxf(body.front,body.rear),fmaxf(body.left,body.right));
     out->closing_mps=fmaxf(0,dot(n,(AutoVec2){v.vx,v.vy})+fabsf(v.wz)*radius);
-    out->required_m=out->closing_mps*c->latency_s+
+    const uint32_t range_age=now-r.stamp_ms, pose_age=now-pose.stamp_ms;
+    out->sample_age_s=(range_age>pose_age?range_age:pose_age)*.001f;
+    out->response_budget_s=c->latency_s+out->sample_age_s;
+    out->required_m=out->closing_mps*out->response_budget_s+
         out->closing_mps*out->closing_mps/(2*c->brake_decel)+c->clearance_margin;
     if(!isfinite(out->clearance_m) || !isfinite(out->required_m)) return AUTO_GEOM_CONFIG;
     out->collision=out->clearance_m<=0;

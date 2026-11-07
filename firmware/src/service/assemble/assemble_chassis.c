@@ -3,6 +3,7 @@
 #include "bus_motor/dji_motor.h"
 #include "bus_motor/dm_motor.h"
 #include "chassis.h"
+#include "chassis_profile.h"
 #include "chassis_can_map.h"
 #include "delay.h"
 #include "log.h"
@@ -39,6 +40,8 @@ static const BusMotorPortOps chassis_drive_motor_ops = {
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
 SystemStatus assemble_chassis(void) {
+    const ChassisProfile* profile = chassis_profile_for_mode(APP_RUN_MODE);
+    if(profile == NULL || !steer_wheel_model_valid(&profile->model)) return SYSTEM_STATUS_ERROR;
     ChassisConfig chassis_config = {
         .steer_motor_interface = &dm_motor_instance,
         .drive_motor_interface = &dji_motor_instance,
@@ -46,12 +49,8 @@ SystemStatus assemble_chassis(void) {
         .drive_ops = &chassis_drive_motor_ops,
         .prepare_steer_motor = chassis_prepare_steer_motor,
         .prepare_drive_motor = chassis_prepare_drive_motor,
-        .model = {
-            .length = 0.26572986916f,
-            .width = 0.26572986916f,
-            .wheel_radius = 0.035276f,
-            .max_wheel_linear_speed = 2.0f },
-        .wheel_drive_ratio = 1.0f,
+        .model = profile->model,
+        .wheel_drive_ratio = profile->wheel_drive_ratio,
         .steer_target_mode = CHASSIS_STEER_TARGET_ABS_NEAREST,
         .steer_zero_rad = STEERING_FORWARD_ZERO_RAD,
         .yaw_bias = {
@@ -63,12 +62,10 @@ SystemStatus assemble_chassis(void) {
         }
     };
 
-#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
-    /* Nominal 102 mm wheel; verify physical distance before claiming 2 m accuracy. */
-    chassis_config.model.wheel_radius = STRAIGHT_TEST_WHEEL_RADIUS_M;
-    /* The test planner still caps at 0.50; manual ownership uses SWB gears. */
-    chassis_config.model.max_wheel_linear_speed = APP_MANUAL_MAX_LINEAR_MPS;
-#endif
+    log_info("CHASSIS_PROFILE name=%s length_m=%.6f width_m=%.6f radius_m=%.6f wheel_max_mps=%.3f axes_confirmed=%u radius_calibrated=%u",
+        profile->name, profile->model.length, profile->model.width, profile->model.wheel_radius,
+        profile->model.max_wheel_linear_speed, (unsigned)profile->axis_coordinates_confirmed,
+        (unsigned)profile->loaded_radius_calibrated);
     log_info("CHASSIS assemble begin");
     if(can_register_rx_callback(CHASSIS_STEER_CAN, chassis_steer_can_rx_callback, NULL) != STM32_HAL_CAN_OK)
         return SYSTEM_STATUS_ERROR;

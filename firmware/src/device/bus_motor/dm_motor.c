@@ -1,6 +1,7 @@
 #include "dm_motor.h"
 
 #include <stdbool.h>
+#include <math.h>
 #include <string.h>
 
 // ! ========================= 变 量 声 明 ========================= ! //
@@ -58,8 +59,9 @@ static const DmMotorSlot* dm_motor_get_slot_const(uint16_t id);
 static void dm_motor_reset_slot(DmMotorSlot* slot, uint16_t id);
 static BusMotorStatus dm_motor_send(uint32_t id, const uint8_t* data, uint8_t len);
 static BusMotorStatus dm_motor_send_delayed(uint32_t id, const uint8_t* data, uint8_t len);
-static void dm_motor_write_mode(uint16_t id, DmMotorMode mode);
-static BusMotorStatus dm_motor_apply_command(uint16_t id);
+static BusMotorStatus dm_motor_write_mode(uint16_t id, DmMotorMode mode);
+static bool dm_motor_command_valid(const DmMotorSlot* slot);
+static BusMotorStatus dm_motor_apply_command(uint16_t id, const DmMotorSlot* candidate);
 static BusMotorStatus dm_motor_send_pos_vel(uint16_t id, const DmMotorSlot* slot);
 static BusMotorStatus dm_motor_send_speed(uint16_t id, const DmMotorSlot* slot);
 static BusMotorStatus dm_motor_send_mit(uint16_t id, const DmMotorSlot* slot);
@@ -180,9 +182,12 @@ static BusMotorStatus dm_motor_switch_mode(uint16_t id, BusMotorMode mode) {
         default: return MOTOR_STATUS_UNSUPPORTED;
     }
 
-    slot->mode = (DmMotorMode)mode;
-    dm_motor_write_mode(id, slot->mode);
-    return MOTOR_STATUS_OK;
+    DmMotorSlot candidate = *slot;
+    candidate.mode = (DmMotorMode)mode;
+    if(!dm_motor_command_valid(&candidate)) return MOTOR_STATUS_INVALID_PARAM;
+    BusMotorStatus status = dm_motor_write_mode(id, candidate.mode);
+    if(status == MOTOR_STATUS_OK) slot->mode = candidate.mode;
+    return status;
 }
 
 /**
@@ -195,8 +200,9 @@ static BusMotorStatus dm_motor_set_pos(uint16_t id, float position) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->position = position;
-    return dm_motor_apply_command(id);
+    DmMotorSlot candidate = *slot;
+    candidate.position = position;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -209,8 +215,9 @@ static BusMotorStatus dm_motor_set_spd(uint16_t id, float speed) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->speed = speed;
-    return dm_motor_apply_command(id);
+    DmMotorSlot candidate = *slot;
+    candidate.speed = speed;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -223,9 +230,10 @@ static BusMotorStatus dm_motor_set_pos_vel(uint16_t id, float position, float sp
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->position = position;
-    slot->speed = speed;
-    return dm_motor_apply_command(id);
+    DmMotorSlot candidate = *slot;
+    candidate.position = position;
+    candidate.speed = speed;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -238,8 +246,9 @@ static BusMotorStatus dm_motor_set_tor(uint16_t id, float torque) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->torque = torque;
-    return dm_motor_apply_command(id);
+    DmMotorSlot candidate = *slot;
+    candidate.torque = torque;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -252,9 +261,10 @@ static BusMotorStatus dm_motor_set_pd(uint16_t id, float kp, float kd) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->kp = kp;
-    slot->kd = kd;
-    return dm_motor_apply_command(id);
+    DmMotorSlot candidate = *slot;
+    candidate.kp = kp;
+    candidate.kd = kd;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -326,9 +336,10 @@ static BusMotorStatus dm_motor_stop(uint16_t id) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    slot->speed = 0.0f;
-    slot->torque = 0.0f;
-    return dm_motor_apply_command(id);
+    DmMotorSlot candidate = *slot;
+    candidate.speed = 0.0f;
+    candidate.torque = 0.0f;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -341,12 +352,13 @@ static BusMotorStatus dm_motor_brake(uint16_t id) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    if(slot->has_feedback) {
-        slot->position = slot->feedback.position;
+    DmMotorSlot candidate = *slot;
+    if(candidate.has_feedback) {
+        candidate.position = candidate.feedback.position;
     }
-    slot->speed = 0.0f;
-    slot->torque = 0.0f;
-    return dm_motor_apply_command(id);
+    candidate.speed = 0.0f;
+    candidate.torque = 0.0f;
+    return dm_motor_apply_command(id, &candidate);
 }
 
 /**
@@ -476,7 +488,7 @@ static BusMotorStatus dm_motor_send_delayed(uint32_t id, const uint8_t* data, ui
     return status;
 }
 
-static void dm_motor_write_mode(uint16_t id, DmMotorMode mode) {
+static BusMotorStatus dm_motor_write_mode(uint16_t id, DmMotorMode mode) {
     uint8_t data[DM_MOTOR_CMD_LEN];
 
     data[0] = (uint8_t)(id & 0xFFu);
@@ -488,23 +500,44 @@ static void dm_motor_write_mode(uint16_t id, DmMotorMode mode) {
     data[6] = 0u;
     data[7] = 0u;
 
-    (void)dm_motor_send_delayed(DM_MOTOR_REG_WRITE_FRAME_ID, data, DM_MOTOR_CMD_LEN);
+    return dm_motor_send_delayed(DM_MOTOR_REG_WRITE_FRAME_ID, data, DM_MOTOR_CMD_LEN);
 }
 
-static BusMotorStatus dm_motor_apply_command(uint16_t id) {
-    const DmMotorSlot* slot = dm_motor_get_slot_const(id);
+static bool dm_motor_command_valid(const DmMotorSlot* slot) {
+    if(!slot || !isfinite(slot->position) || !isfinite(slot->speed) || !isfinite(slot->torque) ||
+       !isfinite(slot->kp) || !isfinite(slot->kd)) return false;
+    if(slot->mode == DM_MOTOR_MODE_POS_VEL_TOR) {
+        const float speed = slot->speed * 100.0f, torque = slot->torque * 10000.0f;
+        if(!isfinite(speed) || speed < -32768.0f || speed > 32767.0f ||
+           !isfinite(torque) || torque < -32768.0f || torque > 32767.0f) return false;
+    }
+    return true;
+}
 
-    if(slot == 0) {
+static BusMotorStatus dm_motor_apply_command(uint16_t id, const DmMotorSlot* candidate) {
+    DmMotorSlot* slot = dm_motor_get_slot(id);
+    BusMotorStatus status;
+    if(slot == 0 || !dm_motor_command_valid(candidate)) {
         return MOTOR_STATUS_INVALID_PARAM;
     }
 
-    switch(slot->mode) {
-        case DM_MOTOR_MODE_MIT: return dm_motor_send_mit(id, slot);
-        case DM_MOTOR_MODE_POS_VEL: return dm_motor_send_pos_vel(id, slot);
-        case DM_MOTOR_MODE_SPEED: return dm_motor_send_speed(id, slot);
-        case DM_MOTOR_MODE_POS_VEL_TOR: return dm_motor_send_pos_vel_tor(id, slot);
+    switch(candidate->mode) {
+        case DM_MOTOR_MODE_MIT: status=dm_motor_send_mit(id, candidate); break;
+        case DM_MOTOR_MODE_POS_VEL: status=dm_motor_send_pos_vel(id, candidate); break;
+        case DM_MOTOR_MODE_SPEED: status=dm_motor_send_speed(id, candidate); break;
+        case DM_MOTOR_MODE_POS_VEL_TOR: status=dm_motor_send_pos_vel_tor(id, candidate); break;
         default: return MOTOR_STATUS_UNSUPPORTED;
     }
+    if(status == MOTOR_STATUS_OK) {
+        /* Commit command fields only; do not overwrite feedback received in an
+         * interrupt while sending. Rejected candidates never poison the cache. */
+        slot->position=candidate->position;
+        slot->speed=candidate->speed;
+        slot->torque=candidate->torque;
+        slot->kp=candidate->kp;
+        slot->kd=candidate->kd;
+    }
+    return status;
 }
 
 static BusMotorStatus dm_motor_send_pos_vel(uint16_t id, const DmMotorSlot* slot) {
@@ -586,7 +619,7 @@ static uint16_t dm_motor_f32_to_u16(float val, float min, float max, uint8_t bit
     float normalized;
     uint32_t max_bits_val;
 
-    if(bits == 0u || max <= min) {
+    if(!isfinite(val) || !isfinite(min) || !isfinite(max) || bits == 0u || bits > 16u || max <= min) {
         return 0u;
     }
     if(val < min) {
@@ -606,7 +639,7 @@ static float dm_motor_u16_to_f32(uint16_t val, float min, float max, uint8_t bit
     float span;
     uint32_t max_bits_val;
 
-    if(bits == 0u || max <= min) {
+    if(!isfinite(min) || !isfinite(max) || bits == 0u || bits > 16u || max <= min) {
         return 0.0f;
     }
 
