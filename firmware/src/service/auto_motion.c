@@ -14,6 +14,7 @@ bool auto_motion_begin(AutoMotion* m,const AutoMotionConfig* c,AutoSegment s,uin
        !positive(c->cross_kp)||!positive(c->yaw_kp)||!positive(c->wz_max)||!positive(c->angular_accel)||
        !positive(c->position_tolerance)||!positive(c->cross_tolerance)||!positive(c->yaw_tolerance)||
        !positive(c->cross_abort)||!positive(c->yaw_abort)||!positive(c->settle_s)||
+       !isfinite(c->stop_latency_s)||c->stop_latency_s<0||c->stop_latency_s>2||
        c->cross_abort<=c->cross_tolerance||c->yaw_abort<=c->yaw_tolerance||
        !c->pose_max_age_ms||c->pose_max_age_ms>10000||!isfinite(s.heading)||
        !isfinite(s.start.x)||!isfinite(s.start.y)||!isfinite(s.end.x)||!isfinite(s.end.y)) {
@@ -60,7 +61,9 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         if(!in.stationary || !measured_zero) { zero(m); m->out.phase=AUTO_MOTION_ALIGN; return m->out; }
         m->started=true;
     }
-    float along=fminf(m->config.vmax,sqrtf(2*m->config.decel*fmaxf(0,remaining)));
+    float closing=fmaxf(hypotf(in.measured.vx,in.measured.vy),hypotf(m->velocity_map.x,m->velocity_map.y));
+    float brake_distance=fmaxf(0,remaining-.5f*m->config.position_tolerance-closing*m->config.stop_latency_s);
+    float along=fminf(m->config.vmax,sqrtf(2*m->config.decel*brake_distance));
     along=fminf(along,2*fmaxf(0,remaining)); /* low-gain endpoint approach */
     if(fabsf(remaining)<=m->config.position_tolerance) along=0;
     float lateral=clamp(-m->config.cross_kp*m->out.cross_error,m->config.lateral_max);

@@ -16,3 +16,17 @@ $exe = Join-Path $out 'test_auto_motion.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Autonomous motion compilation failed' }
 & $exe
 if ($LASTEXITCODE -ne 0) { throw 'Autonomous motion tests failed' }
+$exe = Join-Path $out 'test_auto_work.exe'
+& $compiler -std=c11 -Wall -Wextra -Werror "-I$firmwareRoot/src/service" `
+    "$PSScriptRoot/test_auto_work.c" "$firmwareRoot/src/service/auto_work.c" -o $exe
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous work compilation failed' }
+& $exe
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous work tests failed' }
+$exe = Join-Path $out 'test_auto_mission.exe'
+& $compiler -std=c11 -Wall -Wextra -Werror "-I$firmwareRoot/src/service" `
+    "$PSScriptRoot/test_auto_mission.c" "$firmwareRoot/src/service/auto_mission.c" `
+    "$firmwareRoot/src/service/auto_route.c" "$firmwareRoot/src/service/auto_work.c" `
+    "$firmwareRoot/src/service/auto_motion.c" "$firmwareRoot/src/service/auto_geometry.c" -lm -o $exe
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous mission compilation failed' }
+& $exe
+if ($LASTEXITCODE -ne 0) { throw 'Autonomous mission tests failed' }

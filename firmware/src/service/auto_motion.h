@@ -5,7 +5,7 @@ typedef struct {
     float vmax, accel, decel, lateral_max, cross_kp;
     float yaw_kp, wz_max, angular_accel;
     float position_tolerance, cross_tolerance, yaw_tolerance;
-    float cross_abort, yaw_abort, settle_s;
+    float cross_abort, yaw_abort, settle_s, stop_latency_s;
     uint32_t pose_max_age_ms;
 } AutoMotionConfig;
 typedef struct { AutoVec2 start, end; float heading; } AutoSegment;
