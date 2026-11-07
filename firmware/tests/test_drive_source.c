@@ -9,6 +9,7 @@ static RemoteState remote(void) {
     r.rc_data.channel[REMOTE_CH_SWA] = 1000u;
     r.rc_data.channel[REMOTE_CH_SWC] = 2000u;
     r.rc_data.channel[REMOTE_CH_SWD] = 2000u;
+    r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
     return r;
 }
 int main(void) {
@@ -43,6 +44,25 @@ int main(void) {
         assert(v.vy < 0.0f && fabsf(v.wz + angular[i]) < 0.00001f);
         r.rc_data.channel[REMOTE_CH_RIGHT_X] = r.rc_data.channel[REMOTE_CH_LEFT_X] = 1500u;
     }
+    /* Inclusive threshold, stop while moving, and no automatic restart when
+     * the spring-return wheel is pressed again with SWD still enabled. */
+    r.rc_data.channel[REMOTE_CH_VRB] = 1251u;
+    drive_source_update(&s, &r, true, false);
+    assert(s.mode == DRIVE_SOURCE_MANUAL && !s.manual_armed && !s.release_seen);
+    r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
+    drive_source_update(&s, &r, true, true);
+    assert(!s.manual_armed);
+    const uint16_t vrb_values[] = {1000u, 1249u, 1250u, 1251u, 1500u, 2000u};
+    for(unsigned i = 0; i < sizeof(vrb_values) / sizeof(vrb_values[0]); ++i) {
+        r.rc_data.channel[REMOTE_CH_VRB] = vrb_values[i];
+        r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 1500u;
+        r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
+        drive_source_update(&s, &r, true, true);
+        r.rc_data.channel[REMOTE_CH_SWD] = 2000u; r.manual_request = true;
+        drive_source_update(&s, &r, true, true);
+        assert(s.manual_armed == (vrb_values[i] <= 1250u));
+    }
+    r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
     drive_source_stop_manual(&s);
     drive_source_update(&s, &r, true, true);
     assert(!s.manual_armed && !s.release_seen); /* STOP cannot re-enable itself. */
@@ -70,6 +90,6 @@ int main(void) {
     r.rc_data.channel[REMOTE_CH_SWC] = 1000u;
     drive_source_update(&s, &r, true, true);
     assert(s.mode == DRIVE_SOURCE_STOP && !s.manual_armed);
-    puts("DRIVE_SOURCE_TEST_OK (exclusive SWC ownership, SWD re-enable, centred/stopped handover, fault/RC loss, manual gears)");
+    puts("DRIVE_SOURCE_TEST_OK (exclusive SWC ownership, manual VRB<=1250 boundary and re-arm, SWD re-enable, centred/stopped handover, fault/RC loss, manual gears)");
     return 0;
 }

@@ -4,7 +4,7 @@
   "ctx": {
     "name": "Mango底盘测试面板",
     "intro_on": true,
-    "intro": "双击Mango-VOFA-Test-OPEN-AREA.cmd后连接UDP。默认简洁日志；09组单独开启波形。04–08组需协议2固件。各项只点一次，编号自动处理；SWC=1500上位机、2000手动，1000停车。开始后车端独立运行，无需心跳。",
+    "intro": "双击Mango-VOFA-Test-OPEN-AREA.cmd后连接UDP。默认简洁日志；09组单独开启波形。04–08组需协议2固件。SWC=1500上位机、2000自由手动、1000停车；手动须保持VRB≤1250且不自动保持航向。开始后车端独立运行，无需心跳。",
     "hex_on": true,
     "loop_on": false,
     "loop_ms": 100,
@@ -201,7 +201,7 @@
       {
         "name": "03 单次1米直行（确认前方有净空）",
         "intro_on": true,
-        "intro": "需1m入口及target_m=1.00；SWD=2000许可，1000停止，1米模式不要求保持VRB。仍需SWA=1000、SWC=1500、VRA>1200及摇杆回中。激光仅记录。",
+        "intro": "需1m入口及target_m=1.00；SWD=2000许可，1000停止。上位机SWC=1500不要求保持VRB；仍需SWA=1000、VRA>1200及摇杆回中。激光仅记录。",
         "hex_on": true,
         "loop_on": false,
         "loop_ms": 100,

@@ -22,6 +22,9 @@ bool drive_source_centered(const RemoteState* r) {
 void drive_source_stop_manual(DriveSource* s) {
     s->manual_armed = s->release_seen = false;
 }
+bool drive_source_manual_vrb_ok(const RemoteState* r) {
+    return r->rc_data.channel[REMOTE_CH_VRB] <= DRIVE_MANUAL_VRB_MAX;
+}
 bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, bool stationary) {
     const DriveSourceMode mode = drive_source_requested(r);
     const bool changed = s->mode != mode;
@@ -33,7 +36,8 @@ bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, boo
         return changed;
     }
     if(mode != DRIVE_SOURCE_MANUAL || !r->manual_request ||
-       r->rc_data.channel[REMOTE_CH_VRA] <= REMOTE_VR_LOW_THRESHOLD) {
+       r->rc_data.channel[REMOTE_CH_VRA] <= REMOTE_VR_LOW_THRESHOLD ||
+       !drive_source_manual_vrb_ok(r)) {
         drive_source_stop_manual(s);
         return changed;
     }

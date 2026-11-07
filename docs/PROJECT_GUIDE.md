@@ -26,7 +26,8 @@
 | 本机仓库 | `C:\Users\Zhanglongsheng\Projects\GDGCS\Mango-Swerve-Firmware`，主线为 `main`；本次按用户要求使用临时分支 `feat/dual-control-one-shot-debug` 提交PR |
 | 远端 | [water-freemind/Mango-Swerve-Firmware](https://github.com/water-freemind/Mango-Swerve-Firmware)，本机提交与远端同步状态以 `git status` 为准 |
 | 代码来源 | [AgroTech-SCAU/Steering-Wheel-Chassis](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis) 的 `Hephaestus/chassis_control_code`；提取基线 `65088f94be15c69ccfa647779d7f847b06b95735`。原仓库仅作参考，不修改 |
-| 当前车端固件 | 已烧录 `StraightTest` 模式6组合固件、协议2；SWC切换HOST/MANUAL/STOP，`hb_required=0`；Flash校验通过，部署标识见8.2 |
+| 当前车端固件 | 最近已烧录 `f5bc3da` 对应的 `StraightTest` 模式6组合固件、协议2；SWC切换HOST/MANUAL/STOP，`hb_required=0`；Flash校验通过，部署标识见8.2 |
+| 最新源码与车端差异 | MANUAL新增VRB≤1250许可，超过即撤销；手动自由运动取消自动yaw修正，保留电机闭环和SWB限速。HOST不要求VRB，仍保留航向保持。此修改尚未烧录或实车验收，第2节已按新行为更新 |
 | 部署后检查 | 旧测试版本曾确认IDLE、healthy=1、停稳和零命令；新版烧录后另查当前来源、标定和SWD，历史状态不能当实时许可 |
 | 已有实车结果 | 电机通信、轮位与架空方向、四路激光方向、独立零位回位、低速航向保持、旧单次1米程序到点及SWD撤销许可停车 |
 | 新功能验证层级 | 双来源互斥、无需心跳的车端测试、1/2/4米往返、沿墙和靠近均已实现并部署；新增切换和运动效果仍需现场操作验收 |
@@ -56,33 +57,38 @@
 
 ### 2.1 同一固件的手动与上位机开关
 
-以下约定适用于本次组合固件 `StraightTest / APP_RUN_MODE=6`。硬件仍用接收机i.BUS接DM板，遥控器无需接电脑。发射机型号疑似FS-i6S，以实物为准；“飞行模式关闭”不是车端许可，应看接收通道原始值。
+以下约定适用于新增VRB保护后的组合固件 `StraightTest / APP_RUN_MODE=6`；最近已部署的 `f5bc3da` 尚无此手动VRB保护，部署状态见第8节。硬件仍用接收机i.BUS接DM板，遥控器无需接电脑。发射机型号疑似FS-i6S，以实物为准；“飞行模式关闭”不是车端许可，应看接收通道原始值。
 
 | 开关/输入 | 设置与用途 |
 | --- | --- |
 | SWA | `1000`，选择底盘控制来源 |
 | SWC=`1000` | STOP：不输出行走动作 |
 | SWC=`1500` | HOST：只接受上位机测试动作，摇杆须回中；摇杆偏转撤销本轮测试许可 |
-| SWC=`2000` | MANUAL：只接受遥控摇杆，拒绝上位机ARM/GO/HB；需要重新放行后才能行驶 |
+| SWC=`2000` | MANUAL：只接受遥控摇杆，拒绝上位机ARM/GO/HB；保持VRB≤1250并重新放行后才能行驶 |
 | SWD | `1000`停车/撤销许可，`2000`允许当前来源；手动恢复须在所选模式先观察到1000，再回中、停稳后切2000 |
 | SWB | 手动低/中/高档：1000/1500/2000对应平移上限0.4/0.8/1.5m/s、旋转上限1.5/3.0/6.0rad/s |
 | VRA | 大于1200，通常保持1500 |
-| VRB | 组合固件不作使能门槛，可以松手回中 |
+| VRB | 仅MANUAL要求原始值≤1250，等于1250仍满足；>1250进入保护并撤销手动许可。HOST不作门槛，可以回中 |
 | 右杆X/Y、左杆X | 启动/重新放行时回中1500±10；手动放行后可正常推动 |
 
 SWC有效识别区间为1400–1600=HOST、1900–2100=MANUAL，其他值为STOP；SWA/SWD按上述有效原始值判断。不要只按“拨杆朝上/朝下”描述，因为发射机通道正反设置可能不同。
 
+MANUAL仍是摇杆控制前后、横移和旋转的自由遥控，VRB只作为这一来源的安全许可，不增加新的模式，也不需要上位机ARM/GO或选择1/2/4米程序。`vx/vy/wz`均由摇杆给定，保留电机闭环、速度限幅和SWB三档，手动过程中不启用yaw航向保持，左杆旋转轴回中时不自动补旋转。HOST直行、往返和沿墙测试继续使用航向保持；切换来源会清除上一来源的航向保持状态。
+
 **恢复手动的具体步骤：**
 
 1. SWD先切1000，三个摇杆轴回中；确认车辆已经停稳。
-2. SWA=1000、SWB=1000低档、SWC=2000、VRA>1200；VRB松手即可。
-3. 上电或复位后保持整车静止，等IMU `ready=1、cal=2000/2000`；查电机反馈和 `TEST_CONTROL source=MANUAL、hw_ok=1、release_seen=1`。
-4. 保持回中，将SWD切2000。看到 `manual_armed=1` 后，右杆前后控制前后、右杆左右控制横移、左杆左右控制旋转。平移合速度和旋转受SWB所选上限约束，车轮限速也会约束组合运动。
-5. 停车用SWD=1000或明确发送STOP。失联、硬件故障、模式切换或STOP后都不能自动恢复手动：重新执行SWD关闭、回中/停稳、再打开。
+2. SWA=1000、SWB=1000低档、SWC=2000、VRA>1200；将VRB压低并保持≤1250，以遥控快照的原始通道值为准。
+3. 上电或复位后保持整车静止，等IMU `ready=1、cal=2000/2000`；查电机反馈和 `TEST_CONTROL source=MANUAL、hw_ok=1、release_seen=1、vrb_required=1、vrb_ok=1`。
+4. 保持摇杆回中和VRB≤1250，将SWD切2000。看到 `manual_armed=1` 后，右杆前后控制前后、右杆左右控制横移、左杆左右控制旋转。平移合速度和旋转受SWB所选上限约束，车轮限速也会约束组合运动。
+5. 手动过程中持续保持VRB≤1250；超过1250即撤销许可、清零速度并停止输出。若该旋钮会弹回1500，松手就会进入保护，压低后也不会直接恢复原动作。
+6. 停车也可用SWD=1000或明确发送STOP。VRB保护、失联、硬件故障、模式切换或STOP后，重新执行SWD关闭、摇杆回中/车辆停稳、保持VRB≤1250、再打开SWD。
 
-切到上位机前同样先SWD=1000、停稳回中，再把SWC切1500、SWD切2000，并重新ARM/GO。切回手动要重新执行上述手动放行步骤。切换会清除待处理串口片段并结束旧任务，旧token不能续跑。
+**新保护的首次检查：** 先架空确认轮组不接触地面，按上述低档步骤验证。SWC=2000时，VRB保持1500应看到 `vrb_required=1、vrb_ok=0、manual_armed=0`，推动摇杆不能获得行走输出；保持VRB≤1250并按SWD重新放行后才可响应。低速输出期间松开VRB，核对 `manual_armed=0`、速度命令清零；将VRB压低，确认未执行SWD关闭/回中/重新开启之前不会续跑。最后SWD关闭、回中，再切HOST核对 `vrb_required=0`，VRB在1000/1500/2000的变化都不应形成HOST许可门槛。这些是待现场执行的验收步骤；1250允许、1251拒绝的精确边界由主机回归覆盖。
 
-手动不依赖VOFA、无线串口心跳或激光定距；串口错误和上位机旧运动命令不撤销手动许可。明确的STOP是两种来源共用的停车命令。模式6的 `TEST_STATUS healthy`表示HOST测试能否准备，因此手动时出现 `healthy=0、blocked=HOST_NOT_SELECTED`是预期；手动许可看 `TEST_CONTROL manual_armed/hw_ok`和电机反馈。
+切到上位机前同样先SWD=1000、停稳回中，再把SWC切1500、SWD切2000，并重新ARM/GO；HOST不要求保持VRB，允许松手回中。切回手动要重新执行上述手动放行步骤。切换会清除待处理串口片段并结束旧任务，旧token不能续跑。
+
+手动不依赖VOFA、无线串口心跳或激光定距；串口错误和上位机旧运动命令不撤销手动许可。明确的STOP是两种来源共用的停车命令。模式6的 `TEST_STATUS healthy`表示HOST测试能否准备，因此手动时出现 `healthy=0、blocked=HOST_NOT_SELECTED`是预期；手动许可看 `TEST_CONTROL manual_armed/hw_ok/vrb_required/vrb_ok`和电机反馈。`hw_ok=1`仅表示硬件反馈通过，不代替VRB门槛、SWD重新放行和回中条件。
 
 独立构建的旧 `Manual/ManualStandalone`（模式1/5）仍保留原VRB流程，不能套用本表；本次不修改它们。组合固件使用模式6的102mm名义轮径、启动均值零偏和共享零位，手动摇杆方向与SWB三档设置沿用既有映射。
 
@@ -101,10 +107,12 @@ SWC有效识别区间为1400–1600=HOST、1900–2100=MANUAL，其他值为STOP
 
 上电/复位前先放稳DM板和整车、SWD=1000、摇杆回中。启动标定采集2000样本，按4ms周期约8秒，不含外设初始化和日志延迟；以实际 `ready=1、cal=2000/2000`为准。`TEST_READY`只是入口初始化提示，不等于标定已经完成。
 
+**为什么重新上电要等一会才能手动遥控？** 组合固件保留IMU标定、电机反馈新鲜度和停稳检查，即使手动已取消自动航向保持，也不会绕过这些启动条件。标定期间移动整车会影响零偏采样。标定完成后若仍不放行，依次查`hw_ok`、SWC档位、`vrb_required/vrb_ok`及`release_seen/manual_armed`；SWD一直留在2000不会自动使能，需先1000、回中停稳、保持VRB≤1250，再切2000。
+
 | 查询 | 重点字段 | 能否继续 |
 | --- | --- | --- |
 | 整车状态 | `control`、phase、stopped、cmd、blocked、result、CONTROL | 当前来源正确，停稳、命令为零；HOST放行后应healthy=1、blocked=NONE |
-| 遥控器开关与摇杆 | online、SWA/B/C/D、VRA/B、centered、vrb_required | 在线，开关符合2.1；组合固件vrb_required=0 |
+| 遥控器开关与摇杆 | online、SWA/B/C/D、VRA/B、switches_ok、centered、vrb_required | 在线，开关符合2.1；MANUAL的vrb_required=1且VRB≤1250，HOST为0；MANUAL的switches_ok包含VRB门槛 |
 | 四轮电机 | ID/轮位、steer_seen/drive_seen、state、age_ms、drive_rad_s | 四轮转向state=1，八路反馈都新鲜；静止驱动速度近零 |
 | CAN1/2/3 | off、passive、tx_fail、rx_fail、lost、CAN ID | 电机总线无总线关闭/错误被动及发送故障；检查0x601仍更新 |
 | IMU | ready、cal、age_us、imu_errors、实际零偏 | 标定完成、样本新鲜，之后按2.5核验静止yaw |
@@ -202,7 +210,7 @@ ARM阶段和上电待命保持当前轮向；开始运动后才计算目标轮�
 1. 需要停车时优先切SWD=1000；若电脑链路可靠，也可点00组STOP。明确STOP对手动和上位机都生效。
 2. 看驱动反馈近零、stopped=1，并现场确认停稳。FAULT/软件“停止请求”不等于物理已经停止；模式切换也要先停稳，不直接带摇杆切换。
 3. 保存首个故障或拒绝原因、程序/token、速度、四向距离、CONTROL和原始日志路径，再按第4节处理。不要连续点开始覆盖最初证据。
-4. 重新启动上位机测试要查当前HOST许可并重新ARM/GO；手动要在MANUAL档重新执行SWD关闭、回中/停稳、打开。旧编号和旧摇杆输出均不自动恢复。
+4. 重新启动上位机测试要查当前HOST许可并重新ARM/GO；手动要在MANUAL档重新执行SWD关闭、回中/停稳、保持VRB≤1250、打开SWD。旧编号和旧摇杆输出均不自动恢复。
 5. CAN发送故障锁定等需要复位的情况，先排查连接，再在车静止、SWD=1000时复位并重新完成启动标定。只有PC显示丢失时先排查链路，不把它写成电机故障。
 6. 收工先停车并记录结果，再退出VOFA/桥接。**退出软件不发隐式STOP，不能将关窗口当急停。** 原始日志、备份与部署归档保存在本机build目录，按9.3模板记录本趟结果。
 
@@ -295,7 +303,7 @@ UI侧使用`UI ARM/GO ROUND <距离>`、`UI ARM/GO WALL <距离>`、`UI ARM/GO A
 | 类别 | 主要内容 |
 | --- | --- |
 | STATUS | phase、token、目标距离、里程、速度、yaw、阻塞原因、result |
-| HEALTH | 多项许可阻塞位、反馈掩码、遥控/IMU/UART/CAN检查；也控制TEST_CONTROL的来源、manual_armed、重新放行状态显示 |
+| HEALTH | 多项许可阻塞位、反馈掩码、遥控/IMU/UART/CAN检查；也控制TEST_CONTROL的来源、manual_armed、重新放行及vrb_required/vrb_ok状态显示 |
 | REMOTE | SWA/B/C/D、VRA/B、摇杆原始值、在线、回中及许可结果 |
 | MOTOR | 各轮ID/轮位、反馈年龄、转向state、原始/轮向角、驱动速度和电流 |
 | CAN1 / CAN2 / CAN3 | 三条总线分别开关，含收发、失败、丢帧和总线错误 |
@@ -322,7 +330,7 @@ UI侧使用`UI ARM/GO ROUND <距离>`、`UI ARM/GO WALL <距离>`、`UI ARM/GO A
 
 选择FireWater，在09组开启WAVE。数值帧形如 `FW: -7.7,-7.6,0.1,0.003`，末尾是真实换行：通道0=yaw、1=参考yaw、2=环绕归一化误差，前三路单位为度；通道3=wz修正，单位rad/s。旧日志中的`yaw/ref`曾为rad，新`yaw_deg/ref_deg`为度。
 
-把控件命名为yaw不会自动解析文字日志。若后台已有FW帧但曲线仍为0，检查通道绑定、增益=1、偏移=0并Auto适配量程；本机曾出现保存配置中增益为0。未激活航向保持时参考、误差和修正清零，不代表当前yaw为零。
+把控件命名为yaw不会自动解析文字日志。若后台已有FW帧但曲线仍为0，检查通道绑定、增益=1、偏移=0并Auto适配量程；本机曾出现保存配置中增益为0。未激活航向保持时参考、误差和修正清零，不代表当前yaw为零。新增自由遥控版本的MANUAL不使用自动航向修正，仍可观察yaw；HOST测试的航向参考及纠偏照常工作。
 
 ### 4.3 常见提示
 
@@ -332,7 +340,8 @@ UI侧使用`UI ARM/GO ROUND <距离>`、`UI ARM/GO WALL <距离>`、`UI ARM/GO A
 | `LASER_NOT_READY` / `LASER_INVALID_OR_STALE` | 新程序激光数据未满足范围或时效。部署后曾见前方约7582–7585mm，超过7500mm接受上限；核对实际目标、读数和所选程序准入条件 |
 | `ARM_ACK_MISMATCH_OR_NOT_READY` | 主机未接受准备回复；具体原因看车端TEST_ACK的reason。例如LASER_NOT_READY不等于编号出错 |
 | healthy=1、plan=FWD仍准备失败 | healthy是基础许可；被拒前尚未切换到请求程序，FWD的laser_ok=1不代表ROUND/WALL已满足激光条件 |
-| `RC_OFFLINE` / `RC_SWITCH` / `RC_STICK` | 分别检查接收链路、开关原始值、摇杆回中；模式6不要求保持VRB |
+| `RC_OFFLINE` / `RC_SWITCH` / `RC_STICK` | 分别检查接收链路、开关原始值、摇杆回中；模式6的MANUAL须保持VRB≤1250，HOST不要求VRB |
+| MANUAL中`vrb_ok=0、manual_armed=0` | VRB超过1250，处于手动保护；SWD关闭、回中停稳、保持VRB≤1250，再开启SWD。VRB压低本身不会让旧速度恢复 |
 | `COLLISION_GUARD` | 某方向进入保护线；先核对挡板、车体包络、贴边基准和BRAKE读数 |
 | `WALL_DISTANCE_JUMP` | 右距偏离起步参考超过250mm，可能遇到开口/换目标；本轮退出 |
 | `FRONT_ALREADY_CLOSE` | 靠近程序起点已在停车目标附近，不再向墙移动 |
@@ -438,7 +447,7 @@ Manual模式1注册作业端点。SLOW限速至0.10m/s，WAIT请求停车；四�
 | 激光距中心 | CAD标注40.98mm，图中为dZ | 仍需明确轴向/基准点及各光学窗口x/y/z；旧153mm、离地36.91mm仅作历史 |
 | 转向限制 | 用户称无机械限位 | 仍有线束缠绕、驱动位置范围和机构干涉约束 |
 
-旧yaw_bias经验参数保留但 `enabled=false`；实际航向保持采用本次低速基线，未将一次约103.2cm测量直接换成新的有效轮径。
+旧yaw_bias经验参数保留但 `enabled=false`；HOST测试的航向保持采用本次低速基线，MANUAL自由遥控不自动修正yaw；未将一次约103.2cm测量直接换成新的有效轮径。
 
 ### 6.2 当前轮位、方向与共享零位
 
@@ -477,6 +486,8 @@ ZeroTest模式4是会自动执行动作的独立固件：复位等待5秒，依I
 ### 7.1 阅读入口与运行模式
 
 建议顺序：`Core/Src/main.c → src/app/entry.h → assemble_chassis.c → chassis.c → steer_wheel_kine.c → dm_motor.c/dji_motor.c → odom.c`。模式6转到[straight_test_app.c](../firmware/src/app/straight_test_app.c)的适配循环及[straight_test.c](../firmware/src/service/straight_test.c)状态机；CAN3看assemble_can3、laser、work_link。
+
+组合控制的来源判断、SWD重新放行、手动VRB≤1250门槛和摇杆/SWB速度映射在[drive_source.c](../firmware/src/service/drive_source.c)。适配层每轮更新许可，撤销时清零速度缓存并停止输出；MANUAL直接使用摇杆给出的`vx/vy/wz`，不调用航向保持纠偏。HOST继续由测试状态机规划距离/墙距，并经原航向环生成控制量。两者共享电机闭环和故障检查，不能将“自由遥控”理解成绕过底层速度控制或安全开关。
 
 | 构建Mode | 宏值 | 输出目录（firmware下） | 行为 |
 | --- | --- | --- | --- |
@@ -563,33 +574,46 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 静态yaw | 用户确认静止，599点/59.8秒；净变-0.028126°，范围0.109995°，末次imu_errors=0 | 此段改善了此前约-0.21°/s的快速漂移，不是长期零漂为零的证明 |
 | 单次1米 | 旧SWD版本token=2/3正常TARGET_REACHED，里程估计0.991/0.992m；用户地面实测更正为约103.2cm | 约+3.2%是一次近似测量，未指定对应编号，未据此改半径；首轮0.953m是SWD中止，不是正常到点 |
 | 贴边基准 | 左侧挡板接触时108/109/109/108mm，帧龄82–93ms | 四向共用110mm按用户要求采用，其他方向未独立标定 |
-| 本次组合源码 | 完整主机回归；StraightTest及ManualStandalone各84源文件构建通过 | 覆盖全程无HB、互斥所有权、实际串口分发、旧命令/串口错误隔离、遥控失联、重新放行；不代替实车切换和行走 |
+| 上一版组合源码f5bc3da | 完整主机回归；StraightTest及ManualStandalone各84源文件构建通过 | 覆盖全程无HB、互斥所有权、实际串口分发、旧命令/串口错误隔离、遥控失联、重新放行；不包含本次VRB保护验收 |
+| 本次手动VRB保护与自由遥控 | 完整主机回归通过，覆盖1250允许/1251拒绝、保护时清零/重新放行、手动旋转仅由摇杆给定、HOST不受VRB影响且保留航向环；StraightTest和ManualStandalone各84源文件构建通过 | 尚未烧录或实车验证；旧版手动正常的用户反馈不能作为新门槛或自由遥控已生效的证据 |
+| PR审查：往返航向参考 | 修复WAIT阶段误清零GO航向参考；实际主循环回归覆盖ROUND/WALL以±0.6rad起步、等待停轮、返程纠偏及STOP撤销，输出ROUND_HEADING_ADAPTER_TEST_OK | 最终完整回归与模式6的84源构建通过；实车往返仍待验收 |
 | 手动配置隔离 | ManualStandalone BIN SHA256与扩展前一致 | 模式1/5不变；模式6新增组合手动，沿用其102mm名义轮径及启动零偏策略 |
-| 最新部署 | 无线DAP备份/校验1MB、写入、Verified OK、复位；COM19看到proto=2、hb_required=0、停稳、零命令 | 组合版已部署；新往返/沿墙/快档效果仍未完成实车验收 |
+| 最近部署f5bc3da | 无线DAP备份/校验1MB、写入、Verified OK、复位；COM19看到proto=2、hb_required=0、停稳、零命令 | 尚不包含本次VRB保护；新往返/沿墙/快档效果仍未完成实车验收 |
 | 组合手动与SWD | 用户2026-11-07反馈“swd安全开关还有遥控模式没有问题”；原始日志确认SWC=2000、SWD=1000时MANUAL、manual_armed=0、停稳 | 末次审查补充停车/交接时清零内部速度缓存并完成回归；不把此反馈扩大为所有切换与高速场景已验收 |
-| 面板与UDP | 74按钮源文件与D盘/context副本哈希一致；实际PING、遥控快照、日志预设经过链路 | 用户界面点击与现场操作仍需结合日志；不把仅安装文件当运动验收 |
+| 上一版面板与UDP | f5bc3da的74按钮源文件与D盘/context副本曾核对一致；实际PING、遥控快照、日志预设经过链路 | 本次仅更新仓库内VRB/自由遥控说明，未覆盖运行中的VOFA配置；退出后经联合启动器重新安装 |
 | 桥接准备会话 | 回归复现旧DONE/FAULT抢先清除ARM等待，修正后通过；用户随后token=11准备已显示arm_ready | 4秒主机开始窗口、5秒车端ARM有效期和其他超时保护保留 |
-| 最终组合镜像静态 | 约20秒窗口206/206条状态完整；控制间隔最大33ms、IMU间隔最大27673µs、imu_errors=0；遥控在线、标定完成、SWC/SWD=1000且停稳 | 本次工具仅发送日志预设、PING及快照，未发ARM/GO；当前累计yaw不当作确认静止的零漂验收 |
+| 已部署f5bc3da镜像静态 | 约20秒窗口206/206条状态完整；控制间隔最大33ms、IMU间隔最大27673µs、imu_errors=0；遥控在线、标定完成、SWC/SWD=1000且停稳 | 该次工具仅发送日志预设、PING及快照，未发ARM/GO；累计yaw不当作确认静止的零漂验收 |
 | 上一版无线日志传输 | 分段日志版本20秒静态接收200/200条完整状态，120字节断尾为0；control_dt最大32ms、IMU采样间隔最大24666µs、imu_errors=0 | 仅证明该次静态链路改善；未自动发ARM/GO，沿墙行走期间还需验证 |
 
 静态yaw段起止为-1.008673°/-1.036799°，最小-1.072296°、最大-0.962301°。全段最小二乘趋势约+0.000899°/s，与端点净变化方向不同，说明短时波动明显；不要把一段5秒窗口斜率外推为长期恒定漂移。累计yaw含搬车的真实转动，应看确认静止期间的变化率。
 
 2026-11-05 ZeroTest旧目标的编码器残差：ID1 +0.003052rad、ID2 -0.001907rad、ID3 0、ID4 +0.001144rad。该次ID1目标是0.001335rad，之后已更新为第6节零位，旧值只用于追溯。
 
-### 8.2 当前固件与校验标识
+### 8.2 源码版本与最近部署标识
+
+本次新增手动VRB保护、取消手动航向修正及往返等待段航向修复的源码尚未烧录。下表记录的是最近实际部署的 `f5bc3da`，不是后续重新构建产物的部署凭证；需要核对该版本时使用部署归档中的镜像和清单，不以可被重建覆盖的 `build/StraightTest/robot.hex`代替。
 
 | 项目 | 记录 |
 | --- | --- |
-| 源码追溯 | 初版多程序91989bd、无线日志93c455a；当前组合版本完整提交号与本地修订状态写入部署清单 |
-| 最新模式6 HEX SHA256 | `4C7DFAC84F8A4EA9D706AD62579037271F072F9BA23347754056A3508AC72847` |
-| StraightTest构建尺寸 | text=99736、data=692、bss=11632；84源文件 |
+| 源码追溯 | 初版多程序91989bd、无线日志93c455a；最近部署的组合版本为f5bc3da，完整提交号保存在归档清单 |
+| 已部署模式6 HEX SHA256 | `4C7DFAC84F8A4EA9D706AD62579037271F072F9BA23347754056A3508AC72847` |
+| 已部署StraightTest构建尺寸 | text=99736、data=692、bss=11632；84源文件 |
 | 未改变的独立手动BIN SHA256 | `3AA47CB9380589857E5F3966097C49DF807BF61A943C8A0A5586C250CFCADD3D` |
-| 本次烧录前备份 | `firmware/build/backup/before-flash-20261107-164138-326.bin`，1048576字节，已校验 |
-| 部署清单 | `firmware/build/StraightTest/manifest.json`，flash_verified=true |
-| 当前部署归档 | `firmware/build/deployed/20261107-dual-control-one-shot/`，保存本次HEX/ELF/BIN及清单，避免后续构建覆盖现场版本 |
+| 该次烧录前备份 | `firmware/build/backup/before-flash-20261107-164138-326.bin`，1048576字节，已校验 |
+| 已部署清单 | `firmware/build/deployed/20261107-dual-control-one-shot/manifest.json`，flash_verified=true；该标志仅适用于清单内对应哈希的镜像 |
+| 最近部署归档 | `firmware/build/deployed/20261107-dual-control-one-shot/`，保存已部署HEX/ELF/BIN及清单，避免后续构建覆盖现场版本 |
 | 上一版分段日志镜像 | `firmware/build/deployed/20261107-programs-v2-paced-uart/`，旧HEX哈希0FAC1800开头；当时仍需心跳 |
 | 更早的多程序镜像 | `firmware/build/deployed/20261107-programs-v2/`，旧HEX哈希4052F159开头，仅作回溯 |
 | 旧已部署1米镜像 | `firmware/build/deployed/20261107-swd-latch/`，源码基线9996357、旧HEX哈希6A9E7BE4开头，仅作回溯 |
+
+本次**尚未部署**的VRB保护/手动自由遥控及往返航向修复构建标识：
+
+| 项目 | 记录 |
+| --- | --- |
+| 模式6 HEX | `firmware/build/StraightTest/robot.hex`，SHA256=`7453769E490ACBA2F998C5D9D2719A371490AEF3F8984ACA6F000CC17A300611` |
+| 模式6构建尺寸 | text=99776、data=692、bss=11632；84源文件完整构建通过 |
+| 独立手动隔离 | ManualStandalone完整84源文件构建通过，BIN SHA256仍为上表的`3AA47CB9…3D`，与本次修改前一致 |
+| 现场状态 | 此次未烧录、未进行新保护/自由遥控实车验收；构建成功不表示车端已经更新 |
 
 ### 8.3 本机证据索引
 
@@ -606,9 +630,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\flash-local.ps1 -
 | 多程序初版验证 | `build/straight-review/programs-host-tests.log`、`programs-build-StraightTest.log`、`programs-build-ManualStandalone.log`、`programs-build-Diagnostics.log` |
 | 无线日志修复回归 | `build/straight-review/wireless-log-host-tests.log`、`wireless-log-build-StraightTest.log`、`wireless-log-build-ManualStandalone.log`；模拟120字节突发接收、写失败与普通模式接口保持 |
 | ARM会话时序回归 | `build/straight-review/panel-arm-race-before.log`（复现失败）、`panel-arm-race-after.log`、`panel-arm-race-udp.log` |
-| 本次组合固件检查 | `build/straight-review/dual-mode-host-tests.log`、`dual-mode-build-StraightTest.log`、`dual-mode-build-ManualStandalone.log`、`dual-mode-flash.log`（首版）、`dual-mode-final-flash.log`（最终缓存清零版）、`dual-mode-uart-static.log`（首版静态）、`dual-mode-final-static-summary.json`（最终静态） |
+| 已部署f5bc3da组合固件检查 | `build/straight-review/dual-mode-host-tests.log`、`dual-mode-build-StraightTest.log`、`dual-mode-build-ManualStandalone.log`、`dual-mode-flash.log`（首版）、`dual-mode-final-flash.log`（最终缓存清零版）、`dual-mode-uart-static.log`（首版静态）、`dual-mode-final-static-summary.json`（最终静态） |
+| 本次VRB保护与自由遥控检查 | `build/straight-review/manual-vrb-host-tests.log`、`manual-vrb-build.log`、`manual-vrb-standalone-build.log`；仅离线回归和构建，无本次烧录/实车记录 |
+| PR4最终复核 | `build/straight-review/pr4-final-host-tests.log`、`pr4-final-build.log`；包含往返WAIT→BACK实际主循环航向回归，最终模式6 HEX为8.2节的7453769E开头版本 |
 | 上一版无线日志静态检查 | `build/straight-review/wireless-log-flash.log`、`wireless-log-static-summary.json`；静态UART文件名见`wireless-log-static-runtime-name.txt` |
-| 最新面板与查询 | `build/straight-review/dual-mode-panel-install.log`、`dual-mode-panel-live.json`；UART文件名见`dual-mode-runtime-log-name.txt` |
+| 上一版面板与查询 | `build/straight-review/dual-mode-panel-install.log`、`dual-mode-panel-live.json`；UART文件名见`dual-mode-runtime-log-name.txt` |
 | 旧面板安装与实际UDP检查 | `build/straight-review/programs-panel-live-verification.json`，context备份`mango-backup-20261107-150904-165` |
 
 初始2米固件、旧COM12现场记录、USB重新枚举、波形增益为0等排查过程可从`91989bd`及更早的Git版本查阅。它们不再与当前操作步骤并列，也不覆盖后续修正。

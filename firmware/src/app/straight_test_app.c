@@ -126,9 +126,9 @@ static bool remote_permit(void) {
     rc_state.online = rc_online;
     rc_switches = rc_state.manual_request && rc_state.manual_source == REMOTE_MANUAL_SOURCE_CHASSIS &&
         drive_source_requested(&rc_state) != DRIVE_SOURCE_STOP &&
-        rc_state.rc_data.channel[REMOTE_CH_VRA] > REMOTE_VR_LOW_THRESHOLD;
-    /* Mode 6 uses the latching SWD switch as permit/stop. The FS-i6S VRB
-     * wheel springs back to centre; normal manual mode keeps its own VRB gate. */
+        rc_state.rc_data.channel[REMOTE_CH_VRA] > REMOTE_VR_LOW_THRESHOLD &&
+        (drive_source_requested(&rc_state) != DRIVE_SOURCE_MANUAL || drive_source_manual_vrb_ok(&rc_state));
+    /* Manual additionally requires the spring-return VRB permit; HOST does not. */
     rc_centered = true;
     const unsigned channels[] = {REMOTE_CH_RIGHT_X, REMOTE_CH_RIGHT_Y, REMOTE_CH_LEFT_X};
     for(unsigned i = 0u; i < 3u; ++i)
@@ -248,10 +248,11 @@ static bool hardware_healthy(void) {
     return (blockers & ~(BLOCK_RC_OFFLINE | BLOCK_RC_SWITCH | BLOCK_RC_STICK | BLOCK_UART)) == 0u;
 }
 static void log_control(uint32_t now) {
-    log_info("TEST_CONTROL t_ms=%lu source=%s manual_armed=%u release_seen=%u centered=%u hw_ok=%u vx=%.3f vy=%.3f wz=%.3f hb_required=0",
+    log_info("TEST_CONTROL t_ms=%lu source=%s manual_armed=%u release_seen=%u centered=%u hw_ok=%u vx=%.3f vy=%.3f wz=%.3f hb_required=0 vrb_required=%u vrb_ok=%u",
         (unsigned long)now, drive_source_name(control_source.mode), (unsigned)control_source.manual_armed,
         (unsigned)control_source.release_seen, (unsigned)rc_centered, (unsigned)hardware_healthy(),
-        (double)manual_velocity.vx, (double)manual_velocity.vy, (double)manual_velocity.wz);
+        (double)manual_velocity.vx, (double)manual_velocity.vy, (double)manual_velocity.wz,
+        (unsigned)(control_source.mode == DRIVE_SOURCE_MANUAL), (unsigned)drive_source_manual_vrb_ok(&rc_state));
 }
 static void update_control_source(uint32_t now, StraightInput in) {
     const bool was_manual = control_source.manual_armed;
@@ -271,18 +272,14 @@ static void update_control_source(uint32_t now, StraightInput in) {
         manual_velocity = (DriveVelocity){0};
         chassis_yaw_hold_disable();
         stop_outputs();
+        log_control(now);
     }
 }
 static void apply_manual(void) {
     manual_velocity = drive_source_velocity(&rc_state);
-    const ImuAngle a = imu.get_angle();
-    const ImuGyro g = imu_get_gyro_corrected();
-    if(manual_velocity.wz != 0.0f || (fabsf(manual_velocity.vx) <= 0.01f && fabsf(manual_velocity.vy) <= 0.01f))
-        chassis_yaw_hold_disable();
-    else {
-        if(!chassis_yaw_hold_is_active()) chassis_yaw_hold_set_target(a.yaw);
-        manual_velocity.wz = chassis_yaw_hold_apply(manual_velocity.vx, manual_velocity.vy, 0.0f, a.yaw, g.z, 0.01f);
-    }
+    /* Free manual motion: only the sticks command rotation. HOST owns the
+     * automatic heading hold used by the test programs. */
+    chassis_yaw_hold_disable();
     if(chassis.set_velocity(manual_velocity.vx, manual_velocity.vy, manual_velocity.wz) != chassis.OK) {
         drive_source_stop_manual(&control_source);
         straight_fault(&test, "MANUAL_CONTROL");
@@ -343,11 +340,11 @@ static void log_detail(uint32_t now, StraightInput in) {
             (unsigned)rx_fault, (unsigned)tx_fault);
     } else if(slot == 1u) {
         const uint16_t* ch = rc_state.rc_data.channel;
-        log_info("TEST_REMOTE t_ms=%lu online=%u switches_ok=%u centered=%u source=%u SWA=%u SWB=%u SWC=%u SWD=%u VRA=%u VRB=%u RX=%u RY=%u LX=%u vrb_required=0",
+        log_info("TEST_REMOTE t_ms=%lu online=%u switches_ok=%u centered=%u source=%u SWA=%u SWB=%u SWC=%u SWD=%u VRA=%u VRB=%u RX=%u RY=%u LX=%u vrb_required=%u",
             (unsigned long)now, (unsigned)rc_online, (unsigned)rc_switches, (unsigned)rc_centered,
             (unsigned)rc_state.manual_source, ch[REMOTE_CH_SWA], ch[REMOTE_CH_SWB], ch[REMOTE_CH_SWC],
             ch[REMOTE_CH_SWD], ch[REMOTE_CH_VRA], ch[REMOTE_CH_VRB], ch[REMOTE_CH_RIGHT_X],
-            ch[REMOTE_CH_RIGHT_Y], ch[REMOTE_CH_LEFT_X]);
+            ch[REMOTE_CH_RIGHT_Y], ch[REMOTE_CH_LEFT_X], (unsigned)(control_source.mode == DRIVE_SOURCE_MANUAL));
     } else if(slot == 2u) {
         const ImuAngle a = imu.get_angle();
         log_info("TEST_IMU t_ms=%lu ready=%u cal=%u/%u age_us=%lu temp_C=%.2f ref_C=%.2f yaw_deg=%.3f pitch_deg=%.3f roll_deg=%.3f gz_rad_s=%.6f",
@@ -449,7 +446,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY mode=6 target=%.2fm default_speed=0.10 ceiling=0.50 radius=0.051 NOMINAL FWD_laser_limit=0; PING ARM GO <token> HB <token> STOP",
         (double)STRAIGHT_TEST_TARGET_M);
     log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1600 FW_period_ms=100");
-    log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 vrb_required=0");
+    log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 host_vrb_required=0 manual_vrb_max=%u manual_heading_hold=0", DRIVE_MANUAL_VRB_MAX);
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
 }
@@ -488,7 +485,11 @@ void straight_test_app_loop(void) {
             const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, 0.01f);
             if(chassis.set_velocity(test.speed_mps, test.lateral_mps, wz) != chassis.OK || chassis.process() != chassis.OK)
                 straight_fault(&test, "CHASSIS_CONTROL");
-        } else chassis_yaw_hold_disable();
+        } else if(!(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg == ST_LEG_WAIT)) {
+            chassis_yaw_hold_disable();
+        }
+        /* WAIT stops the wheels below while retaining GO's heading reference
+         * for the return leg. A cancelled task or owner change still disables it. */
         if(!(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) &&
            !(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT)) {
             manual_velocity = (DriveVelocity){0};
