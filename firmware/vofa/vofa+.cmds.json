@@ -199,9 +199,9 @@
         ]
       },
       {
-        "name": "03 单次2米直行（仅开阔区域）",
+        "name": "03 单次1米直行（确认前方有净空）",
         "intro_on": true,
-        "intro": "需启动2m-OPEN-AREA入口；Static入口拒绝。必须遥控许可、IMU及电机全部就绪。当前狭小实验室不可执行。",
+        "intro": "需启动1m-OPEN-AREA入口；Static入口拒绝。必须确认固件target_m=1.00及遥控、IMU、电机就绪。激光仅记录，不参与限位停车。",
         "hex_on": true,
         "loop_on": false,
         "loop_ms": 100,
@@ -224,7 +224,7 @@
             "subCmds": []
           },
           {
-            "name": "步骤2 开始单次2米前进",
+            "name": "步骤2 开始单次1米前进",
             "intro_on": true,
             "intro": "最高0.10m/s；工具自动带编号并维持200ms心跳；结束后不自动返回或重跑。随时点停止。",
             "hex_on": true,

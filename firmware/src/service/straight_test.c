@@ -68,17 +68,17 @@ void straight_step(StraightTest* t, uint32_t now, StraightInput in) {
         if(!in.healthy || !isfinite(in.vx_mps)) { straight_fault(t, "FEEDBACK_OR_PERMIT"); return; }
         if(elapsed > 50u) { straight_fault(t, "CONTROL_TIMING"); return; }
         if(now - t->heartbeat_ms > 750u) { straight_fault(t, "LINK_TIMEOUT"); return; }
-        if(now - t->start_ms > 45000u) { straight_fault(t, "RUN_TIMEOUT"); return; }
+        if(now - t->start_ms > STRAIGHT_TEST_RUN_TIMEOUT_MS) { straight_fault(t, "RUN_TIMEOUT"); return; }
         if(in.vx_mps < -0.03f || fabsf(in.vx_mps) > 0.30f) { straight_fault(t, "VELOCITY_RANGE"); return; }
         t->distance_m += in.vx_mps * (float)elapsed * 0.001f;
-        if(t->distance_m > 2.10f) { straight_fault(t, "OVERSHOOT"); return; }
-        if(t->distance_m >= 1.99f) { stopping(t, now, "TARGET_REACHED"); return; }
-        target = fminf(0.10f, sqrtf(0.20f * (2.0f - t->distance_m)));
+        if(t->distance_m > STRAIGHT_TEST_OVERSHOOT_M) { straight_fault(t, "OVERSHOOT"); return; }
+        if(t->distance_m >= STRAIGHT_TEST_TARGET_M - 0.01f) { stopping(t, now, "TARGET_REACHED"); return; }
+        target = fminf(0.10f, sqrtf(0.20f * (STRAIGHT_TEST_TARGET_M - t->distance_m)));
         t->speed_mps = fminf(target, t->speed_mps + 0.05f * (float)elapsed * 0.001f);
     } else if(t->phase == ST_STOPPING) {
         if(!in.healthy || !isfinite(in.vx_mps)) { straight_fault(t, "STOP_FEEDBACK"); return; }
         t->distance_m += in.vx_mps * (float)elapsed * 0.001f;
-        if(t->distance_m > 2.10f) { straight_fault(t, "STOP_OVERSHOOT"); return; }
+        if(t->distance_m > STRAIGHT_TEST_OVERSHOOT_M) { straight_fault(t, "STOP_OVERSHOOT"); return; }
         if(in.stationary) {
             if(!t->stopped_timing) { t->stopped_ms = now; t->stopped_timing = true; }
             if(now - t->stopped_ms >= 200u) t->phase = ST_DONE;

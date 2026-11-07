@@ -8,7 +8,7 @@ $messages = [Collections.Generic.List[string]]::new()
 $send = [Action[string]]{ param($s) $tx.Add($s) }
 $report = [Action[string]]{ param($s) $messages.Add($s) }
 function Assert($ok, $why) { if (!$ok) { throw $why } }
-$idle = '[INFO] TEST_STATUS phase=0 token=0 healthy=1 stopped=1 cmd=0.000'
+$idle = '[INFO] TEST_STATUS phase=0 token=0 healthy=1 stopped=1 target_m=1.00 cmd=0.000'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 0)
 $static.Observe('FW: 179,0,0,0', 0)
@@ -27,11 +27,15 @@ Assert (!$static.Command('UI SNAPSHOT UNKNOWN', 70)) 'Unknown snapshot accepted'
 $motion = [VofaTestSession]::new($true, $send, $report)
 $tx.Clear()
 Assert (!$motion.Command('UI ARM', 0)) 'Missing status did not block ARM'
+$motion.Observe('[INFO] TEST_STATUS phase=0 token=0 healthy=1 stopped=1', 0)
+Assert (!$motion.Command('UI ARM', 1)) 'Legacy firmware without target was allowed to arm'
+$motion.Observe('[INFO] TEST_STATUS phase=0 token=0 healthy=1 stopped=1 target_m=2.00', 0)
+Assert (!$motion.Command('UI ARM', 1)) 'Two-meter firmware was allowed under the one-meter panel'
 $motion.Observe($idle, 0)
 Assert ($motion.Command('UI ARM', 1)) 'ARM failed'
 Assert (!$motion.Command('UI GO', 2)) 'GO before ARM ACK accepted'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=37 reason=ARMED', 10)
-$motion.Observe('[INFO] TEST_STATUS phase=1 token=37 healthy=1 stopped=1', 20)
+$motion.Observe('[INFO] TEST_STATUS phase=1 token=37 healthy=1 stopped=1 target_m=1.00', 20)
 Assert ($motion.Command('UI GO', 30)) 'GO failed'
 Assert ($tx[-1] -eq 'GO 37') 'Dynamic token not used'
 $count = $tx.Count
@@ -40,7 +44,7 @@ Assert ($tx.Count -eq $count) 'Heartbeat began before GO confirmation'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=37 reason=RUNNING', 40)
 $motion.Tick(40)
 Assert ($tx[-1] -eq 'HB 37') 'Heartbeat missing after confirmed GO'
-$motion.Observe('[INFO] TEST_STATUS phase=2 token=37 healthy=1 stopped=0', 220)
+$motion.Observe('[INFO] TEST_STATUS phase=2 token=37 healthy=1 stopped=0 target_m=1.00', 220)
 $motion.Tick(240)
 Assert ($tx[-1] -eq 'HB 37') 'Heartbeat did not renew at 200ms'
 $motion.Tick(621)
@@ -51,7 +55,7 @@ Assert ($tx.Count -eq $count) 'Heartbeat resumed after timeout'
 $motion.Observe($idle, 1000)
 Assert ($motion.Command('UI ARM', 1001)) 'Second ARM failed'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=38 reason=ARMED', 1010)
-$motion.Observe('[INFO] TEST_STATUS phase=1 token=38 healthy=1 stopped=1', 1020)
+$motion.Observe('[INFO] TEST_STATUS phase=1 token=38 healthy=1 stopped=1 target_m=1.00', 1020)
 Assert ($motion.Command('UI GO', 1030)) 'Second GO failed'
 Assert ($tx[-1] -eq 'GO 38') 'Previous token reused'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=999 reason=RUNNING', 1040)
@@ -63,7 +67,7 @@ Assert (!$motion.Command('UI GO', 2020)) 'Reset reused a pre-reset token'
 $motion.Observe($idle, 3000)
 Assert ($motion.Command('UI ARM', 3001)) 'ARM for banner-loss test failed'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=41 reason=ARMED', 3010)
-$motion.Observe('[INFO] TEST_STATUS phase=1 token=41 healthy=1 stopped=1', 3020)
+$motion.Observe('[INFO] TEST_STATUS phase=1 token=41 healthy=1 stopped=1 target_m=1.00', 3020)
 Assert ($motion.Command('UI GO', 3030)) 'GO for banner-loss test failed'
 $motion.Observe('[INFO] TEST_ACK ok=1 phase=2 token=41 reason=RUNNING', 3040)
 $motion.Observe($idle, 3050)

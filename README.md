@@ -4,17 +4,19 @@
 
 **技术文档统一维护在 [项目指南](docs/PROJECT_GUIDE.md)。**
 
-**VOFA中文测试命令（2026-11-07）。** 已提供13项命令，覆盖停止、连通、状态/IMU/激光/遥控/电机/CAN检查、静置/手动旋转yaw记录及单次2米准备/启动；原生文件在`firmware/vofa/vofa+.cmds.json`，已安装到`D:\Vofa +\x64\vofa+.cmds.json`并备份原文件。双击该目录`Mango-VOFA-Static.cmd`，VOFA用FireWater、UDP本地1347及远端127.0.0.1:1348，并载入命令文件；之后点中文命令即可，无需填写编号或手动维持心跳。Static入口拒绝ARM/GO；仅开阔区域使用`Mango-VOFA-2m-OPEN-AREA.cmd`。本次仅修改主机工具，无需重烧；原生JSON、会话和双向UDP回环测试通过。实机验证时COM19出现驱动超时且随后无上行数据，车端回显仍待连接恢复后确认。操作说明见[VOFA命令面板](docs/PROJECT_GUIDE.md#vofa中文命令面板2026-11-07)。
+**当前场地：先做单次1米（2026-11-07，已烧录）。** 目标1.00m，最高0.10m/s，沿用航向保持和缓起步/近终点减速。激光仅记录，不参与限位、避障或停车；保留遥控、电机/IMU反馈、串口心跳和里程超程保护。1米主机回归及83源文件ARM构建通过，烧录Verified OK；串口确认`target_m=1.00`、IDLE、cmd=0和激光`control=OBSERVE_ONLY`。VOFA命令已同步为1米，运动入口为`D:\Vofa +\x64\Mango-VOFA-1m-OPEN-AREA.cmd`；重新载入命令JSON后依次点准备、开始。桥接必须从车端收到`target_m=1.00`才允许ARM/GO，旧2米固件或缺少目标字段时拒绝启动。当前遥控离线，需恢复遥控许可；尚未执行本次1米运动。
+
+**VOFA中文测试命令（2026-11-07）。** 已提供13项命令，覆盖停止、连通、状态/IMU/激光/遥控/电机/CAN检查、静置/手动旋转yaw记录及单次1米准备/启动；原生文件在`firmware/vofa/vofa+.cmds.json`，已安装到`D:\Vofa +\x64\vofa+.cmds.json`并备份原文件。双击该目录`Mango-VOFA-Static.cmd`，VOFA用FireWater、UDP本地1347及远端127.0.0.1:1348，并载入命令文件；之后点中文命令即可，无需填写编号或手动维持心跳。Static入口拒绝ARM/GO；确认场地允许后使用`Mango-VOFA-1m-OPEN-AREA.cmd`。面板初版无需重烧，本次由2米切换1米须部署对应固件；原生JSON、会话和双向UDP回环测试通过。初次验证曾出现COM19驱动超时/无数据，后续串口上行已恢复。操作说明见[VOFA命令面板](docs/PROJECT_GUIDE.md#vofa中文命令面板2026-11-07)。
 
 **本次更新：状态日志与静态漂移排查（2026-11-07，已烧录并静态复测）。** 测试模式新增遥控开关、四轮反馈年龄/角度/速度、电流原始值、三路CAN计数、四路激光、IMU标定/温度/原始陀螺/实际扣除零偏，以及5秒漂移统计；`TEST_STATUS blocked=...`解释未就绪原因。原4通道波形保持10Hz，详细行轮流输出，每类约1.5秒一次，UDP工具保留文字。仅StraightTest改用本机启动测得零偏，避免继承的固定温度模型覆盖它，并修正新帧消费标志及反馈计时误判。主机回归、四种模式各83源文件ARM构建通过；增强版已备份、写入并通过Verified OK。连续上电约15～16分钟后，经用户确认静止，COM19采集599点/59.8秒：yaw从-1.008673°到-1.036799°，净变-0.028126°，全段范围0.109995°；IMU就绪、无更新错误。之前截图估算约0.21°/s的持续漂移明显改善，尚未验证小角度旋转比例、冷启动重复性及更长时间漂移。遥控离线是当前唯一许可阻塞；车辆在狭小区域，保持IDLE，未发送ARM/GO或运动指令。详见[日志字段与实测证据](docs/PROJECT_GUIDE.md#状态日志与静态漂移排查2026-11-07)。
 
-## 单次2米测试固件（2026-11-07，已烧录待测试）
+## 单次1米测试固件（2026-11-07，已烧录待测试）
 
 新增`StraightTest`（模式6）：上电待命，串口`ARM`后用一次性编号`GO <token>`启动，锁定起步航向，最高0.10m/s、缓起步/近终点减速，停稳后结束，不自动往返。`STOP`中止；运行中须每200ms左右发送`HB <token>`，超过750ms无有效心跳则故障并请求停车。保留遥控许可与电机/IMU新鲜度检查。右侧靠墙，日志记录接口2测距，不自动横移。
 
-构建：`powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest`。产物为`firmware/build/StraightTest/robot.hex`及对应ELF。用户授权后已通过无线Horco DAP完成原1MB备份、备份校验、写入、Verified OK和复位；只读串口确认TEST_STATUS处于IDLE、cmd=0、FW数值帧输出。**未发送ARM或GO，尚未进行2m运动测试。** 默认构建仍为Diagnostics，实物当前为模式6。
+构建：`powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest`。产物为`firmware/build/StraightTest/robot.hex`及对应ELF。用户授权后已通过无线Horco DAP完成原1MB备份、备份校验、写入、Verified OK和复位；只读串口确认TEST_STATUS处于IDLE、cmd=0、FW数值帧输出。**未发送ARM或GO，尚未进行本次1m运动测试。** 默认构建仍为Diagnostics，实物当前为模式6。
 
-距离以102mm名义轮径估算，须用地面标尺核验真实2m；名义半径仅在测试模式使用。本次无线SWD备份/写入/校验及COM19上行已实际验证，串口下行测试指令尚未发送。协议、Windows PowerShell 5.1交互工具及停机条件见[测试操作说明](docs/PROJECT_GUIDE.md#指令启动的单次2米测试固件2026-11-07)。先完成单次2m，再决定往复测试。
+距离以102mm名义轮径估算，须用地面标尺核验真实1m；名义半径仅在测试模式使用。本次无线SWD备份/写入/校验及COM19上行已实际验证，串口下行测试指令尚未发送。协议、Windows PowerShell 5.1交互工具及停机条件见[测试操作说明](docs/PROJECT_GUIDE.md#指令启动的单次1米测试固件2026-11-07)。先完成单次1m，再决定往复测试。
 
 测试模式新增10Hz FireWater帧`FW: yaw_deg,ref_deg,error_deg,wz_rad_s`（实际发送数值）。前3路为度，第4路为rad/s。VOFA+选择FireWater并绑定第0路为yaw；命名控件不等于解析文本日志。执行测试同时看波形时，使用`straight-console.ps1 -Port COM19 -WavePort 1347`独占串口、发送心跳并将合法4通道帧转发到本机UDP；VOFA+改用UDP监听端口1347，避免抢占COM19。
 

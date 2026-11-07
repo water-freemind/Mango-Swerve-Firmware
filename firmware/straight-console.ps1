@@ -145,7 +145,7 @@ public sealed class VofaTestSession {
     private readonly Action<string> tx, report;
     private readonly Dictionary<string, string> cache = new Dictionary<string, string>();
     private long lastStatus = -10000, armSent, armAck, goSent, nextHb;
-    private bool healthy, stopped, awaitingArm, armed, awaitingGo, running;
+    private bool healthy, stopped, awaitingArm, armed, awaitingGo, running, targetMatches;
     private uint activeToken;
     private bool haveYaw, marking;
     private double yaw, markedChange;
@@ -169,6 +169,10 @@ public sealed class VofaTestSession {
         if (status.Success) {
             lastStatus = now;
             healthy = status.Groups[3].Value == "1"; stopped = status.Groups[4].Value == "1";
+            Match distance = Regex.Match(line, @"\btarget_m=([0-9.]+)\b");
+            double target;
+            targetMatches = distance.Success && Double.TryParse(distance.Groups[1].Value,
+                NumberStyles.Float, CultureInfo.InvariantCulture, out target) && Math.Abs(target - 1.0) < 0.005;
             string phase = status.Groups[1].Value;
             if (phase == "3" || phase == "4" || phase == "5" || (phase == "0" && !awaitingArm)) Clear();
             // A matching status can confirm GO if only its ACK was lost.
@@ -246,6 +250,7 @@ public sealed class VofaTestSession {
         }
         if (command != "UI ARM" && command != "UI GO") { report("rejected=UNKNOWN_COMMAND"); return false; }
         if (!allowMotion) { report("rejected=STATIC_MODE_USE_MOTION_LAUNCHER_IN_OPEN_AREA"); return false; }
+        if (!targetMatches) { report("rejected=FIRMWARE_TARGET_NOT_1M"); return false; }
         if (now - lastStatus > 500 || !healthy || !stopped || awaitingArm || awaitingGo || running) {
             report("rejected=NOT_READY_OR_BUSY"); return false;
         }

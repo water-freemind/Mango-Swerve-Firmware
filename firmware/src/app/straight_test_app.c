@@ -347,7 +347,8 @@ void straight_test_app_init(void) {
     stop_outputs();
     initialized = true;
     last_step = last_imu = HAL_GetTick();
-    log_info("TEST_READY mode=6 target=2.0m speed<=0.10m/s radius=0.051 NOMINAL; PING ARM GO <token> HB <token> STOP; no automatic restart");
+    log_info("TEST_READY mode=6 target=%.2fm speed<=0.10m/s radius=0.051 NOMINAL laser_limit=0; PING ARM GO <token> HB <token> STOP; no automatic restart",
+        (double)STRAIGHT_TEST_TARGET_M);
     log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1500 FW_period_ms=100");
 }
 void straight_test_app_loop(void) {
@@ -391,8 +392,9 @@ void straight_test_app_loop(void) {
     if(now - last_log >= 100u) {
         last_log = now;
         const ImuAngle a = imu.get_angle();
-        log_info("TEST_STATUS phase=%u token=%lu healthy=%u stopped=%u s=%.3f vx=%.3f cmd=%.3f yaw_deg=%.2f ref_deg=%.2f wz=%.4f blocked=%s result=%s",
+        log_info("TEST_STATUS phase=%u token=%lu healthy=%u stopped=%u target_m=%.2f s=%.3f vx=%.3f cmd=%.3f yaw_deg=%.2f ref_deg=%.2f wz=%.4f blocked=%s result=%s",
             (unsigned)test.phase, (unsigned long)test.token, (unsigned)in.healthy, (unsigned)in.stationary,
+            (double)STRAIGHT_TEST_TARGET_M,
             (double)test.distance_m, (double)in.vx_mps, (double)test.speed_mps, (double)a.yaw * 57.295779513,
             (double)chassis_yaw_hold_get_yaw_ref() * 57.295779513, (double)chassis_yaw_hold_get_output_wz(),
             first_blocker(), test.result);

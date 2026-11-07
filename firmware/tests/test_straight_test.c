@@ -42,7 +42,7 @@ int main(void) {
         straight_step(&t, now, moving);
         assert(t.speed_mps <= 0.100001f && t.speed_mps >= 0.0f);
     }
-    assert(t.phase == ST_STOPPING && t.distance_m >= 1.99f && t.distance_m <= 2.01f);
+    assert(t.phase == ST_STOPPING && t.distance_m >= 0.99f && t.distance_m <= 1.01f);
     for(unsigned i = 0u; i < 22u; ++i) { now += 10u; straight_step(&t, now, good); }
     assert(t.phase == ST_DONE && !strcmp(t.result, "TARGET_REACHED"));
     assert(!straight_command(&t, "GO 1", now, good));
@@ -86,13 +86,13 @@ int main(void) {
     straight_step(&t, 220u, good);
     assert(t.phase == ST_DONE && !strcmp(t.result, "ABORT"));
     start(&t, 1000u);
-    t.distance_m = 2.11f;
+    t.distance_m = 1.11f;
     straight_step(&t, 1010u, good);
     assert(t.phase == ST_FAULT && !strcmp(t.result, "OVERSHOOT"));
     start(&t, 2000u);
-    t.heartbeat_ms = 48000u;
-    t.last_ms = 47990u;
-    straight_step(&t, 48000u, good);
+    t.heartbeat_ms = 27001u;
+    t.last_ms = 26991u;
+    straight_step(&t, 27001u, good);
     assert(t.phase == ST_FAULT && !strcmp(t.result, "RUN_TIMEOUT"));
     start(&t, 50000u);
     assert(straight_command(&t, "STOP", 50010u, good));

@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 #define STRAIGHT_TEST_WHEEL_RADIUS_M 0.051f /* nominal; verify using an external ruler */
+#define STRAIGHT_TEST_TARGET_M 1.0f
+#define STRAIGHT_TEST_OVERSHOOT_M (STRAIGHT_TEST_TARGET_M + 0.10f)
+#define STRAIGHT_TEST_RUN_TIMEOUT_MS 25000u
 
 typedef enum { ST_IDLE, ST_ARMED, ST_RUNNING, ST_STOPPING, ST_DONE, ST_FAULT } StraightPhase;
 typedef struct {

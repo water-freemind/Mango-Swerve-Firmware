@@ -12,7 +12,11 @@ if (Test-Path -LiteralPath $destination) {
 }
 Copy-Item -LiteralPath $source -Destination $destination -Force
 $console = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../straight-console.ps1'))
-foreach ($mode in @('Static', '2m-OPEN-AREA')) {
+$legacy = Join-Path $VofaDir 'Mango-VOFA-2m-OPEN-AREA.cmd'
+if (Test-Path -LiteralPath $legacy) {
+    Move-Item -LiteralPath $legacy -Destination ($legacy + '.retired-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.bak')
+}
+foreach ($mode in @('Static', '1m-OPEN-AREA')) {
     $motionFlag = ''
     if ($mode -ne 'Static') { $motionFlag = ' -AllowMotion' }
     $launcher = '@echo off' + "`r`n" +
