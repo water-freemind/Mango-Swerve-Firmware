@@ -214,6 +214,14 @@ void straight_test_app_loop(void) {
             (double)test.distance_m, (double)in.vx_mps, (double)test.speed_mps, (double)a.yaw,
             (double)chassis_yaw_hold_get_yaw_ref(), (double)chassis_yaw_hold_get_output_wz(),
             (unsigned)laser.distance_mm[1], (unsigned)laser.frame_fresh, test.result);
+        /* Dedicated numeric frame; human-readable status is not a FireWater channel. */
+        const LogVofaValue wave[4] = {
+            log_vofa_value_f64((double)a.yaw * 57.295779513),
+            log_vofa_value_f64((double)chassis_yaw_hold_get_yaw_ref() * 57.295779513),
+            log_vofa_value_f64((double)chassis_yaw_hold_get_yaw_error() * 57.295779513),
+            log_vofa_value_f64((double)chassis_yaw_hold_get_output_wz()),
+        };
+        (void)log_vofa_write("FW", 4u, wave);
     }
 }
 #endif

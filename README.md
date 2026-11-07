@@ -4,13 +4,15 @@
 
 **技术文档统一维护在 [项目指南](docs/PROJECT_GUIDE.md)。**
 
-## 待烧录的单次2米测试（2026-11-07）
+## 单次2米测试固件（2026-11-07，已烧录待测试）
 
 新增`StraightTest`（模式6）：上电待命，串口`ARM`后用一次性编号`GO <token>`启动，锁定起步航向，最高0.10m/s、缓起步/近终点减速，停稳后结束，不自动往返。`STOP`中止；运行中须每200ms左右发送`HB <token>`，超过750ms无有效心跳则故障并请求停车。保留遥控许可与电机/IMU新鲜度检查。右侧靠墙，日志记录接口2测距，不自动横移。
 
-构建：`powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest`。产物为`firmware/build/StraightTest/robot.hex`及对应ELF。当前只完成离线构建/测试，**未连接目标、烧录或发送运动指令**。默认模式仍为Diagnostics；等待用户另行通知才进行烧录。
+构建：`powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\build-local.ps1 -Mode StraightTest`。产物为`firmware/build/StraightTest/robot.hex`及对应ELF。用户授权后已通过无线Horco DAP完成原1MB备份、备份校验、写入、Verified OK和复位；只读串口确认TEST_STATUS处于IDLE、cmd=0、FW数值帧输出。**未发送ARM或GO，尚未进行2m运动测试。** 默认构建仍为Diagnostics，实物当前为模式6。
 
-距离以102mm名义轮径估算，须用地面标尺核验真实2m；名义半径仅在测试模式使用。无线DAPLink的COM19/921600日志接收由用户截图确认，SWD擦写校验及串口下行指令仍待实测。协议、Windows PowerShell 5.1交互工具及停机条件见[测试操作说明](docs/PROJECT_GUIDE.md#指令启动的单次2米测试固件2026-11-07)。先完成单次2m，再决定往复测试。
+距离以102mm名义轮径估算，须用地面标尺核验真实2m；名义半径仅在测试模式使用。本次无线SWD备份/写入/校验及COM19上行已实际验证，串口下行测试指令尚未发送。协议、Windows PowerShell 5.1交互工具及停机条件见[测试操作说明](docs/PROJECT_GUIDE.md#指令启动的单次2米测试固件2026-11-07)。先完成单次2m，再决定往复测试。
+
+测试模式新增10Hz FireWater帧`FW: yaw_deg,ref_deg,error_deg,wz_rad_s`（实际发送数值）。前3路为度，第4路为rad/s。VOFA+选择FireWater并绑定第0路为yaw；命名控件不等于解析文本日志。执行测试同时看波形时，使用`straight-console.ps1 -Port COM19 -WavePort 1347`独占串口、发送心跳并将合法4通道帧转发到本机UDP；VOFA+改用UDP监听端口1347，避免抢占COM19。
 
 **本轮拉取与今天安排（2026-11-07）：**已同步PR #3合并提交`2035c58`，并核对正常零位补偿、独立遥控和航向保持已接入。今天按[单侧走廊长距离直行计划](docs/PROJECT_GUIDE.md#今天的单侧走廊直行计划2026-11-07)执行：车身对墙平行 → 低速2m量化复测 → 分原因调参 → 延长距离。单墙测距闭环尚未实现，先将墙作为外部验收基准。
 

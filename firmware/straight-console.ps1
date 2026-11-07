@@ -2,7 +2,8 @@
 #requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)][string]$Port,
-    [int]$BaudRate = 921600
+    [int]$BaudRate = 921600,
+    [ValidateRange(0,65535)][int]$WavePort = 0
 )
 $ErrorActionPreference = 'Stop'
 if ([Console]::IsInputRedirected) { throw 'Use an interactive terminal for ARM / GO / STOP.' }
@@ -13,12 +14,29 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
+using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 public static class MangoStraightConsole {
-    public static void Run(string port, int baud, string logPath) {
+    public static bool ForwardWave(UdpClient udp, int port, string line) {
+        if (port == 0 || !line.StartsWith("FW:", StringComparison.Ordinal)) return false;
+        string[] fields = line.Substring(3).Trim().Split(',');
+        if (fields.Length != 4) return false;
+        foreach (string field in fields) {
+            double value;
+            if (!Double.TryParse(field, NumberStyles.Float, CultureInfo.InvariantCulture, out value) ||
+                Double.IsNaN(value) || Double.IsInfinity(value)) return false;
+        }
+        byte[] bytes = Encoding.ASCII.GetBytes(line.TrimEnd('\r') + "\n");
+        udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
+        return true;
+    }
+    public static void Run(string port, int baud, string logPath, int wavePort) {
         using (SerialPort serial = new SerialPort(port, baud, Parity.None, 8, StopBits.One))
+        using (UdpClient wave = new UdpClient())
         using (StreamWriter log = new StreamWriter(logPath, false, Encoding.UTF8)) {
             serial.Handshake = Handshake.None;
             serial.DtrEnable = false; serial.RtsEnable = false;
@@ -38,6 +56,8 @@ public static class MangoStraightConsole {
                         string text = pending.ToString(); int end;
                         while ((end = text.IndexOf('\n')) >= 0) {
                             string line = text.Substring(0, end); text = text.Substring(end + 1);
+                            try { ForwardWave(wave, wavePort, line); }
+                            catch (SocketException ex) { log.WriteLine("WAVE_FORWARD_ERROR " + ex.Message); }
                             Match m = Regex.Match(line, @"TEST_ACK ok=1 phase=1 token=(\d+)");
                             if (m.Success) UInt32.TryParse(m.Groups[1].Value, out token);
                             m = Regex.Match(line, @"TEST_STATUS phase=(\d+)");
@@ -75,4 +95,4 @@ public static class MangoStraightConsole {
     }
 }
 '@
-[MangoStraightConsole]::Run($Port, $BaudRate, $logPath)
+[MangoStraightConsole]::Run($Port, $BaudRate, $logPath, $WavePort)

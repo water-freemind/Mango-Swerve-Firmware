@@ -245,3 +245,5 @@ $gearsExe = Join-Path $outputDir 'test_manual_speed_gears.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear compilation failed.' }
 & $gearsExe
 if ($LASTEXITCODE -ne 0) { throw 'Manual speed gear test failed.' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'test_straight_console.ps1')
+if ($LASTEXITCODE -ne 0) { throw 'Straight console loopback test failed.' }

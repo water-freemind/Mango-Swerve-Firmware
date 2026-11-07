@@ -491,7 +491,11 @@ PR #1已合并，提交为 `b37d15c613f54bebc4ed467441d9ecf7939ff3b5`。本地�
 
 ### 指令启动的单次2米测试固件（2026-11-07）
 
-**当前边界。** 用户明确先构建，后续另行通知烧录。车在门外、右侧靠墙，已尽量摆平行；无线DAPLink的COM19以921600、8N1收到ManualStandalone日志。截图中remote=0/armed=0。此次未打开串口、探测SWD、烧录或启动动作。串口上行成功不等于SWD擦写/校验成功，DAP的UART是独立通信功能，见[Arm CMSIS-DAP UART说明](https://arm-software.github.io/CMSIS-DAP/latest/group__DAP__uart__gr.html)。
+**当前边界。** 用户最初要求先构建，随后明确授权烧录。车在门外、右侧靠墙，已尽量摆平行；无线DAPLink的COM19以921600、8N1收到数据。此前ManualStandalone截图中remote=0/armed=0；授权后已烧入本节模式6并只读核对IDLE，未发ARM、GO或其他串口命令。UART是独立于SWD的功能，不能仅凭串口连通推断烧录成功，见[Arm CMSIS-DAP UART说明](https://arm-software.github.io/CMSIS-DAP/latest/group__DAP__uart__gr.html)；本次以OpenOCD校验结果确认下载链路。
+
+**本次部署证据。** EIDE自带2022版OpenOCD不支持现脚本的cmsis-dap命令，首次在备份前退出，没有擦写。随后从[xPack官方发布](https://github.com/xpack-dev-tools/openocd-xpack/releases/tag/v0.12.0-7)下载win32-x64包，核对SHA256 `6BFD3C97135AAFEF8AFFC9AF1ACF34FD0E2B9CA26044506F6ABD7F95B7630052`后解压至`C:/Users/Zhanglongsheng/EmbeddedTools/xpack-openocd-0.12.0-7`，未修改全局PATH；烧录脚本新增该便携路径候选。Horco序列号332107140234匹配COM19设备，HID后端与quirk完成STM32H72x/73x单Bank 1024KB Flash操作。备份`build/backup/before-flash-20261107-110642-120.bin`长1048576字节，经verify_image后才写入；日志`build/straight-review/wireless-flash-xpack.log`含Programming Finished、Verified OK、Resetting Target及FLASH_OK。
+
+复位后只读COM19四秒，日志保存在`build/straight-review/post-flash-uart.log`：phase=0、token=0、stopped=1、s=0、cmd=0、result=IDLE，healthy=0，右侧627–632mm且laser_fresh=1；FW第0路当时约-4.35至-4.40度。程序处于待命，启动条件尚未全部满足，不能由上行正常认定已可运动。真实2m、GUI绑定和下行命令仍待现场验证。
 
 **产物与入口。** `build-local.ps1 -Mode StraightTest`输出`build/StraightTest/robot.hex/.elf/.bin`，APP_RUN_MODE=6。默认构建/烧录仍为Diagnostics，烧录脚本只新增显式StraightTest选项，本轮没有执行。逻辑在`src/service/straight_test.*`，硬件与串口适配在`src/app/straight_test_app.*`。初始化会使能电机并发送静止保持命令，但不主动前进、回零或驻车转向；仍需避开机构运动空间。启动失败不会进入测试调度。
 
@@ -526,6 +530,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.
 **异常与日志。** 电机四个转向、四个驱动均须100ms内收到合格式反馈，转向state=1，IMU采样年龄≤100ms；CAN发送失败、Bus-Off/Error Passive、UART错误/缓冲溢出、控制间隔>50ms、航向误差>0.15rad、倒向速度<-0.03m/s、速度绝对值>0.30m/s、运行>45s或行程>2.10m均终止并请求停车。停车3秒仍未确认则FAULT。发送链路故障时不能保证停车命令到达，FAULT也不表示车已物理停稳；须核实反馈和现场状态。故障/结束不自动续跑，恢复反馈/链路后须重新ARM；CAN发送故障锁定至重启。
 
 TEST_STATUS每100ms记录phase、token、healthy、stopped、估计行程s、实测vx、目标cmd、yaw/ref/correction、right_mm/laser_fresh及result。phase依次0=IDLE、1=ARMED、2=RUNNING、3=STOPPING、4=DONE、5=FAULT；result=TARGET_REACHED才是正常到点，ABORT是主动停止。该模式仅单次前进，无自动后退或往复。
+
+**VOFA+波形（2026-11-07）。** RawData只显示原始文本，原YAW_CHECK/TEST_STATUS不能仅通过把控件命名为yaw变成数值曲线。模式6现每100ms额外发送FireWater帧，示例为`FW: -7.7,-7.6,0.1,0.003`后接实际换行。通道0=yaw角度，1=参考航向角，2=环绕归一化后的航向误差，单位均为度；通道3=角速度修正，单位rad/s。文本日志的yaw/ref仍以rad记录。未激活航向保持时参考/误差/修正会清零，不代表当前yaw为零。
+
+VOFA+选择FireWater而非RawData，数据到达后在波形图右键“绑定Y轴”，选第0路实际数据通道，再将显示名称改为yaw；可同时绑定第1路比较参考。点Auto调整Y轴，当前约-7.7°不会显示在固定-5～5°窗口内。协议要求逗号分隔数值并以换行结束，见[FireWater协议](https://www.vofa.plus/docs/learning/dataengines/firewater/)及[官方波形绑定步骤](https://www.vofa.plus/docs/learning/start/quick_start/)。
+
+运行测试时推荐经过主机工具过滤转发，避免COM19被VOFA+和心跳工具同时占用，以及普通日志混入数值解析：先断开VOFA+串口，选择UDP接收接口、本地监听端口1347及FireWater，再运行以下命令。此为本机回环转发，不改变车端无线DAP链路；VOFA+通过UDP只接收波形，ARM/GO/STOP仍在终端发送。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\firmware\straight-console.ps1 -Port COM19 -WavePort 1347
+```
+
+不传WavePort或传0则不转发；转发器仅接受以FW:开头且恰好4个有限数值的帧。UDP失败只记录绘图错误，不终止串口心跳；串口异常仍触发退出/车端超时。新增离线回环测试验证日志/畸形帧拒绝、关闭转发、4通道数值及换行保真，该离线测试没有打开串口。授权烧录后另有真实FW上行只读证据；GUI曲线和无线串口下行仍待确认。
 
 **离线验证范围。** 完整主机回归通过，StraightTest/ManualStandalone/Manual/Diagnostics各83源文件完整ARM构建通过；日志在`build/straight-review/`。主机状态机测试覆盖默认静止、无许可拒绝、ARM过期、重复/旧/错误编号、心跳过期、定速限幅、2m完成与连续停稳、STOP、逆行/非数反馈、超程/运行/停车超时及计时回绕。模式5/6均验证关闭作业握手。真实UART收发、无线时延、运动、轮径和到点精度尚未实测；串口工具只编译C#和校验脚本语法，没有打开端口。
 

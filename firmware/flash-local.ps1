@@ -8,7 +8,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (!$OpenOcdRoot) {
-    $candidates = @($env:OPENOCD_ROOT, 'E:\EmbeddedTools\xpack-openocd-0.12.0-7')
+    $candidates = @($env:OPENOCD_ROOT, 'E:\EmbeddedTools\xpack-openocd-0.12.0-7',
+        (Join-Path $env:USERPROFILE 'EmbeddedTools\xpack-openocd-0.12.0-7'))
     $eideTools = Join-Path $env:USERPROFILE '.eide\tools'
     if (Test-Path -LiteralPath $eideTools) {
         $candidates += Get-ChildItem -LiteralPath $eideTools -Directory -Filter 'openocd*' |
