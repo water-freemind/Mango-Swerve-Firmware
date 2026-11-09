@@ -4,7 +4,11 @@
 
 **详细操作、硬件连接、协议、标定与验证记录统一维护在 [项目指南](docs/PROJECT_GUIDE.md)。**
 
+S21C激光采集板现单独放在 [firmware-s21c](firmware-s21c/README.md)，含厂家源码来源记录、本地解析修复、独立构建及测试。F103候选已通过离线测试和完整GCC编译，未烧录；H723工程仍位于`firmware/`。
+
 ## 当前状态
+
+2026-11-09本机已拉取PR #8的`51fced7`，并复核D盘原厂S21C/STP23L四路源码：确认时间戳重复消费、校验外提交、汇总覆盖/累加及逐路旧值持续发送风险。DM侧滤波与时效专项通过，但不能识别采集板反复发送的范围内旧值；队友电脑的S21C修复工程尚待取得；本机另建候选见上方，未烧录。证据、修复边界与台架步骤见项目指南5.2.1。
 
 2026-11-09最新底盘为`firmware/build/deployed/20261109-paused-guard/`，已Verified OK。修复激光等待中单帧近距误锁终止，保持零输出确认及恢复判稳。完整回归与构建通过，部署后4轮4m贴墙往返均完成，返程最大右墙距偏离41–85mm，方向标定和精度仍待完善。COM12/UDP和波形持续接收，S21C候选未烧录，原始测距异常仍在排查。以下为较早版本。
 
@@ -111,7 +115,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\firmware\vofa\install-
 
 烧录命令、七种模式的上电行为及CubeMX重新生成后的检查见[开发与烧录说明](docs/PROJECT_GUIDE.md#development)。`Ctrl+Shift+B`默认构建Diagnostics；切换固件必须显式选择Mode。编译本身不执行硬件动作；实际部署与现场验证以指南第8节为准。
 
-代码提取自[原仓库Hephaestus工程](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis/tree/main/Hephaestus)，提取基线 `65088f94be15c69ccfa647779d7f847b06b95735`。原说明混用Atlas标题，底盘部分可参考；原仓库保持只读。本项目不包含ROS、原机械臂、吸盘或语音业务，S21C已烧录的采集程序不在本仓库修改。
+代码提取自[原仓库Hephaestus工程](https://github.com/AgroTech-SCAU/Steering-Wheel-Chassis/tree/main/Hephaestus)，提取基线 `65088f94be15c69ccfa647779d7f847b06b95735`。原说明混用Atlas标题，底盘部分可参考；原仓库保持只读。本项目不包含ROS、原机械臂、吸盘或语音业务，S21C已烧录镜像保持原状，其独立维护副本现位于`firmware-s21c/`。
 
 ## 自主路线离线推演
 
