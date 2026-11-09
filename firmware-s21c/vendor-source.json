@@ -1,0 +1,333 @@
+{
+  "source": "D:\\开发板资料\\WHEELTEC S21系列四路串口测距模块资料\\WHEELTEC_S21C主控资料_V2.0_2025.05.21\\1.例程源码\\S21C搭配STP23L使用例程（2026.7.8）",
+  "files": [
+    {
+      "path": "CORE/core_cm3.c",
+      "source_sha256": "e93a7e36349e7810f328276a3fed56701e10536779f7527a8ccd140618a556b0"
+    },
+    {
+      "path": "CORE/core_cm3.h",
+      "source_sha256": "de4668aa9d314d05769dfb29f028e205b50577c6b2150fc6bccb34bd34179bbb"
+    },
+    {
+      "path": "CORE/startup_stm32f10x_hd.s",
+      "source_sha256": "1ad6e0a965254d4cd1a6cc289011214c8d3f1468d77e9ad1f235d80792cda2fc"
+    },
+    {
+      "path": "CORE/startup_stm32f10x_ld.s",
+      "source_sha256": "bdbbcf8566b6758362f5b51541fd8b164f834a8922e80e002e8e6eb84fc739c1"
+    },
+    {
+      "path": "CORE/startup_stm32f10x_md.s",
+      "source_sha256": "6b7b008a760ef8f4f950a2af13ec6e0c111ef4a67e066d3e4a78026b5adae30d"
+    },
+    {
+      "path": "HARDWARE/can.c",
+      "source_sha256": "e95870dc9a57d836de62380ecedad84ac06e1b2e90ebda03f2b27de5daa413f1"
+    },
+    {
+      "path": "HARDWARE/can.h",
+      "source_sha256": "77f12a5929f3c30f3d57c5ef45f72460e64b9c9bdc8c5b7ea92ec7e8305dfb8e"
+    },
+    {
+      "path": "HARDWARE/LED.c",
+      "source_sha256": "6c165d74d1237a3100775902b5d386fc3927bfa0d0709650d60c6ed8ca348aac"
+    },
+    {
+      "path": "HARDWARE/LED.h",
+      "source_sha256": "9f602bda53e48a9af9abbaa4e3dfe33383bf6fc9163bdf88394da412b34aa78f"
+    },
+    {
+      "path": "HARDWARE/oled.c",
+      "source_sha256": "41c2ec003d7716770196b03069ebb4c471fbfa2e5d9c7af44077310aa82641a0"
+    },
+    {
+      "path": "HARDWARE/oled.h",
+      "source_sha256": "4493e1b0eb053bb5a5149e3046124bb25ae8d3eeebfe60aeac46472cac07d7f5"
+    },
+    {
+      "path": "HARDWARE/oledfont.h",
+      "source_sha256": "4e0920f7ab41e0ca67b853398a723629550cf839eeaacb1cc0f2c65053d42b22"
+    },
+    {
+      "path": "HARDWARE/time.c",
+      "source_sha256": "213a5c7eaa0598bafb013b8836a520b5e450d2dabaf08af149d9d8725e4ed4f1"
+    },
+    {
+      "path": "HARDWARE/time.h",
+      "source_sha256": "65d3fda00549c1b1f9fa244e9e88c283ffd8cbd3b2238192a58219fe0d96405a"
+    },
+    {
+      "path": "HARDWARE/usart2.c",
+      "source_sha256": "c61c741022dbdb7fd33b469305d45c8ebf1ecdf24a294bf77c9d930fc83bd609"
+    },
+    {
+      "path": "HARDWARE/usart2.h",
+      "source_sha256": "8cd4318dbc49728fb9e98d8d58e2d379364764049618adccb3d88c6fd099169a"
+    },
+    {
+      "path": "HARDWARE/usart3.c",
+      "source_sha256": "ce3ca24e99f60dd96168834c2535cfe7e10ece298468de5b000a60808c8e8928"
+    },
+    {
+      "path": "HARDWARE/usart3.h",
+      "source_sha256": "81e94f1a77a955fe5c40e59cee54dfb775f49a03b1d30c94bde15b95ec55ec78"
+    },
+    {
+      "path": "HARDWARE/usart4.c",
+      "source_sha256": "e82d1923c0ec84bf1fd1d9b703a39c8850af2659802938f709dc4ca88334a40e"
+    },
+    {
+      "path": "HARDWARE/usart4.h",
+      "source_sha256": "e8eb0a31114cc029743355d35d9c525652f7eacbb3e396139bfff12328c3e984"
+    },
+    {
+      "path": "HARDWARE/usart5.c",
+      "source_sha256": "84b75a707dfad0faba08a5026109874fb56714a3942e7be69ebb0ce4117cec88"
+    },
+    {
+      "path": "HARDWARE/usart5.h",
+      "source_sha256": "6e09c43d259f3549632344c06278cf1197dcf52152f0521c350d1abec976143c"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/misc.h",
+      "source_sha256": "40c918f726035dfa67a7bfadefac8e922196d7918f915a7f2db1e652625c7e41"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_adc.h",
+      "source_sha256": "005a122259e9657bd6b3171dd0e478c143c2a70f8e364b505b84f3fd0a8b1b9f"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_bkp.h",
+      "source_sha256": "bd3ae6fe6a6e617216d60a11a7437be97dca2ea02f3ad78afe889850473fdb16"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_can.h",
+      "source_sha256": "df4e1602f2b208b335fa22890908ff518de18c6e27ffb94b92cd498e8212b248"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_cec.h",
+      "source_sha256": "620485eb06b33c96a5a8de3fb1116db876162a44da15441883f0cc675e890059"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_crc.h",
+      "source_sha256": "98e5537eb5e8837de2170472b774d9f9559f14b60dfcb09d9f839611bc18cb66"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_dac.h",
+      "source_sha256": "446107ab9e933ccc284be0cd8f0c32edc3e96ba6f990dea8bd1f1cf080d35ef6"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_dbgmcu.h",
+      "source_sha256": "998751256df8a0423dc73be45e489fc04cb2b124a6f04a6ad65e4d53e59f45ba"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_dma.h",
+      "source_sha256": "2ba038050d07735a42645f2508e62078c217dc750878097f7f113660e0d58ffb"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_exti.h",
+      "source_sha256": "661b039483459137a58bfdea7522528b9b6e923d61966d4c7c8a5035bd375f5f"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_flash.h",
+      "source_sha256": "952ca72ee4d01e49d392d55af2b146bd9f15763230660334e78ac2cad8cb8982"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_fsmc.h",
+      "source_sha256": "b2e640d05f6dd11e1fe70bfa0db8aa53cb0a918eef412d6a35630b1357dc5ff6"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_gpio.h",
+      "source_sha256": "ef945fe7b2e4a8f3bf8fa22d44274085444dec80424f91606a1467ea4e69626f"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_i2c.h",
+      "source_sha256": "08b14d416090815765a02e6fecf78cbdd3de4ad330d3bc04b2133f8f4f3f2daa"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_iwdg.h",
+      "source_sha256": "4a0e65ceebeb69dee10923ab5478938ec7af1357849fbf862d45d19dbb01091a"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_pwr.h",
+      "source_sha256": "b7b31d2bfb3d56e763d70e9db4eecfc996664619916ac4bee9d9928430ffac79"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_rcc.h",
+      "source_sha256": "894e140a70b0cdc94e4e96c5011def9dca5a103752783c3bb7cab538fc426f9e"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_rtc.h",
+      "source_sha256": "4a0ef73054c3f7f7ad325c6ef0268edb3c5e8987978bdac8a695dc548e13b94c"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_sdio.h",
+      "source_sha256": "35f5d75421ab3c76d1d76e2c26d0910864161966cc16b74f8327c173ae123deb"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_spi.h",
+      "source_sha256": "e5dce165ef95fd872a8802cc4f9205b389e4ecdd28a0d74f8aa6c9c3d1ea4225"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_tim.h",
+      "source_sha256": "dddf89f9b7134a2f15ed9cc2521589ee9a2e18c0553a6017c71b5d5b394524e5"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_usart.h",
+      "source_sha256": "9d4c2067e54defd64b000076e6561726d758c872d354bed6eea66a6767c08bce"
+    },
+    {
+      "path": "STM32F10x_FWLib/inc/stm32f10x_wwdg.h",
+      "source_sha256": "eb1a01bbaa33babc416d8ecdb40b5a97a21522eb5c7952ba1bec09924580790e"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/misc.c",
+      "source_sha256": "152c632e56151b2564121c56ff359d0f041621f0da6ed101d7fd376a139a5c75"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_adc.c",
+      "source_sha256": "d269b826f617c7b1426155cdfc8a220d05aee74580b80b92f86bf33ea9d8be98"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_bkp.c",
+      "source_sha256": "f78d5077029cfec54da52ea4f9d8796dabdf1da5dc6cc29e3395e0f6923645a0"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_can.c",
+      "source_sha256": "bf9d3bec0785b8f28d9eb046bc67181071586e10014d4f595ba0e582257f31ad"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_cec.c",
+      "source_sha256": "5cf689d7a2ecc3244b18099ae254dc6b0bff023406c898a82dbbd42a29b86e7c"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_crc.c",
+      "source_sha256": "962aa1381467118ee7e9bea68ad01b3ca3f9fbbd749242211e2d340bf896d0d4"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_dac.c",
+      "source_sha256": "789a92c1dbb0dc74688fff8e415a93da816956a7a44882488d25af7ac055cbc7"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_dbgmcu.c",
+      "source_sha256": "9bfb6f964cd3b06a04c67772e52f31814e5a3d39a951a27bf9f2ef352237e23d"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_dma.c",
+      "source_sha256": "b0ac759af150deaa84d8a337a8873a2fbc03e36b1db6623175ab2443efa45d6f"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_exti.c",
+      "source_sha256": "5783d10d46275d8baee9f2861cf434b5c12a4bc8f42ed4af9e503c1818941ebe"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_flash.c",
+      "source_sha256": "a04fcf26499252a6b02de1cefd33c26b8802d5ff1f9bef920bbddeefdd602f43"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_fsmc.c",
+      "source_sha256": "1b623840bba04095a150fcf051fd2a3df4838799b96ae2e36f28675e92c23e44"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_gpio.c",
+      "source_sha256": "8255650b583b2bab2c320e0974309a6ccf26f661e7ad1b54282c0f0e2b9a1acf"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_i2c.c",
+      "source_sha256": "5014d8cf824a3f3d4fca09241352e82177752ebf2a5a97a6de2fb8968e6d44c9"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_iwdg.c",
+      "source_sha256": "bdae6086ce189dac8d464d10bb2ab58a957bbd8f89834e1cc7716faf3e34c9ce"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_pwr.c",
+      "source_sha256": "3f8c77033caad162a69fe9780d7be2ab973f02be0e736e37c2e633f4a4e2bd28"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_rcc.c",
+      "source_sha256": "f23bbc9b83e44e69f5dc34f072867f0087a3eb0452034ab09c363088d2354cd9"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_rtc.c",
+      "source_sha256": "59bc07137d60efbbf69703b88e72bb2153c2e97beee16a1d262a7050686fb00b"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_sdio.c",
+      "source_sha256": "d042b43fbfd5431719a7310ebe2d38c861a663d07e0c0735e466785e07fc1d97"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_spi.c",
+      "source_sha256": "0214f213058353f2fd9d3a4036ccabbea0b73b60aae0652acf36df539adbb9c6"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_tim.c",
+      "source_sha256": "bd12bf18b03b8585ac2ba6bd0e80ec39d8fd0c89307eb54f5a7be38a46894d03"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_usart.c",
+      "source_sha256": "6d7af47017b01eb260fb7699f5c483e0a8576b4c780069a99975b7c6443030dd"
+    },
+    {
+      "path": "STM32F10x_FWLib/src/stm32f10x_wwdg.c",
+      "source_sha256": "1d51fbbe3da7731b2303408f00693b51dbf62226590b1264cbbf35be01aa90ea"
+    },
+    {
+      "path": "SYSTEM/delay/delay.c",
+      "source_sha256": "24f887fa3174a0ae64e0124e28f58934e05eaf587803d37c1168ef2a7fb8cfb4"
+    },
+    {
+      "path": "SYSTEM/delay/delay.h",
+      "source_sha256": "2393bf9ce55a8108a218e8bf7419d4d6474c0bb8e5e1d5982f567ff63e5cb937"
+    },
+    {
+      "path": "SYSTEM/sys/sys.c",
+      "source_sha256": "89af712f5d37f1c1a807088a92c314e9a7b0f35d467991bbe41bc26836598b13"
+    },
+    {
+      "path": "SYSTEM/sys/sys.h",
+      "source_sha256": "5b7cae4bb7371cd1e481560bd2e4fa7f175ce2c57c09024382db721130c234cf"
+    },
+    {
+      "path": "SYSTEM/usart/usart.c",
+      "source_sha256": "39f140a4041a04104079e8b2b8999e75318247d08570b530e4162c62db01273c"
+    },
+    {
+      "path": "SYSTEM/usart/usart.h",
+      "source_sha256": "5b669d167d2d1ba63c96326584f9433a9a8a0234e7acad0e7d78a545e109408e"
+    },
+    {
+      "path": "USER/main.c",
+      "source_sha256": "7fbacb5677a1bbd86a8c9617b52138aab7c30d24d73a87e721a64ed91f3f2cb6"
+    },
+    {
+      "path": "USER/stm32f10x.h",
+      "source_sha256": "4ee722d262c1e7d7505d7dc7eeb8ccaaf67158b51ee4bc177397cd64e74e1b3a"
+    },
+    {
+      "path": "USER/stm32f10x_conf.h",
+      "source_sha256": "e83ea5cfcd98e1f1ce641b2e761187236c5288458ff7f66d459e0a8da36470ae"
+    },
+    {
+      "path": "USER/stm32f10x_it.c",
+      "source_sha256": "b5d317bf20ae111810c9d724131c4c9e945065bee38f320e660570d358ed474d"
+    },
+    {
+      "path": "USER/stm32f10x_it.h",
+      "source_sha256": "408e9a069ddad35c032487113ce9c6ca7ece59b3a31e7dbfa4ad3a634ffbc819"
+    },
+    {
+      "path": "USER/system_stm32f10x.c",
+      "source_sha256": "0adc10285854d9cb23ba680694653c7e995660191e394cbf51a605dd01b94bb4"
+    },
+    {
+      "path": "USER/system_stm32f10x.h",
+      "source_sha256": "919dc1f5c6bbba74cb712e8ec7cf73f1988eafa9438c706526fb401a2ab4672d"
+    },
+    {
+      "path": "USER/UART1.uvprojx",
+      "source_sha256": "a19f28b557b3bc4545279458c78344b4a6b3bdc12752e01334d2bdd82d2bc4d9"
+    }
+  ]
+}
