@@ -14,7 +14,6 @@
 #include "imu/bmi088.h"
 #include "remote.h"
 #include "drive_source.h"
-#include "manual_ramp.h"
 #include "chassis_profile.h"
 #include "chassis_trace.h"
 #include "work_link.h"
@@ -40,7 +39,6 @@ static bool tx_fault;
 static DriveSource control_source;
 static DriveVelocity manual_velocity;
 static DriveVelocity manual_target;
-static ManualRamp manual_ramp;
 static ChassisTrace trace;
 static ChassisTraceSample trace_sensor;
 static bool trace_recording, trace_was_active, trace_dumping, trace_header;
@@ -97,7 +95,6 @@ static void update_imu_sample(void) {
 }
 
 static void stop_outputs(void) {
-    manual_ramp_reset(&manual_ramp);
     manual_target = manual_velocity = (DriveVelocity){0};
     last_manual_target = HAL_GetTick();
     /* Clear the cached chassis command as well as the physical motor outputs,
@@ -223,10 +220,12 @@ static StraightInput input(uint32_t now) {
     LaserSnapshot laser = {0};
     if(laser_get_snapshot(&laser)) {
         in.laser_fresh = laser.frame_fresh && laser.frame_count != 0u;
-        in.left_mm = laser.distance_mm[0];
-        in.right_mm = laser.distance_mm[1];
-        in.rear_mm = laser.distance_mm[2];
-        in.front_mm = laser.distance_mm[3];
+        in.left_mm = laser.accepted_mm[0];
+        in.right_mm = laser.accepted_mm[1];
+        in.rear_mm = laser.accepted_mm[2];
+        in.front_mm = laser.accepted_mm[3];
+        in.laser_stale_mask = (uint8_t)(~laser.valid_mask & 15u);
+        in.laser_updated_mask = laser.updated_mask;
         in.laser_frame = laser.frame_count;
         in.laser_age_ms = HAL_GetTick() - laser.last_rx_ms;
     }
@@ -365,7 +364,7 @@ static void commands(uint32_t now, StraightInput in) {
                 ok = false;
                 test.result = "HOST_NOT_SELECTED";
             } else if(control_source.manual_armed &&
-                      (!strncmp(line, "SPEED ", 6u) || !strncmp(line, "EDGE ", 5u))) {
+                      (!strncmp(line, "SPEED ", 6u) || !strncmp(line, "ACCEL ", 6u) || !strncmp(line, "EDGE ", 5u))) {
                 ok = false;
                 test.result = "MANUAL_ACTIVE";
             } else ok = straight_command(&test, line, now, in);
@@ -373,11 +372,11 @@ static void commands(uint32_t now, StraightInput in) {
                 const ImuAngle a = imu.get_angle();
                 chassis_yaw_hold_set_target(a.yaw);
             }
-            const char* command_name = !strncmp(line, "SPEED ", 6u) ? "SPEED" : !strncmp(line, "EDGE ", 5u) ? "EDGE" :
+            const char* command_name = !strncmp(line, "SPEED ", 6u) ? "SPEED" : !strncmp(line, "ACCEL ", 6u) ? "ACCEL" : !strncmp(line, "EDGE ", 5u) ? "EDGE" :
                 !strncmp(line, "ARM", 3u) ? "ARM" : !strncmp(line, "GO ", 3u) ? "GO" : !strcmp(line, "STOP") ? "STOP" : "PING";
-            if(line[0] != 'H') log_info("TEST_ACK ok=%u phase=%u token=%lu reason=%s plan=%s target_m=%.2f body_edge_mm=%u vmax=%.2f cmd=%s",
+            if(line[0] != 'H') log_info("TEST_ACK ok=%u phase=%u token=%lu reason=%s plan=%s target_m=%.2f body_edge_mm=%u vmax=%.2f accel=%.2f cmd=%s",
                 (unsigned)ok, (unsigned)test.phase, (unsigned long)test.token, test.result,
-                straight_plan_name(test.plan), (double)test.target_m, test.body_edge_mm, (double)test.max_speed_mps, command_name);
+                straight_plan_name(test.plan), (double)test.target_m, test.body_edge_mm, (double)test.max_speed_mps, (double)test.accel_mps2, command_name);
             line_len = 0u;
         } else if(ch < 32u || ch > 126u || line_len >= sizeof(line) - 1u) {
             rx_fault = true;
@@ -398,6 +397,12 @@ static void log_control(uint32_t now) {
 static void update_control_source(uint32_t now, StraightInput in) {
     const bool was_manual = control_source.manual_armed;
     if(drive_source_update(&control_source, &rc_state, hardware_healthy(), in.stationary)) {
+        const float wheel_limit = control_source.mode == DRIVE_SOURCE_HOST ?
+            STRAIGHT_TEST_SPEED_CEILING_MPS : APP_MANUAL_MAX_LINEAR_MPS;
+        if(chassis_set_wheel_speed_limit(wheel_limit) != chassis.OK) {
+            drive_source_stop_manual(&control_source);
+            tx_fault = true;
+        }
         /* Invalidate the previous owner's task and queued bytes before the
          * next owner can write motor outputs. No task resumes on switching. */
         if(test.phase == ST_ARMED || test.phase == ST_RUNNING || test.phase == ST_STOPPING)
@@ -414,26 +419,27 @@ static void update_control_source(uint32_t now, StraightInput in) {
         chassis_yaw_hold_disable();
         stop_outputs();
         log_control(now);
-    } else if(!was_manual && control_source.manual_armed) {
-        manual_ramp_reset(&manual_ramp);
+    }
+    if(!was_manual && control_source.manual_armed) {
         manual_target = manual_velocity = (DriveVelocity){0};
         last_manual_target = now;
     }
 }
 static void apply_manual(uint32_t now, StraightInput in) {
+    (void)in;
     manual_target = drive_source_velocity(&rc_state);
-    const float dt_s = (float)(uint32_t)(now - last_manual_target) * 0.001f;
+    const uint32_t dt_ms = now - last_manual_target;
     last_manual_target = now;
     /* Free manual motion: only the sticks command rotation. HOST owns the
      * automatic heading hold used by the test programs. */
     chassis_yaw_hold_disable();
-    if(!manual_ramp_step(&manual_ramp, manual_target, in.stationary, chassis_drive_output_allowed(), dt_s)) {
+    if(dt_ms > 50u) {
         drive_source_stop_manual(&control_source);
-        straight_fault(&test, "MANUAL_RAMP_TIMING_OR_INPUT");
+        straight_fault(&test, "MANUAL_CONTROL_TIMING");
         stop_outputs();
         return;
     }
-    manual_velocity = manual_ramp.output;
+    manual_velocity = manual_target;
     if(chassis.set_velocity(manual_velocity.vx, manual_velocity.vy, manual_velocity.wz) != chassis.OK) {
         drive_source_stop_manual(&control_source);
         straight_fault(&test, "MANUAL_CONTROL");
@@ -546,6 +552,9 @@ static void log_detail(uint32_t now, StraightInput in) {
             (unsigned long)(now - laser.last_rx_ms), laser.distance_mm[0], laser.distance_mm[1],
             laser.distance_mm[2], laser.distance_mm[3], test.plan == ST_PLAN_WALL ? "RIGHT_HOLD" :
                 test.plan == ST_PLAN_APPROACH ? "FRONT_STOP" : test.plan == ST_PLAN_ROUND ? "COLLISION_GUARD" : "OBSERVE_ONLY");
+        log_info("TEST_LASER_VALID mask=0x%x age_ms=%lu,%lu,%lu,%lu max_mm=15000 updated=0x%x",
+            laser.valid_mask, (unsigned long)laser.sample_age_ms[0], (unsigned long)laser.sample_age_ms[1],
+            (unsigned long)laser.sample_age_ms[2], (unsigned long)laser.sample_age_ms[3], laser.updated_mask);
     } else if(slot == 13u) {
         log_info("TEST_TIMING t_ms=%lu control_dt_ms=%lu max_ms=%lu imu_dt_us=%lu imu_max_us=%lu imu_frames=%lu imu_errors=%lu update=%s hb_required=0",
             (unsigned long)now, (unsigned long)control_dt_ms, (unsigned long)control_dt_max_ms,
@@ -557,24 +566,27 @@ static void log_detail(uint32_t now, StraightInput in) {
             (double)drift_yaw_rate, (double)drift_gyro_rate, (double)drift_yaw_rate * 60.0);
     } else {
         if(control_source.mode == DRIVE_SOURCE_MANUAL)
-            log_info("TEST_RAMP t_ms=%lu target=%.3f,%.3f,%.3f output=%.3f,%.3f,%.3f reversing=%u",
+            log_info("TEST_RAMP t_ms=%lu target=%.3f,%.3f,%.3f output=%.3f,%.3f,%.3f reversing=0 direct=1",
                 (unsigned long)now, (double)manual_target.vx, (double)manual_target.vy, (double)manual_target.wz,
-                (double)manual_velocity.vx, (double)manual_velocity.vy, (double)manual_velocity.wz,
-                (unsigned)manual_ramp.reversing);
+                (double)manual_velocity.vx, (double)manual_velocity.vy, (double)manual_velocity.wz);
         log_control(now);
     }
 }
 static void log_plan(StraightInput in) {
-    log_info("TEST_PLAN proto=2 plan=%s leg=%s target_m=%.2f x=%.3f out=%.3f vy=%.4f right_ref_mm=%.1f laser_ok=%u body_edge_mm=%u front_target_mm=%u vmax=%.2f hb_required=0",
+    log_info("TEST_PLAN proto=2 plan=%s leg=%s target_m=%.2f x=%.3f out=%.3f vy=%.4f right_ref_mm=%.1f laser_ok=%u body_edge_mm=%u front_target_mm=%u vmax=%.2f accel=%.2f hb_required=0",
         straight_plan_name(test.plan), straight_leg_name(test.leg), (double)test.target_m,
         (double)test.distance_m, (double)test.outbound_m, (double)test.lateral_mps,
-        (double)test.right_ref_mm, (unsigned)straight_laser_ready(test.plan, in), test.body_edge_mm,
-        straight_front_target_mm(&test), (double)test.max_speed_mps);
+        (double)test.right_ref_mm, (unsigned)straight_motion_laser_ready(&test, in), test.body_edge_mm,
+        straight_front_target_mm(&test), (double)test.max_speed_mps, (double)test.accel_mps2);
+    if(test.plan == ST_PLAN_WALL)
+        log_info("TEST_WALL ref_mm=%.1f right_mm=%u filtered_mm=%.1f error_mm=%.1f vy_cmd=%.4f vy_meas=%.4f cap=0.08",
+            (double)test.right_ref_mm, in.right_mm, (double)test.right_filtered_mm,
+            (double)(test.right_ref_mm - test.right_filtered_mm), (double)test.lateral_mps, (double)in.vy_mps);
     log_info("TEST_RANGE fresh=%u age_ms=%lu left_mm=%u right_mm=%u rear_mm=%u front_mm=%u",
         (unsigned)in.laser_fresh, (unsigned long)in.laser_age_ms, in.left_mm, in.right_mm, in.rear_mm, in.front_mm);
     uint16_t guards[4];
     straight_guard_limits(&test, in, guards);
-    log_info("TEST_BRAKE left_mm=%u right_mm=%u rear_mm=%u front_mm=%u decel_mps2=0.10 delay_ms=300 active=%u",
+    log_info("TEST_BRAKE left_mm=%u right_mm=%u rear_mm=%u front_mm=%u decel_mps2=0.10 delay_ms=500 active=%u",
         guards[0], guards[1], guards[2], guards[3],
         (unsigned)(control_source.mode == DRIVE_SOURCE_HOST && test.plan != ST_PLAN_FWD));
 }
@@ -598,8 +610,8 @@ void straight_test_app_init(void) {
         return;
     }
     remote_init();
-    const ChassisYawHoldConfig heading = {.enabled = true, .kp = APP_YAW_HOLD_KP,
-        .kd = APP_YAW_HOLD_KD, .v_deadband = 0.01f, .wz_deadband = 0.0f, .wz_limit = APP_YAW_HOLD_MAX_WZ};
+    const ChassisYawHoldConfig heading = {.enabled = true, .kp = STRAIGHT_TEST_YAW_KP,
+        .kd = APP_YAW_HOLD_KD, .v_deadband = 0.01f, .wz_deadband = 0.0f, .wz_limit = STRAIGHT_TEST_YAW_MAX_WZ};
     chassis_yaw_hold_init(&heading);
     uart_register_rx_complete_callback(&huart1, received);
     uart_register_error_callback(&huart1, uart_error);
@@ -608,13 +620,14 @@ void straight_test_app_init(void) {
     stop_outputs();
     initialized = true;
     last_step = last_imu = HAL_GetTick();
-    log_info("TEST_READY mode=6 target=%.2fm default_speed=0.10 ceiling=0.50 radius=0.051 NOMINAL FWD_laser_limit=0; PING ARM GO <token> HB <token> STOP",
+    log_info("TEST_READY mode=6 target=%.2fm default_speed=0.50 accel=0.20 ceiling=2.00 radius=0.051 NOMINAL FWD_laser_limit=0; PING ARM GO <token> HB <token> STOP",
         (double)STRAIGHT_TEST_TARGET_M);
     log_info("TEST_READY imu_bias=BOOT_MEAN keep_body_static_until_ready=1 calibration_samples=2000 detail_period_ms=1600 FW_period_ms=100");
     log_info("TEST_READY remote_policy=SWD_LATCH SWD_permit=2000 SWD_stop=1000 host_vrb_required=0 manual_vrb_max=%u manual_heading_hold=0", DRIVE_MANUAL_VRB_MAX);
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
-    log_info("TEST_READY manual_ramp linear_accel=0.20 linear_decel=0.30 angular_accel=0.40 angular_decel=0.60 unverified=1 reverse_wait=wheel_stop");
+    log_info("TEST_READY manual_control=direct ramp=0");
+    log_info("TEST_READY laser_filter=MEDIAN3 window_gap_ms=200 near_bypass_mm=1100 laser_recovery_ms=5000 brake_delay_ms=500");
     log_info("TEST_READY manual_jerk linear=0.80 angular=1.60 target_lateral_budget=0.30 transient_budget_not_guaranteed=1");
 }
 void straight_test_app_loop(void) {
@@ -644,21 +657,47 @@ void straight_test_app_loop(void) {
         control_dt_ms = now - last_step;
         if(control_dt_ms > control_dt_max_ms) control_dt_max_ms = control_dt_ms;
         last_step = now;
-        if(control_source.mode == DRIVE_SOURCE_HOST) straight_step(&test, now, in);
+        if(control_source.mode == DRIVE_SOURCE_HOST) {
+            const StraightPhase before = test.phase;
+            const bool was_laser_paused = test.laser_paused;
+            const uint8_t previous_guard = test.guard_mask;
+            uint16_t guards[4];
+            straight_guard_limits(&test, in, guards);
+            straight_step(&test, now, in);
+            if(test.phase == ST_RUNNING && (was_laser_paused != test.laser_paused ||
+               (!previous_guard && test.guard_mask))) {
+                log_info("TEST_PAUSE token=%lu result=%s laser_wait=%u guard_mask=0x%x stale_mask=0x%x x=%.3f vx=%.3f",
+                    (unsigned long)test.token, test.result, (unsigned)test.laser_paused, test.guard_mask,
+                    in.laser_stale_mask, (double)test.distance_m, (double)in.vx_mps);
+                log_info("TEST_PAUSE_RANGE mm=%u,%u,%u,%u limits=%u,%u,%u,%u frame=%lu updated=0x%x",
+                    in.left_mm, in.right_mm, in.rear_mm, in.front_mm, guards[0], guards[1], guards[2], guards[3],
+                    (unsigned long)in.laser_frame, in.laser_updated_mask);
+            }
+            if(before != ST_FAULT && test.phase == ST_FAULT) {
+                log_error("TEST_FAULT token=%lu reason=%s leg=%s x=%.3f fresh=%u age_ms=%lu frame=%lu stale_mask=0x%x",
+                    (unsigned long)test.token, test.result, straight_leg_name(test.leg), (double)test.distance_m,
+                    (unsigned)in.laser_fresh, (unsigned long)in.laser_age_ms, (unsigned long)in.laser_frame, in.laser_stale_mask);
+                log_error("TEST_FAULT_RANGE left_mm=%u right_mm=%u rear_mm=%u front_mm=%u guards=%u,%u,%u,%u vx=%.3f vy=%.3f",
+                    in.left_mm, in.right_mm, in.rear_mm, in.front_mm,
+                    guards[0], guards[1], guards[2], guards[3], (double)in.vx_mps, (double)in.vy_mps);
+            }
+        }
+        const bool host_active = control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING &&
+            test.leg != ST_LEG_WAIT && !test.guard_mask && !test.laser_paused;
+        const bool host_paused = control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && !host_active;
         if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) apply_manual(now, in);
-        else if(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT) {
+        else if(host_active) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
             const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, (float)control_dt_ms * 0.001f);
             if(chassis.set_velocity(test.speed_mps, test.lateral_mps, wz) != chassis.OK || chassis.process() != chassis.OK)
                 straight_fault(&test, "CHASSIS_CONTROL");
-        } else if(!(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg == ST_LEG_WAIT)) {
+        } else if(!host_paused) {
             chassis_yaw_hold_disable();
         }
-        /* WAIT stops the wheels below while retaining GO's heading reference
-         * for the return leg. A cancelled task or owner change still disables it. */
+        /* WAIT and guard pauses stop outputs while retaining GO's heading. */
         if(!(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) &&
-           !(control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && test.leg != ST_LEG_WAIT)) {
+           !host_active) {
             manual_velocity = (DriveVelocity){0};
             stop_outputs();
         }
@@ -692,13 +731,24 @@ void straight_test_app_loop(void) {
             control_source.mode == DRIVE_SOURCE_HOST ? first_blocker() : "HOST_NOT_SELECTED", test.result,
             drive_source_name(control_source.mode));
         /* Dedicated numeric frame; human-readable status is not a FireWater channel. */
-        const LogVofaValue wave[4] = {
+        LaserSnapshot laser = {0};
+        (void)laser_get_snapshot(&laser);
+        const LogVofaValue wave[13] = {
             log_vofa_value_f64((double)a.yaw * 57.295779513),
             log_vofa_value_f64((double)chassis_yaw_hold_get_yaw_ref() * 57.295779513),
             log_vofa_value_f64((double)chassis_yaw_hold_get_yaw_error() * 57.295779513),
             log_vofa_value_f64((double)chassis_yaw_hold_get_output_wz()),
+            log_vofa_value_u64(laser.distance_mm[0]),
+            log_vofa_value_u64(laser.distance_mm[1]),
+            log_vofa_value_u64(laser.distance_mm[2]),
+            log_vofa_value_u64(laser.distance_mm[3]),
+            log_vofa_value_u64(laser.accepted_mm[0]),
+            log_vofa_value_u64(laser.accepted_mm[1]),
+            log_vofa_value_u64(laser.accepted_mm[2]),
+            log_vofa_value_u64(laser.accepted_mm[3]),
+            log_vofa_value_u64(laser.valid_mask),
         };
-        (void)log_vofa_write("FW", 4u, wave);
+        (void)log_vofa_write("FW", 13u, wave);
         log_detail(now, in);
     }
     if(now - last_plan_log >= 200u) { last_plan_log = now; log_plan(in); }

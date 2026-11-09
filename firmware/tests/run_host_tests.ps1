@@ -36,6 +36,18 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $commissioningExe = Join-Path $outputDir 'test_commissioning.exe'
+$freshnessExe = Join-Path $outputDir 'test_input_freshness.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' '-DTEST_RX_TIME_RACE' `
+    "-I$(Join-Path $PSScriptRoot 'fakes')" `
+    "-I$(Join-Path $firmwareRoot 'src/service')" `
+    "-I$(Join-Path $firmwareRoot 'src/device')" `
+    "-I$(Join-Path $firmwareRoot 'src/platform')" `
+    "-I$(Join-Path $firmwareRoot 'src/infra')" `
+    (Join-Path $PSScriptRoot 'test_input_freshness.c') `
+    (Join-Path $firmwareRoot 'src/service/laser.c') '-o' $freshnessExe
+if ($LASTEXITCODE -ne 0) { throw 'Input freshness compilation failed.' }
+& $freshnessExe
+if ($LASTEXITCODE -ne 0) { throw 'Input freshness regression failed.' }
 $commissioningSources = @(
     (Join-Path $PSScriptRoot 'test_commissioning.c'),
     (Join-Path $firmwareRoot 'src\platform\stm32_hal_can.c'),
@@ -178,8 +190,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Straight test compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Straight test failed.' }
 $programExe = Join-Path $outputDir 'test_test_programs.exe'
 & $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $PSScriptRoot 'fakes')" `
     "-I$(Join-Path $firmwareRoot 'src\service')" `
     (Join-Path $PSScriptRoot 'test_test_programs.c') `
+    (Join-Path $firmwareRoot 'src\service\laser.c') `
     (Join-Path $firmwareRoot 'src\service\straight_test.c') '-lm' '-o' $programExe
 if ($LASTEXITCODE -ne 0) { throw 'Test programs compilation failed.' }
 & $programExe

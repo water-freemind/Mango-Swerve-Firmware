@@ -239,6 +239,8 @@ ChassisErrorCode chassis_init(const ChassisConfig* config);
  * @return ChassisErrorCode 状态码
  */
 ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz);
+/* Main-loop ownership handover only, bounded by the configured wheel limit. */
+ChassisErrorCode chassis_set_wheel_speed_limit(float max_linear_mps);
 
 /**
  * @brief 设置是否启用先转向到位再驱动模式

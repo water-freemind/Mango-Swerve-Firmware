@@ -33,7 +33,7 @@ public static class MangoStraightConsole {
     public static bool ForwardWave(UdpClient udp, int port, string line) {
         if (port == 0 || !line.StartsWith("FW:", StringComparison.Ordinal)) return false;
         string[] fields = line.Substring(3).Trim().Split(',');
-        if (fields.Length != 4) return false;
+        if (fields.Length != 4 && fields.Length != 13) return false;
         foreach (string field in fields) {
             double value;
             if (!Double.TryParse(field, NumberStyles.Float, CultureInfo.InvariantCulture, out value) ||
@@ -48,7 +48,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -68,11 +68,14 @@ public static class MangoStraightConsole {
         using (UdpClient wave = commandPort == 0 ? new UdpClient() :
             new UdpClient(new IPEndPoint(IPAddress.Loopback, commandPort)))
         using (StreamWriter log = new StreamWriter(logPath, false, Encoding.UTF8)) {
+            // Windows reports ICMP port-unreachable as a socket reset when
+            // VOFA disconnects. Keep the UDP listener alive for its reconnect.
+            wave.Client.IOControl((IOControlCode)unchecked((int)0x9800000C), new byte[4], null);
             serial.Handshake = Handshake.None;
             serial.DtrEnable = false; serial.RtsEnable = false;
             serial.WriteTimeout = 100; serial.ReadTimeout = 100;
             serial.NewLine = "\n";
-            serial.Open(); log.AutoFlush = true;
+            log.AutoFlush = true;
             uint token = 0;
             StringBuilder input = new StringBuilder();
             StringBuilder pending = new StringBuilder();
@@ -83,8 +86,22 @@ public static class MangoStraightConsole {
                 Console.WriteLine(message); log.WriteLine(message);
                 try { ForwardStatus(wave, wavePort, message); } catch (SocketException) { }
             };
-            VofaTestSession panel = new VofaTestSession(allowMotion,
-                delegate(string command) { serial.WriteLine(command); log.WriteLine("HOST_TX " + command); }, panelLog);
+            long nextSerialTry = 0, lastProtocol = 0;
+            VofaTestSession panel = null;
+            Action<string> disconnectSerial = delegate(string reason) {
+                panel.TransportReset(); pending.Clear();
+                try { serial.Close(); } catch (IOException) { }
+                nextSerialTry = clock.ElapsedMilliseconds + 1000;
+                panelLog("uart_online=0 retry_ms=1000 reason=" + reason);
+            };
+            panel = new VofaTestSession(allowMotion, delegate(string command) {
+                if (!serial.IsOpen) { panelLog("rejected=UART_OFFLINE command=" + command); return; }
+                try { serial.WriteLine(command); log.WriteLine("HOST_TX " + command); }
+                catch (Exception ex) {
+                    if (!(ex is IOException || ex is InvalidOperationException || ex is UnauthorizedAccessException || ex is TimeoutException)) throw;
+                    disconnectSerial(ex.GetType().Name);
+                }
+            }, panelLog);
             if (commandPort != 0) panelLog("ready=1 command_port=" + commandPort + " wave_port=" + wavePort +
                 " motion_allowed=" + (allowMotion ? "1" : "0") + " auto_start=0");
             if (commandPort != 0) panelLog("log_preset=DEFAULT STATUS_and_PLAN_max_hz=1 wave=0 ACK_and_snapshots=ALWAYS background_log=FULL");
@@ -99,12 +116,26 @@ public static class MangoStraightConsole {
                         if (closed) break;
                         nextAppCheck = clock.ElapsedMilliseconds + 500;
                     }
-                    string rx = serial.ReadExisting();
+                    string rx = "";
+                    try {
+                        if (!serial.IsOpen && clock.ElapsedMilliseconds >= nextSerialTry) {
+                            serial.BaudRate = baud;
+                            serial.Open(); serial.DiscardInBuffer();
+                            pending.Clear(); panel.TransportReset(); lastProtocol = clock.ElapsedMilliseconds;
+                            panelLog("uart_open=1 baud=" + baud + " waiting_for_protocol=1");
+                        }
+                        if (serial.IsOpen) rx = serial.ReadExisting();
+                    } catch (Exception ex) {
+                        if (!(ex is IOException || ex is InvalidOperationException || ex is UnauthorizedAccessException || ex is TimeoutException)) throw;
+                        disconnectSerial(ex.GetType().Name);
+                    }
                     if (rx.Length != 0) {
                         Console.Write(rx); log.Write(rx); pending.Append(rx);
                         string text = pending.ToString(); int end;
                         while ((end = text.IndexOf('\n')) >= 0) {
                             string line = text.Substring(0, end); text = text.Substring(end + 1);
+                            if (Regex.IsMatch(line, @"TEST_STATUS phase=\d+ token=\d+ healthy=[01] stopped=[01]"))
+                                lastProtocol = clock.ElapsedMilliseconds;
                             panel.Observe(line, clock.ElapsedMilliseconds);
                             try {
                                 if (line.StartsWith("FW:", StringComparison.Ordinal)) {
@@ -117,6 +148,8 @@ public static class MangoStraightConsole {
                         }
                         pending.Clear(); pending.Append(text.Length > 2048 ? "" : text);
                     }
+                    if (serial.IsOpen && clock.ElapsedMilliseconds - lastProtocol > 5000)
+                        disconnectSerial("NO_VALID_STATUS_5S");
                     if (commandPort != 0) {
                         ReceivePanelCommands(wave, panel, clock.ElapsedMilliseconds);
                         panel.Tick(clock.ElapsedMilliseconds);
@@ -183,7 +216,9 @@ public sealed class VofaTestSession {
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
-        if (category == "CONTROL" || category == "RAMP") category = "HEALTH";
+        if (category == "CONTROL" || category == "RAMP" || category == "WALL") category = "HEALTH";
+        if (category == "PAUSE" || category == "PAUSE_RANGE") return true;
+        if (category == "LASER_VALID") category = "LASER";
         if (tag.Groups[1].Value != "INFO" || category == "ACK" || category == "READY" || category == "INIT_FAILED") return true;
         if (category == "CAN") {
             Match bus = Regex.Match(line, @"\bbus=([123])\b");
@@ -199,6 +234,11 @@ public sealed class VofaTestSession {
         return true;
     }
     private void Clear() { awaitingArm = armed = awaitingGo = running = false; activeToken = 0; }
+    public void TransportReset() {
+        Clear(); lastStatus = lastPlan = lastRange = -10000;
+        firmwareV2 = firmwareOneShot = rangeFresh = haveYaw = marking = false;
+        controlMode = "UNKNOWN"; cache.Clear(); ranges.Clear();
+    }
     private bool SelectionMatches(string line) {
         if (!firmwareV2 && selectedPlan == "FWD" && selectedTarget == 1) return true;
         Match plan = Regex.Match(line, @"\bplan=(FWD|ROUND|WALL|APPROACH)\b");
@@ -218,9 +258,7 @@ public sealed class VofaTestSession {
             cache[key] = line;
         }
         if (line.Contains("TEST_READY")) {
-            Clear(); lastStatus = lastPlan = lastRange = -10000;
-            firmwareV2 = firmwareOneShot = rangeFresh = haveYaw = marking = false;
-            controlMode = "UNKNOWN"; cache.Clear();
+            TransportReset();
         }
         Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
         if (planStatus.Success) {
@@ -266,7 +304,7 @@ public sealed class VofaTestSession {
             }
         }
         Match ack = Regex.Match(line, @"TEST_ACK ok=(\d+) phase=(\d+) token=(\d+)");
-        bool sessionAck = ack.Success && !Regex.IsMatch(line, @"\bcmd=(SPEED|EDGE)\b");
+        bool sessionAck = ack.Success && !Regex.IsMatch(line, @"\bcmd=(SPEED|ACCEL|EDGE)\b");
         if (sessionAck && awaitingArm) {
             awaitingArm = false;
             if (ack.Groups[1].Value == "1" && ack.Groups[2].Value == "1" && now - armSent <= 1000 &&
@@ -283,7 +321,7 @@ public sealed class VofaTestSession {
         if (line.StartsWith("FW:", StringComparison.Ordinal)) {
             double value;
             string[] fields = line.Substring(3).Split(',');
-            if (fields.Length == 4 && Double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out value) &&
+            if ((fields.Length == 4 || fields.Length == 13) && Double.TryParse(fields[0], NumberStyles.Float, CultureInfo.InvariantCulture, out value) &&
                 !Double.IsNaN(value) && !Double.IsInfinity(value)) {
                 if (haveYaw && marking) {
                     double delta = value - yaw;
@@ -321,9 +359,9 @@ public sealed class VofaTestSession {
             string category = command.Substring(12);
             string pattern;
             switch (category) {
-                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|CONTROL|RAMP|TIMING|PLAN)$"; break;
+                case "STATE": pattern = @"^TEST_(STATUS|HEALTH|CONTROL|RAMP|WALL|TIMING|PLAN)$"; break;
                 case "IMU": pattern = @"^TEST_(IMU|IMU_RAW|IMU_BIAS|DRIFT)$"; break;
-                case "LASER": pattern = @"^TEST_(LASER|RANGE|PLAN|BRAKE)$"; break;
+                case "LASER": pattern = @"^TEST_(LASER|LASER_VALID|RANGE|PLAN|BRAKE)$"; break;
                 case "REMOTE": pattern = @"^TEST_REMOTE$"; break;
                 case "MOTORS": pattern = @"^TEST_MOTOR_"; break;
                 case "CAN": pattern = @"^TEST_CAN_"; break;
@@ -356,13 +394,19 @@ public sealed class VofaTestSession {
             if (awaitingArm || awaitingGo) return false; // ACK has no command ID; keep it unambiguous.
             tx("PING"); return true;
         }
-        Match speed = Regex.Match(command, @"^UI SPEED (0\.(?:05|08|10|20|30|50))$");
-        if (speed.Success) {
+        Match setting = Regex.Match(command, @"^UI (SPEED|ACCEL) ([0-9]+(?:\.[0-9]+)?)$");
+        if (setting.Success) {
+            string parameter = setting.Groups[1].Value;
+            string value = setting.Groups[2].Value;
+            double acceleration;
+            if (parameter == "SPEED" && !Regex.IsMatch(value, @"^(0\.(?:05|08|10|20|30|40|50|80)|1\.(?:00|20|50|80)|2\.00)$")) return false;
+            if (parameter == "ACCEL" && (!Double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out acceleration) ||
+                acceleration < 0.05 || acceleration > 0.50)) return false;
             if (!firmwareV2 || now - lastPlan > 1000 || now - lastStatus > 500 || !stopped ||
                 phaseValue == 1 || phaseValue == 2 || phaseValue == 3 || awaitingArm || armed || awaitingGo || running) {
-                report("rejected=SPEED_NEEDS_IDLE_PROTOCOL_2"); return false;
+                report("rejected=" + parameter + "_NEEDS_IDLE_PROTOCOL_2"); return false;
             }
-            tx("SPEED " + speed.Groups[1].Value); report("speed_requested=" + speed.Groups[1].Value + " confirm_device_ACK=1");
+            tx(parameter + " " + value); report(parameter.ToLowerInvariant() + "_requested=" + value + " confirm_device_ACK=1");
             return true;
         }
         Match edge = Regex.Match(command, @"^UI EDGE (FRONT|RIGHT|REAR|LEFT)$");

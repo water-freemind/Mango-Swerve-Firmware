@@ -14,6 +14,9 @@ static void start(StraightTest* t, uint32_t now) {
 int main(void) {
     StraightTest t;
     straight_init(&t, 0u);
+    assert(t.max_speed_mps == 0.50f && t.accel_mps2 == 0.20f);
+    assert(straight_command(&t, "SPEED 0.10", 0u, good));
+    assert(straight_command(&t, "ACCEL 0.08", 0u, good));
     assert(!straight_command(&t, "GO 0", 0u, good));
     assert(!straight_command(&t, "GO -1", 0u, good));
     assert(straight_command(&t, "PING", 0u, good) && t.phase == ST_IDLE);
@@ -63,8 +66,18 @@ int main(void) {
     assert(t.phase == ST_FAULT && t.speed_mps == 0.0f);
     start(&t, 50000u);
     moving.vx_mps = -0.10f;
-    straight_step(&t, 50010u, moving);
+    for(uint32_t tick = 50010u; tick <= 50110u; tick += 10u) straight_step(&t, tick, moving);
     assert(t.phase == ST_FAULT);
+    start(&t, 51000u);
+    moving.vx_mps = -0.031f;
+    straight_step(&t, 51010u, moving);
+    assert(t.phase == ST_RUNNING);
+    moving.vx_mps = 0.0f;
+    straight_step(&t, 51020u, moving);
+    assert(t.phase == ST_RUNNING && !t.wrong_direction_timing);
+    assert(straight_command(&t, "STOP", 51030u, good));
+    for(uint32_t tick = 51040u; tick <= 51250u; tick += 10u) straight_step(&t, tick, good);
+    assert(t.phase == ST_DONE);
     start(&t, 60000u);
     moving.vx_mps = NAN;
     straight_step(&t, 60010u, moving);
