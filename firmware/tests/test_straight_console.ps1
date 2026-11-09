@@ -17,11 +17,16 @@ try {
     $peer = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
     $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
     if ($actual -cne "FW: -7.7, -7.6, 0.1, 0.003`n") { throw 'FireWater payload changed' }
+    $laserWave = 'FW: -7.7,-7.6,0.1,0.003,3800,460,65127,1320,3800,460,3840,1320,11'
+    if (![MangoStraightConsole]::ForwardWave($sender, $port, $laserWave)) { throw 'Laser wave rejected' }
+    $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
+    if ($actual -cne ($laserWave + "`n")) { throw 'Laser channels changed in transit' }
+    if ([MangoStraightConsole]::ForwardWave($sender, $port, $laserWave.Replace('65127','NaN'))) { throw 'Nonfinite laser wave accepted' }
     $status = '[INFO] TEST_STATUS phase=0 healthy=0 stopped=1 cmd=0.000000 result=IDLE'
     if (![MangoStraightConsole]::ForwardStatus($sender, $port, ([char]27 + '[94m' + $status + [char]27 + "[0m`r"))) { throw 'Status log rejected' }
     $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
     if ($actual -cne ($status + "`n")) { throw 'Status log content changed' }
-    foreach ($tag in @('HEALTH','CONTROL','RAMP','REMOTE','IMU','IMU_RAW','IMU_BIAS','MOTOR','CAN','LASER','TIMING','DRIFT','PLAN','RANGE','BRAKE')) {
+    foreach ($tag in @('HEALTH','CONTROL','RAMP','REMOTE','IMU','IMU_RAW','IMU_BIAS','MOTOR','CAN','LASER','LASER_VALID','WALL','PAUSE','PAUSE_RANGE','FAULT','FAULT_RANGE','TIMING','DRIFT','PLAN','RANGE','BRAKE')) {
         $detail = '[INFO] TEST_' + $tag + ' t_ms=1234 value=1'
         if (![MangoStraightConsole]::ForwardStatus($sender, $port, $detail)) { throw "Detail rejected $tag" }
         $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))

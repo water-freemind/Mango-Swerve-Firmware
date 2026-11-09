@@ -20,6 +20,25 @@ int main(void) {
     r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
     drive_source_update(&s, &r, true, true);
     assert(s.release_seen && !s.manual_armed);
+    /* SWD off/on is repeatable even if feedback and VRB become ready later. */
+    for(unsigned cycle = 0; cycle < 3u; ++cycle) {
+        r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
+        drive_source_update(&s, &r, false, true);
+        assert(s.release_seen && !s.manual_armed);
+        r.rc_data.channel[REMOTE_CH_SWD] = 2000u; r.manual_request = true;
+        r.rc_data.channel[REMOTE_CH_VRB] = 1500u;
+        drive_source_update(&s, &r, false, true);
+        assert(s.release_seen && !s.manual_armed);
+        drive_source_update(&s, &r, true, true);
+        assert(s.release_seen && !s.manual_armed);
+        r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
+        drive_source_update(&s, &r, true, false);
+        assert(!s.manual_armed);
+        drive_source_update(&s, &r, true, true);
+        assert(s.manual_armed);
+    }
+    r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
+    drive_source_update(&s, &r, true, true);
     r.rc_data.channel[REMOTE_CH_SWD] = 2000u; r.manual_request = true;
     r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 2000u;
     drive_source_update(&s, &r, true, true);
@@ -29,6 +48,35 @@ int main(void) {
     assert(!s.manual_armed); /* Must stop the previous owner's wheels first. */
     drive_source_update(&s, &r, true, true);
     assert(s.manual_armed);
+    /* Normal SWC handovers keep SWD confirmation, but stop the old owner and
+     * wait for neutral sticks and stationary wheels before manual takeover. */
+    r.rc_data.channel[REMOTE_CH_SWC] = 1500u;
+    assert(drive_source_update(&s, &r, true, false));
+    assert(s.mode == DRIVE_SOURCE_HOST && !s.manual_armed && s.release_seen);
+    r.rc_data.channel[REMOTE_CH_SWC] = 1750u;
+    assert(drive_source_update(&s, &r, true, false));
+    assert(s.mode == DRIVE_SOURCE_STOP && !s.manual_armed && s.release_seen);
+    r.rc_data.channel[REMOTE_CH_SWC] = 2000u;
+    r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 2000u;
+    assert(drive_source_update(&s, &r, true, true));
+    assert(!s.manual_armed && s.release_seen);
+    r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 1500u;
+    drive_source_update(&s, &r, true, false);
+    assert(!s.manual_armed && s.release_seen);
+    drive_source_update(&s, &r, true, true);
+    assert(s.manual_armed);
+    r.rc_data.channel[REMOTE_CH_SWC] = 1500u;
+    drive_source_update(&s, &r, true, true);
+    r.rc_data.channel[REMOTE_CH_SWC] = 2000u;
+    assert(drive_source_update(&s, &r, true, true) && s.manual_armed);
+    /* SWD can be released in HOST before selecting MANUAL. */
+    r.rc_data.channel[REMOTE_CH_SWC] = 1500u;
+    r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
+    drive_source_update(&s, &r, true, true);
+    r.rc_data.channel[REMOTE_CH_SWD] = 2000u; r.manual_request = true;
+    drive_source_update(&s, &r, true, true);
+    r.rc_data.channel[REMOTE_CH_SWC] = 2000u;
+    assert(drive_source_update(&s, &r, true, true) && s.manual_armed);
     r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 2000u;
     drive_source_update(&s, &r, true, false);
     assert(s.manual_armed); /* Moving sticks are valid after manual enable. */
@@ -44,14 +92,19 @@ int main(void) {
         assert(v.vy < 0.0f && fabsf(v.wz + angular[i]) < 0.00001f);
         r.rc_data.channel[REMOTE_CH_RIGHT_X] = r.rc_data.channel[REMOTE_CH_LEFT_X] = 1500u;
     }
-    /* Inclusive threshold, stop while moving, and no automatic restart when
-     * the spring-return wheel is pressed again with SWD still enabled. */
+    /* VRB release stops while moving. Re-press cannot resume a deflected stick,
+     * and must wait for centred sticks and a stationary chassis. */
     r.rc_data.channel[REMOTE_CH_VRB] = 1251u;
     drive_source_update(&s, &r, true, false);
-    assert(s.mode == DRIVE_SOURCE_MANUAL && !s.manual_armed && !s.release_seen);
+    assert(s.mode == DRIVE_SOURCE_MANUAL && !s.manual_armed && s.release_seen);
     r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
     drive_source_update(&s, &r, true, true);
     assert(!s.manual_armed);
+    r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 1500u;
+    drive_source_update(&s, &r, true, false);
+    assert(!s.manual_armed);
+    drive_source_update(&s, &r, true, true);
+    assert(s.manual_armed);
     const uint16_t vrb_values[] = {1000u, 1249u, 1250u, 1251u, 1500u, 2000u};
     for(unsigned i = 0; i < sizeof(vrb_values) / sizeof(vrb_values[0]); ++i) {
         r.rc_data.channel[REMOTE_CH_VRB] = vrb_values[i];
@@ -90,6 +143,6 @@ int main(void) {
     r.rc_data.channel[REMOTE_CH_SWC] = 1000u;
     drive_source_update(&s, &r, true, true);
     assert(s.mode == DRIVE_SOURCE_STOP && !s.manual_armed);
-    puts("DRIVE_SOURCE_TEST_OK (exclusive SWC ownership, manual VRB<=1250 boundary and re-arm, SWD re-enable, centred/stopped handover, fault/RC loss, manual gears)");
+    puts("DRIVE_SOURCE_TEST_OK (exclusive SWC ownership, preserved SWD confirmation across handovers, manual VRB<=1250 boundary and re-arm, centred/stopped handover, fault/RC loss, manual gears)");
     return 0;
 }

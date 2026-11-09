@@ -28,17 +28,33 @@ bool drive_source_manual_vrb_ok(const RemoteState* r) {
 bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, bool stationary) {
     const DriveSourceMode mode = drive_source_requested(r);
     const bool changed = s->mode != mode;
-    if(changed) { s->mode = mode; drive_source_stop_manual(s); }
-    if(!r->online || !healthy) { drive_source_stop_manual(s); return changed; }
+    const bool was_armed = s->manual_armed;
+    if(changed) {
+        s->mode = mode;
+        s->manual_armed = false;
+    }
+    if(!r->online) { drive_source_stop_manual(s); return changed; }
     if(r->rc_data.channel[REMOTE_CH_SWD] == REMOTE_SW_HIGH) {
         s->manual_armed = false;
         s->release_seen = true;
         return changed;
     }
-    if(mode != DRIVE_SOURCE_MANUAL || !r->manual_request ||
-       r->rc_data.channel[REMOTE_CH_VRA] <= REMOTE_VR_LOW_THRESHOLD ||
-       !drive_source_manual_vrb_ok(r)) {
+    if(!healthy) {
+        if(was_armed) drive_source_stop_manual(s);
+        return changed;
+    }
+    if(!r->manual_request || r->manual_source != REMOTE_MANUAL_SOURCE_CHASSIS ||
+       r->rc_data.channel[REMOTE_CH_VRA] <= REMOTE_VR_LOW_THRESHOLD) {
         drive_source_stop_manual(s);
+        return changed;
+    }
+    /* Keep the observed SWD release across SWC handovers, including intermediate
+     * switch positions. Each new manual owner still waits for centre and stop. */
+    if(mode != DRIVE_SOURCE_MANUAL) return changed;
+    if(!drive_source_manual_vrb_ok(r)) {
+        /* Release stops motion immediately. Keep SWD confirmation so a new
+         * press can re-enable only after neutral sticks and stationary wheels. */
+        s->manual_armed = false;
         return changed;
     }
     if(!s->manual_armed && s->release_seen && stationary && drive_source_centered(r)) s->manual_armed = true;

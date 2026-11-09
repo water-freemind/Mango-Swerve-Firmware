@@ -243,14 +243,13 @@ bool ibus_get_data(FsIa10bData* out) {
 }
 
 bool ibus_is_online(uint32_t timeout_ms) {
-    uint32_t elapsed;
-
-    if(!s_data.valid) {
-        return false;
-    }
-
-    elapsed = HAL_GetTick() - s_data.last_update_ms;
-    return elapsed <= timeout_ms;
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    const bool valid = s_data.valid;
+    const uint32_t last_update_ms = s_data.last_update_ms;
+    __set_PRIMASK(primask);
+    /* Read time after the copied stamp, even if a new RX arrives meanwhile. */
+    return valid && (uint32_t)(HAL_GetTick() - last_update_ms) <= timeout_ms;
 }
 
 uint16_t ibus_get_channel(uint8_t index) {

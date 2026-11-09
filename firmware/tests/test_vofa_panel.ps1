@@ -20,6 +20,10 @@ $static.Observe('FW: -179,0,0,0', 20)
 $static.Observe('FW: -178,0,0,0', 30)
 Assert ($static.Command('UI MARK END', 40)) 'Record end rejected'
 Assert ($messages[-1].Contains('delta_yaw_deg=3.000000')) 'Angle wrapping corrupted the rotation record'
+Assert ($static.Command('UI MARK ROTATE_BEGIN', 41)) 'Extended wave record begin rejected'
+$static.Observe('FW: -177,0,0,0,3800,460,65127,1320,3800,460,3840,1320,11', 42)
+Assert ($static.Command('UI MARK END', 43)) 'Extended wave record end rejected'
+Assert ($messages[-1].Contains('delta_yaw_deg=1.000000')) 'Laser channels broke yaw rotation record'
 Assert (!$static.Command("UI ARM`nUI GO", 50)) 'Batch command accepted'
 Assert (!$static.Command('GO 1', 60)) 'Raw device command accepted over UDP'
 Assert (!$static.Command('UI SNAPSHOT UNKNOWN', 70)) 'Unknown snapshot accepted'
@@ -105,6 +109,15 @@ $motion.Observe($idle, 3050)
 $count = $tx.Count
 $motion.Tick(3060)
 Assert ($tx.Count -eq $count) 'Idle-after-reset kept renewing old heartbeats'
+$motion.Observe($idle, 3100)
+$motion.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',3100)
+Assert ($motion.Command('UI ARM',3101)) 'Transport reset setup ARM failed'
+$motion.Observe('[INFO] TEST_ACK ok=1 phase=1 token=42 reason=ARMED plan=FWD target_m=1.00',3110)
+$motion.TransportReset()
+$count = $tx.Count
+Assert (!$motion.Command('UI GO',3120)) 'Serial reconnect retained old ARM token'
+Assert (!$motion.Command('UI ARM',3121)) 'Serial reconnect retained stale device readiness'
+Assert ($tx.Count -eq $count) 'Serial reconnect emitted a motion command'
 
 # A queued DONE/FAULT status can arrive after sending ARM but before its ACK.
 # It belongs to the previous attempt and must not erase the pending transaction.
@@ -164,7 +177,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 78) 'Expected 78 named panel commands'
+Assert ($items.Count -eq 81) 'Expected 81 named panel commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -176,7 +189,7 @@ foreach ($item in $items) {
     $command = [Text.Encoding]::ASCII.GetString($bytes)
     Assert (!$command.Contains('%') -and !$command.Contains('\n')) 'Unresolved parameter or literal escape'
     $accepted = $static.Command($command, 3010)
-    if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
+    if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED|ACCEL)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
 }
 Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
 $messages.Clear()
@@ -235,6 +248,27 @@ Assert ($tx[-1] -eq 'SPEED 0.08') 'Wrong speed preset sent'
 Assert ($config.Command('UI SPEED 0.50',3)) 'Fast speed preset rejected'
 Assert ($tx[-1] -eq 'SPEED 0.50') 'Fast speed preset changed'
 Assert (!$config.Command('UI SPEED 0.90',3)) 'Unlisted speed accepted'
+foreach ($preset in @('0.50','1.00','1.50','1.80','2.00')) {
+    Assert ($config.Command("UI SPEED $preset",3)) "New speed preset rejected: $preset"
+    Assert ($tx[-1] -eq "SPEED $preset") 'Speed preset changed in bridge'
+}
+$panelFile = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '../vofa/vofa+.cmds.json') | ConvertFrom-Json
+$buttons = ($panelFile.ctx.subCmds | Where-Object name -like '08 *').subCmds
+$speedButtons = @($buttons | Where-Object cmd_hex -like '55 49 20 53 50 45 45 44 *')
+Assert ($speedButtons.Count -eq 5) 'Five speed buttons expected'
+$expectedPresets = @('0.50','1.00','1.50','1.80','2.00')
+for ($i = 0; $i -lt 5; ++$i) {
+    $decoded = [Text.Encoding]::ASCII.GetString([byte[]]($speedButtons[$i].cmd_hex.Split(' ') | ForEach-Object {[Convert]::ToByte($_,16)}))
+    Assert ($decoded -eq "UI SPEED $($expectedPresets[$i])`n") 'Speed button bytes do not match label'
+}
+foreach ($accel in @('0.10','0.20','0.30','0.50')) {
+    Assert ($config.Command("UI ACCEL $accel",3)) 'Stopped acceleration setting rejected'
+    Assert ($tx[-1] -eq "ACCEL $accel") 'Acceleration value changed in bridge'
+}
+foreach ($badAccel in @('UI ACCEL 0','UI ACCEL 0.51','UI ACCEL NaN','UI ACCEL -0.1',"UI ACCEL 0.2`nUI GO")) {
+    Assert (!$config.Command($badAccel,3)) 'Invalid acceleration accepted'
+}
+Assert (@($buttons | Where-Object cmd_hex -like '55 49 20 41 43 43 45 4C *').Count -eq 4) 'Four acceleration buttons expected'
 Assert (!$config.Command('UI ARM ROUND 1',4)) 'Static launcher permitted new motion'
 Assert (!$config.Command('UI EDGE LEFT',601)) 'Stale contact sample accepted'
 
@@ -299,4 +333,4 @@ try {
     Assert ($reply -eq "[INFO] TEST_PANEL stop_requested=1`n") 'UDP reply bytes changed'
     Assert ($peer.Port -eq $server.Client.LocalEndPoint.Port) 'Replies did not come from the command socket'
 } finally { $server.Dispose(); $client.Dispose() }
-'VOFA_PANEL_TEST_OK (78 commands, static TRACE capture and quiet export replies, invalid capture rejection, 1/2/4m plans, fast speeds, matching ACK/GO, no HB or stale-status stop, mode switch isolation, edge/speed locks, detailed log filters, legacy/static gates, UDP)'
+'VOFA_PANEL_TEST_OK (81 commands, adjustable acceleration and five speeds, static TRACE capture, matching ACK/GO, mode isolation, parameter locks and UDP)'

@@ -11,7 +11,7 @@ int main(void) {
         /* Literal golden values protect the original mode-specific behavior. */
         CHECK(fabsf(p->model.length-.26572986916f)<1e-8f && fabsf(p->model.width-.26572986916f)<1e-8f);
         CHECK(fabsf(p->model.wheel_radius-(mode==6?.051f:.035276f))<1e-8f);
-        CHECK(p->model.max_wheel_linear_speed==(mode==6?1.5f:2.0f));
+        CHECK(p->model.max_wheel_linear_speed==2.0f);
         CHECK(p->wheel_drive_ratio==1.0f);
         CHECK(p->span_source==CHASSIS_DIMENSION_LEGACY);
         CHECK(p->radius_source==(mode==6?CHASSIS_DIMENSION_USER_NOMINAL:CHASSIS_DIMENSION_LEGACY));

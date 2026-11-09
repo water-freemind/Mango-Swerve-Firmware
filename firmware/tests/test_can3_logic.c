@@ -149,12 +149,71 @@ static void test_laser_tick_wraparound(void) {
     assert(snapshot.distance_mm[0] == 100u && snapshot.distance_mm[3] == 256u);
 }
 
+static void test_laser_accepted_samples(void) {
+    const uint8_t valid[8] = {0x1D, 0x59, 0x3A, 0x98, 0x03, 0xE8, 0x01, 0x2C};
+    const uint8_t invalid[8] = {0x1D, 0x59, 0x3A, 0x99, 0xFE, 0x01, 0xFE, 0x67};
+    LaserSnapshot snapshot;
+    laser_accept_frame(valid, 9900u);
+    laser_accept_frame(valid, 10000u);
+    assert(laser_get_snapshot_at(&snapshot, 10000u));
+    assert(snapshot.valid_mask == 15u && snapshot.accepted_mm[0] == 7513u && snapshot.accepted_mm[1] == 15000u);
+    laser_accept_frame(invalid, 10050u);
+    assert(laser_get_snapshot_at(&snapshot, 10050u));
+    assert(snapshot.distance_mm[3] == 65127u && snapshot.accepted_mm[3] == 300u);
+    assert(snapshot.accepted_mm[1] == 15000u && snapshot.accepted_mm[2] == 1000u);
+    assert(snapshot.valid_mask == 15u && snapshot.sample_age_ms[3] == 50u && snapshot.updated_mask == 1u);
+    assert(laser_get_snapshot_at(&snapshot, 10301u));
+    assert(snapshot.frame_fresh && snapshot.valid_mask == 1u); /* Raw frames cannot renew rejected channels. */
+    laser_accept_frame(valid, 10302u);
+    assert(laser_get_snapshot_at(&snapshot, 10302u) && snapshot.valid_mask == 15u);
+}
+
+static void test_laser_jump_confirmation(void) {
+    uint8_t data[8] = {0x13,0x88,0x13,0x88,0x13,0x88,0x13,0x88};
+    LaserSnapshot snapshot;
+    laser_accept_frame(data, 11000u);
+    laser_accept_frame(data, 11100u);
+    data[6] = 0x07; data[7] = 0xD0; /* 5000 -> 2000 mm single spike. */
+    laser_accept_frame(data, 11200u);
+    assert(laser_get_snapshot_at(&snapshot, 11200u));
+    assert(snapshot.distance_mm[3] == 2000u && snapshot.accepted_mm[3] == 5000u);
+    assert((snapshot.updated_mask & 8u) && snapshot.sample_age_ms[3] == 0u);
+    data[6] = 0x13; data[7] = 0x24; /* Returns to 4900 mm. */
+    laser_accept_frame(data, 11300u);
+    assert(laser_get_snapshot_at(&snapshot, 11300u) && snapshot.accepted_mm[3] == 4900u);
+    laser_accept_frame(data, 11350u);
+    data[6] = 0x07; data[7] = 0xD0;
+    laser_accept_frame(data, 11400u);
+    laser_accept_frame(data, 11400u); /* Same timestamp cannot confirm a jump. */
+    assert(laser_get_snapshot_at(&snapshot, 11400u) && snapshot.accepted_mm[3] == 4900u);
+    data[6] = 0x07; data[7] = 0x9E; /* Independent 1950 mm confirms new surface. */
+    laser_accept_frame(data, 11500u);
+    assert(laser_get_snapshot_at(&snapshot, 11500u) && snapshot.accepted_mm[3] == 2000u);
+    data[6] = 0; data[7] = 109u; /* Real near returns bypass confirmation. */
+    laser_accept_frame(data, 11600u);
+    assert(laser_get_snapshot_at(&snapshot, 11600u) && snapshot.accepted_mm[3] == 109u);
+    data[6] = 0xFE; data[7] = 0x67;
+    laser_accept_frame(data, 11901u);
+    assert(laser_get_snapshot_at(&snapshot, 11901u));
+    assert(!(snapshot.valid_mask & 8u) && snapshot.accepted_mm[3] == 109u);
+    /* Continuous noisy but in-range data must not freeze an old near value. */
+    const uint16_t noisy[] = {2400u, 6300u, 3100u, 5000u, 2700u};
+    for(unsigned i = 0u; i < sizeof(noisy) / sizeof(noisy[0]); ++i) {
+        data[6] = (uint8_t)(noisy[i] >> 8u); data[7] = (uint8_t)noisy[i];
+        laser_accept_frame(data, 12100u + i * 100u);
+        assert(laser_get_snapshot_at(&snapshot, 12100u + i * 100u));
+        assert((snapshot.valid_mask & 8u) && snapshot.accepted_mm[3] >= 2400u);
+    }
+}
+
 int main(void) {
     test_laser_boot_snapshot();
     test_registry();
     test_laser_routing_and_timeout();
     test_laser_ports_and_raw_values();
     test_laser_tick_wraparound();
+    test_laser_accepted_samples();
+    test_laser_jump_confirmation();
     puts("LASER_OFFLINE_PREPARATION_TEST_OK");
     puts("CAN3_LOGIC_TEST_OK");
     return 0;

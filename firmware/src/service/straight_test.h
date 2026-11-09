@@ -11,12 +11,22 @@
 #define STRAIGHT_TEST_COLLISION_MARGIN_MM 20u
 #define STRAIGHT_TEST_FRONT_TOL_MM 10u
 #define STRAIGHT_TEST_APPROACH_TIMEOUT_MS 35000u
-#define STRAIGHT_TEST_WALL_MAX_VY_MPS 0.02f
-#define STRAIGHT_TEST_WALL_KP 0.5f
+#define STRAIGHT_TEST_WALL_MAX_VY_MPS 0.08f
+#define STRAIGHT_TEST_WALL_KP 1.0f
+#define STRAIGHT_TEST_WALL_ACCEL_MPS2 0.08f
+#define STRAIGHT_TEST_YAW_KP 1.2f
+#define STRAIGHT_TEST_YAW_MAX_WZ 0.06f
 #define STRAIGHT_TEST_TURN_DWELL_MS 2000u
-#define STRAIGHT_TEST_SPEED_CEILING_MPS 0.50f
+#define STRAIGHT_TEST_SPEED_CEILING_MPS 2.00f
+#define STRAIGHT_TEST_DEFAULT_SPEED_MPS 0.50f
+#define STRAIGHT_TEST_ACCEL_MPS2 0.20f
+#define STRAIGHT_TEST_PLAN_DECEL_MPS2 0.15f
 #define STRAIGHT_TEST_BRAKE_DECEL_MPS2 0.10f /* Initial command/braking budget; needs field validation. */
-#define STRAIGHT_TEST_SENSOR_DELAY_S 0.30f
+#define STRAIGHT_TEST_SENSOR_DELAY_S 0.50f /* 0.30 s transport/reaction plus 0.20 s jump confirmation. */
+#define STRAIGHT_TEST_LASER_RECOVERY_MS 5000u
+#define STRAIGHT_TEST_SPEED_RESERVE_MM 100u
+#define STRAIGHT_TEST_SPEED_LOOKAHEAD_S 0.20f
+#define STRAIGHT_TEST_SPEED_TRACKING_MARGIN_MPS 0.05f
 
 typedef enum { ST_IDLE, ST_ARMED, ST_RUNNING, ST_STOPPING, ST_DONE, ST_FAULT } StraightPhase;
 typedef enum { ST_PLAN_FWD, ST_PLAN_ROUND, ST_PLAN_WALL, ST_PLAN_APPROACH } StraightPlan;
@@ -28,7 +38,16 @@ typedef struct {
     uint16_t body_edge_mm;
     uint32_t token, arm_ms, heartbeat_ms, start_ms, last_ms, stopped_ms;
     uint32_t leg_start_ms, turn_ms, laser_frame;
+    uint32_t guard_frame, guard_ms;
+    uint8_t guard_mask;
+    bool guard_clear;
+    bool laser_paused;
+    bool wrong_direction_timing;
+    uint32_t wrong_direction_ms;
+    uint32_t laser_pause_ms, laser_recovery_frame;
+    uint8_t laser_pause_mask, laser_recovery_frames;
     float max_speed_mps, target_m, distance_m, speed_mps, lateral_mps, outbound_m, right_ref_mm, right_filtered_mm;
+    float accel_mps2;
     bool stopped_timing;
     const char* result;
 } StraightTest;
@@ -39,10 +58,13 @@ typedef struct {
     bool laser_fresh;
     uint16_t left_mm, right_mm, rear_mm, front_mm;
     uint32_t laser_frame, laser_age_ms;
+    uint8_t laser_stale_mask;
+    uint8_t laser_updated_mask;
 } StraightInput;
 const char* straight_plan_name(StraightPlan plan);
 const char* straight_leg_name(StraightLeg leg);
 bool straight_laser_ready(StraightPlan plan, StraightInput input);
+bool straight_motion_laser_ready(const StraightTest* test, StraightInput input);
 uint16_t straight_front_target_mm(const StraightTest* test);
 void straight_guard_limits(const StraightTest* test, StraightInput input, uint16_t limits_mm[4]);
 void straight_init(StraightTest* test, uint32_t now);

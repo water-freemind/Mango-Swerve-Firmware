@@ -676,6 +676,15 @@ ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz) {
     return ch.OK;
 }
 
+ChassisErrorCode chassis_set_wheel_speed_limit(float max_linear_mps) {
+    if(!s_chassis.initialized) return ch.NOT_INITIALIZED;
+    if(!isfinite(max_linear_mps) || max_linear_mps <= 0.0f ||
+       max_linear_mps > s_chassis.config.model.max_wheel_linear_speed) return ch.INVALID_PARAM;
+    s_chassis.kine.model.max_wheel_linear_speed = max_linear_mps;
+    chassis_sync_view();
+    return ch.OK;
+}
+
 /**
  * @brief 设置是否启用先转向到位再驱动模式
  * @param enabled true 启用，false 关闭

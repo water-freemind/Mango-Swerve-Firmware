@@ -9,10 +9,17 @@
 /* S21C connector order 1..4; physical directions are assigned after installation. */
 #define LASER_CHANNEL_COUNT 4u
 #define LASER_FRAME_TIMEOUT_MS 300u
+#define LASER_ACCEPT_MAX_MM 15000u
+#define LASER_FILTER_CONFIRM_MS 200u
+#define LASER_FILTER_NEAR_MM 1100u /* Covers the maximum configured 1000 mm body envelope plus margin. */
 
 typedef struct {
     /* Raw S21C millimetres in connector order. Range validity is established on the installed sensors. */
     uint16_t distance_mm[LASER_CHANNEL_COUNT];
+    uint16_t accepted_mm[LASER_CHANNEL_COUNT]; /* Three-sample median, with immediate near returns. */
+    uint32_t sample_age_ms[LASER_CHANNEL_COUNT];
+    uint8_t valid_mask; /* Fresh accepted samples, one bit per channel. */
+    uint8_t updated_mask; /* Accepted channels in the latest raw board frame. */
     uint32_t last_rx_ms;
     uint32_t frame_count;
     bool frame_fresh; /* Freshness of the board CAN frame, evaluated with the 300 ms timeout. */

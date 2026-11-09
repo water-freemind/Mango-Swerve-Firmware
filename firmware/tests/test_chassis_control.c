@@ -132,6 +132,14 @@ static void steering_tests(void) {
 }
 int main(void) {
     invalid_tests(); timing_tests(); steering_tests();
+    setup();
+    assert(chassis_set_wheel_speed_limit(1.0f) == chassis.OK);
+    assert(chassis.get_chassis()->kine.model.max_wheel_linear_speed == 1.0f);
+    assert(chassis_set_wheel_speed_limit(NAN) == chassis.INVALID_PARAM);
+    assert(chassis_set_wheel_speed_limit(0.0f) == chassis.INVALID_PARAM);
+    assert(chassis_set_wheel_speed_limit(2.0f) == chassis.INVALID_PARAM);
+    assert(chassis.get_chassis()->kine.model.max_wheel_linear_speed == 1.0f);
+    assert(chassis_set_wheel_speed_limit(1.5f) == chassis.OK);
     puts("CHASSIS_CONTROL_TEST_OK numeric, timing, stale-output, alignment and angle-wrap");
     return 0;
 }
