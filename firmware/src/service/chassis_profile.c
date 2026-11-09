@@ -17,7 +17,7 @@ static const ChassisProfile legacy = {
 };
 static const ChassisProfile combined = {
     .name = "NOMINAL102_LEGACY_SPAN",
-    .model = {.length = 0.16f, .width = 0.16sf,
+    .model = {.length = 0.16f, .width = 0.16f,
         .wheel_radius = STRAIGHT_TEST_WHEEL_RADIUS_M,
         .max_wheel_linear_speed = STRAIGHT_TEST_SPEED_CEILING_MPS},
     .wheel_drive_ratio = 1.0f,
