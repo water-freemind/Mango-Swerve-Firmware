@@ -7,21 +7,21 @@
  * radius is not calibrated. Never infer axis spacing from the 270mm envelope. */
 static const ChassisProfile legacy = {
     .name = "LEGACY_GEOMETRY",
-    .model = {.length = 0.26572986916f, .width = 0.26572986916f,
-        .wheel_radius = 0.035276f, .max_wheel_linear_speed = 2.0f},
+    .model = {.length = 0.16f, .width = 0.16f,
+        .wheel_radius = 0.0501f, .max_wheel_linear_speed = 2.0f},
     .wheel_drive_ratio = 1.0f,
-    .span_source = CHASSIS_DIMENSION_LEGACY,
-    .radius_source = CHASSIS_DIMENSION_LEGACY,
+    .span_source = CHASSIS_DIMENSION_USER_NOMINAL,
+    .radius_source = CHASSIS_DIMENSION_USER_NOMINAL,
     .axis_coordinates_confirmed = false,
     .loaded_radius_calibrated = false
 };
 static const ChassisProfile combined = {
     .name = "NOMINAL102_LEGACY_SPAN",
-    .model = {.length = 0.26572986916f, .width = 0.26572986916f,
+    .model = {.length = 0.16f, .width = 0.16f,
         .wheel_radius = STRAIGHT_TEST_WHEEL_RADIUS_M,
         .max_wheel_linear_speed = STRAIGHT_TEST_SPEED_CEILING_MPS},
     .wheel_drive_ratio = 1.0f,
-    .span_source = CHASSIS_DIMENSION_LEGACY,
+    .span_source = CHASSIS_DIMENSION_USER_NOMINAL,
     .radius_source = CHASSIS_DIMENSION_USER_NOMINAL,
     .axis_coordinates_confirmed = false,
     .loaded_radius_calibrated = false

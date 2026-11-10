@@ -8,13 +8,13 @@ int main(void) {
     for(unsigned mode=0;mode<7;++mode) {
         const ChassisProfile* p=chassis_profile_for_mode(mode);
         CHECK(p && steer_wheel_model_valid(&p->model));
-        /* Literal golden values protect the original mode-specific behavior. */
-        CHECK(fabsf(p->model.length-.26572986916f)<1e-8f && fabsf(p->model.width-.26572986916f)<1e-8f);
-        CHECK(fabsf(p->model.wheel_radius-(mode==6?.051f:.035276f))<1e-8f);
+        /* PR #9: full axle spans, not half-spans or the body envelope. */
+        CHECK(fabsf(p->model.length-.16f)<1e-8f && fabsf(p->model.width-.16f)<1e-8f);
+        CHECK(fabsf(p->model.wheel_radius-(mode==6?.051f:.0501f))<1e-8f);
         CHECK(p->model.max_wheel_linear_speed==2.0f);
         CHECK(p->wheel_drive_ratio==1.0f);
-        CHECK(p->span_source==CHASSIS_DIMENSION_LEGACY);
-        CHECK(p->radius_source==(mode==6?CHASSIS_DIMENSION_USER_NOMINAL:CHASSIS_DIMENSION_LEGACY));
+        CHECK(p->span_source==CHASSIS_DIMENSION_USER_NOMINAL);
+        CHECK(p->radius_source==CHASSIS_DIMENSION_USER_NOMINAL);
         CHECK(!p->axis_coordinates_confirmed && !p->loaded_radius_calibrated);
         CHECK(strcmp(p->name,mode==6?"NOMINAL102_LEGACY_SPAN":"LEGACY_GEOMETRY")==0);
     }

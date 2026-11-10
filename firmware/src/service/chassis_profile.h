@@ -4,8 +4,10 @@
 #include <stdbool.h>
 
 /* Profiles identify the values actually used today, not a completed calibration.
- * Both profiles retain historical axis spacing until four steering-axis positions
- * are supplied. Motor reduction is applied by the DJI driver, not a second time
+ * PR #9 supplies 160mm square spacing and the legacy-mode 50.1mm radius;
+ * USER_NOMINAL includes teammate configuration, not a loaded-radius calibration.
+ * Historical profile names remain stable for logging compatibility.
+ * Motor reduction is applied by the DJI driver, not a second time
  * here. Steering zero offsets remain STEERING_FORWARD_ZERO_RAD. */
 typedef enum {
     CHASSIS_DIMENSION_LEGACY = 0,
