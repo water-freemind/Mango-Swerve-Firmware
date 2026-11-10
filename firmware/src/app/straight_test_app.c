@@ -444,6 +444,13 @@ static bool hardware_healthy(void) {
     return (blockers & ~(BLOCK_RC_OFFLINE | BLOCK_RC_SWITCH | BLOCK_RC_STICK | BLOCK_UART)) == 0u;
 }
 static void log_control(uint32_t now) {
+    log_info("TEST_REMOTE t_ms=%lu event=CONTROL_CHANGE online=%u age_ms=%lu frames=%lu errors=%lu SWA=%u SWC=%u SWD=%u VRA=%u VRB=%u",
+        (unsigned long)now, (unsigned)rc_online,
+        (unsigned long)(HAL_GetTick() - rc_state.rc_data.last_update_ms),
+        (unsigned long)rc_state.rc_data.frame_count, (unsigned long)rc_state.rc_data.error_count,
+        rc_state.rc_data.channel[REMOTE_CH_SWA], rc_state.rc_data.channel[REMOTE_CH_SWC],
+        rc_state.rc_data.channel[REMOTE_CH_SWD], rc_state.rc_data.channel[REMOTE_CH_VRA],
+        rc_state.rc_data.channel[REMOTE_CH_VRB]);
     log_info("TEST_CONTROL t_ms=%lu source=%s manual_armed=%u release_seen=%u centered=%u hw_ok=%u vx=%.3f vy=%.3f wz=%.3f hb_required=0 vrb_required=%u vrb_ok=%u",
         (unsigned long)now, drive_source_name(control_source.mode), (unsigned)control_source.manual_armed,
         (unsigned)control_source.release_seen, (unsigned)rc_centered, (unsigned)hardware_healthy(),
@@ -495,6 +502,8 @@ static void apply_manual(uint32_t now, StraightInput in) {
         drive_source_stop_manual(&control_source);
         straight_fault(&test, "MANUAL_CONTROL_TIMING");
         stop_outputs();
+        log_error("TEST_REMOTE t_ms=%lu event=MANUAL_CONTROL_TIMING gap_ms=%lu",
+            (unsigned long)now,(unsigned long)dt_ms);
         return;
     }
     manual_velocity = manual_target;
@@ -811,7 +820,9 @@ void straight_test_app_loop(void) {
     } else if(!control_source.manual_armed) last_manual_process = now;
     trace_capture(in);
     trace_export(now,in);
-    if(now-last_map_log>=500u) {
+    /* Manual control shares this loop with the paced, blocking radio logger.
+     * Keep periodic autonomous snapshots out of its control-time budget. */
+    if(control_source.mode!=DRIVE_SOURCE_MANUAL && now-last_map_log>=500u) {
         last_map_log=now;
         const AutoPose p=full_map.localization.pose.pose;
         log_info("TEST_MAP_STATUS proto=1 phase=%s token=%lu segment=%u total=17 coverage=0x%x origin=%u x=%.3f y=%.3f yaw_deg=%.2f speed=%.2f reason=%s",
@@ -865,6 +876,9 @@ void straight_test_app_loop(void) {
         (void)log_vofa_write("FW", 13u, wave);
         log_detail(now, in);
     }
-    if(now - last_plan_log >= 200u) { last_plan_log = now; log_plan(in); }
+    if(control_source.mode!=DRIVE_SOURCE_MANUAL && now - last_plan_log >= 200u) {
+        last_plan_log = now;
+        log_plan(in);
+    }
 }
 #endif

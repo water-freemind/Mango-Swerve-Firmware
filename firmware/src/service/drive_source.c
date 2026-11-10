@@ -21,6 +21,7 @@ bool drive_source_centered(const RemoteState* r) {
 }
 void drive_source_stop_manual(DriveSource* s) {
     s->manual_armed = s->release_seen = false;
+    s->recovery_pending = false;
 }
 bool drive_source_manual_vrb_ok(const RemoteState* r) {
     return r->rc_data.channel[REMOTE_CH_VRB] <= DRIVE_MANUAL_VRB_MAX;
@@ -29,18 +30,24 @@ bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, boo
     const DriveSourceMode mode = drive_source_requested(r);
     const bool changed = s->mode != mode;
     const bool was_armed = s->manual_armed;
+    if(was_armed) s->recovery_pending = true;
     if(changed) {
         s->mode = mode;
         s->manual_armed = false;
     }
-    if(!r->online) { drive_source_stop_manual(s); return changed; }
-    if(r->rc_data.channel[REMOTE_CH_SWD] == REMOTE_SW_HIGH) {
+    if(!r->online) {
+        s->manual_armed = false;
+        if(!healthy && s->recovery_pending) drive_source_stop_manual(s);
+        return changed;
+    }
+    if(remote_switch_matches(r->rc_data.channel[REMOTE_CH_SWD], REMOTE_SW_HIGH)) {
         s->manual_armed = false;
         s->release_seen = true;
+        s->recovery_pending = false;
         return changed;
     }
     if(!healthy) {
-        if(was_armed) drive_source_stop_manual(s);
+        if(s->recovery_pending) drive_source_stop_manual(s);
         return changed;
     }
     if(!r->manual_request || r->manual_source != REMOTE_MANUAL_SOURCE_CHASSIS ||
@@ -58,6 +65,7 @@ bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, boo
         return changed;
     }
     if(!s->manual_armed && s->release_seen && stationary && drive_source_centered(r)) s->manual_armed = true;
+    if(s->manual_armed) s->recovery_pending = false;
     return changed;
 }
 static float normalized(uint16_t value) {

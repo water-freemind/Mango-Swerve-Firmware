@@ -46,6 +46,7 @@
  * 该间隔用于限制恢复尝试频率
  */
 #define IBUS_RX_RESTART_INTERVAL_MS 200u
+#define IBUS_RX_RETRY_INTERVAL_MS 10u
 
 static uint8_t s_rx_byte = 0u;
 
@@ -182,7 +183,7 @@ void ibus_init(void) {
     s_rx_byte = 0u;
 
     s_frame_index = 0u;
-    s_last_restart_ms = 0u;
+    s_last_restart_ms = HAL_GetTick() - IBUS_RX_RETRY_INTERVAL_MS;
     s_rx_active = false;
     s_online_logged = false;
     s_ibus_restart_pending = true;
@@ -193,36 +194,31 @@ void ibus_init(void) {
 }
 
 void ibus_maintain(void) {
-    uint32_t now = HAL_GetTick();
-
-    if(s_data.valid && (now - s_data.last_update_ms) <= IBUS_RX_RESTART_INTERVAL_MS) {
-        if(s_online_logged == false) {
-            log_info("IBUS online frame_count=%lu", (unsigned long)s_data.frame_count);
-            s_online_logged = true;
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    const uint32_t now = HAL_GetTick();
+    const bool online = s_data.valid && (uint32_t)(now - s_data.last_update_ms) <= IBUS_RX_RESTART_INTERVAL_MS;
+    const bool log_online = online && !s_online_logged;
+    const uint32_t frame_count = s_data.frame_count;
+    s_online_logged = online;
+    const uint32_t idle_ms = now - s_last_restart_ms;
+    const bool stalled = s_rx_active && !s_ibus_restart_pending && idle_ms >= IBUS_RX_RESTART_INTERVAL_MS;
+    const bool needs_restart = s_ibus_restart_pending || !s_rx_active || stalled;
+    if(needs_restart && idle_ms >= IBUS_RX_RETRY_INTERVAL_MS) {
+        s_ibus_restart_pending = false;
+        s_frame_index = 0u;
+        if(s_abort_before_restart || s_rx_active) {
+            s_rx_active = false;
+            (void)uart_abort_receive_it(&huart5);
+        }
+        s_abort_before_restart = false;
+        if(!ibus_restart_receive()) {
+            s_ibus_restart_pending = s_abort_before_restart = true;
         }
     }
-    else if(s_online_logged) {
-        s_online_logged = false;
-    }
-
-    if(s_rx_active && !s_ibus_restart_pending) {
-        return;
-    }
-
-    if(!s_ibus_restart_pending && (now - s_last_restart_ms) < IBUS_RX_RESTART_INTERVAL_MS) {
-        return;
-    }
-
-    s_ibus_restart_pending = false;
-    s_frame_index = 0u;
-    if(s_abort_before_restart) {
-        s_abort_before_restart = false;
-        (void)uart_abort_receive_it(&huart5);
-    }
-
-    if(!ibus_restart_receive()) {
-        s_ibus_restart_pending = true;
-    }
+    __set_PRIMASK(primask);
+    if(stalled) log_info("IBUS rx_stall idle_ms=%lu frame_count=%lu", (unsigned long)idle_ms, (unsigned long)frame_count);
+    if(log_online) log_info("IBUS online frame_count=%lu", (unsigned long)frame_count);
 }
 
 bool ibus_get_data(FsIa10bData* out) {
@@ -277,7 +273,7 @@ static void ibus_rx_complete_callback(void) {
     ibus_feed_byte(s_rx_byte);
 
     if(!ibus_restart_receive()) {
-        s_ibus_restart_pending = true;
+        s_ibus_restart_pending = s_abort_before_restart = true;
     }
 }
 

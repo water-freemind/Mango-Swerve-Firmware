@@ -143,6 +143,36 @@ int main(void) {
     r.rc_data.channel[REMOTE_CH_SWC] = 1000u;
     drive_source_update(&s, &r, true, true);
     assert(s.mode == DRIVE_SOURCE_STOP && !s.manual_armed);
+    r = remote(); s = (DriveSource){0};
+    r.rc_data.channel[REMOTE_CH_SWD] = 1001u; r.manual_request = false;
+    drive_source_update(&s, &r, true, true);
+    r.rc_data.channel[REMOTE_CH_SWD] = 1999u; r.manual_request = true;
+    drive_source_update(&s, &r, true, true);
+    assert(s.manual_armed);
+    for(unsigned cycle = 0u; cycle < 100u; ++cycle) {
+        r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 2000u;
+        drive_source_update(&s, &r, true, false);
+        r.online = false;
+        drive_source_update(&s, &r, true, false);
+        assert(!s.manual_armed && s.release_seen && s.recovery_pending);
+        r.online = true;
+        drive_source_update(&s, &r, true, true);
+        assert(!s.manual_armed); /* Reconnection cannot replay a held stick. */
+        r.rc_data.channel[REMOTE_CH_RIGHT_Y] = 1500u;
+        drive_source_update(&s, &r, true, false);
+        assert(!s.manual_armed);
+        r.rc_data.channel[REMOTE_CH_VRB] = 1251u;
+        drive_source_update(&s, &r, true, true);
+        assert(!s.manual_armed);
+        r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
+        drive_source_update(&s, &r, true, true);
+        assert(s.manual_armed && !s.recovery_pending);
+    }
+    r.online = false; drive_source_update(&s, &r, true, true);
+    drive_source_update(&s, &r, false, true); /* A real fault while offline revokes the old permit. */
+    assert(!s.release_seen && !s.recovery_pending);
+    r.online = true; drive_source_update(&s, &r, true, true);
+    assert(!s.manual_armed);
     puts("DRIVE_SOURCE_TEST_OK (exclusive SWC ownership, preserved SWD confirmation across handovers, manual VRB<=1250 boundary and re-arm, centred/stopped handover, fault/RC loss, manual gears)");
     return 0;
 }

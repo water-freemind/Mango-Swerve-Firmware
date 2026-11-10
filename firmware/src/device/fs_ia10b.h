@@ -44,7 +44,7 @@ void ibus_init(void);
 /**
  * @brief 维护 i.BUS 接收状态
  *
- * 遥控离线或冷启动未收到有效帧时，该函数会按限频策略重启 DMA 接收
+ * 冷启动、UART错误或200ms无接收回调时，按限频策略重启单字节中断接收
  */
 void ibus_maintain(void);
 

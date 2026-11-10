@@ -43,6 +43,7 @@ int main(void) {
     const ChassisYawHoldConfig heading = {.enabled = false};
     chassis_yaw_hold_init(&heading);
     remote_init();
+    receiver.last_update_ms = g_test_tick_ms;
     for(unsigned i = 0u; i < FS_IA10B_CHANNEL_COUNT; ++i) receiver.channel[i] = REMOTE_CENTER;
     receiver.channel[REMOTE_CH_SWA] = REMOTE_SW_HIGH;
     receiver.channel[REMOTE_CH_SWD] = REMOTE_SW_LOW;

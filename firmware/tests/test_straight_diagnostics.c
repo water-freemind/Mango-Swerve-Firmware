@@ -12,6 +12,7 @@ uint32_t g_test_tick_ms;
 static uint32_t fake_us;
 static bool fake_online = true, fake_calibrated = true, fresh_flag;
 static bool fake_can_healthy, fake_laser_ready;
+static uint32_t fake_log_cost_ms;
 static uint16_t fake_swd = 2000u, fake_vrb = 1500u;
 static uint16_t fake_swc = 1500u, fake_ry = 1500u, fake_lx = 1500u;
 static uint16_t fake_swb = 1500u, fake_rx = 1500u;
@@ -62,7 +63,9 @@ LogStatus log_error(const char* fmt, ...) { (void)fmt; return LOG_STATUS_OK; }
 LogVofaValue log_vofa_value_f64(double v) { return (LogVofaValue){.type = LOG_VOFA_VALUE_F64, .data.f64 = v}; }
 LogVofaValue log_vofa_value_u64(unsigned long long v) { return (LogVofaValue){.type = LOG_VOFA_VALUE_U64, .data.u64 = v}; }
 LogStatus log_vofa_write(const char* name, uint32_t n, const LogVofaValue* v) {
-    (void)name; (void)n; (void)v; return LOG_STATUS_OK;
+    (void)name; (void)n; (void)v;
+    g_test_tick_ms+=fake_log_cost_ms;fake_us+=fake_log_cost_ms*1000u;
+    return LOG_STATUS_OK;
 }
 static ImuStatus fake_update(void) { fresh_flag = true; return IMU_STATUS_OK; }
 static ImuAngle fake_angle(void) { return (ImuAngle){0.0f, 0.0f, fake_yaw}; }
@@ -135,6 +138,7 @@ LogStatus log_info(const char* fmt, ...) {
         fprintf(stderr, "Log exceeds production buffer (%d) %s\n", n, last_line);
         assert(0);
     }
+    g_test_tick_ms+=fake_log_cost_ms;fake_us+=fake_log_cost_ms*1000u;
     return LOG_STATUS_OK;
 }
 static void feedback(uint32_t now) {
@@ -265,6 +269,21 @@ static void check_manual_direct_scheduler(void) {
         /* Recovering permit/fault alone cannot resume a previous command. */
         fake_can_healthy = fake_online = true; fake_swc = 2000u; fake_swd = 2000u; fake_vrb = 1250u;
         loop_at(now += 10u); assert(!control_source.manual_armed);
+        if(fault == 2) {
+            fake_ry = 1500u; fake_wheel_speed = 0.5f;
+            loop_at(now += 10u); assert(!control_source.manual_armed);
+            fake_wheel_speed = 0.0f; fake_vrb = 1251u;
+            loop_at(now += 10u); assert(!control_source.manual_armed);
+            fake_vrb = 1250u;
+            loop_at(now += 10u);
+            assert(control_source.manual_armed && manual_velocity.vx == 0.0f);
+            fake_ry = 2000u; loop_at(now += 10u);
+            assert(manual_velocity.vx == 1.5f);
+            fake_online = false; loop_at(now += 1u);
+            assert(!control_source.manual_armed && manual_velocity.vx == 0.0f);
+            fake_online = true; loop_at(now += 10u);
+            assert(!control_source.manual_armed); /* Repeated outage again requires neutral. */
+        }
         fake_ry = 1500u; fake_swd = 1000u; loop_at(now += 10u);
         fake_swd = 2000u; loop_at(now += 10u);
         assert(control_source.manual_armed && manual_velocity.vx == 0);
@@ -281,6 +300,35 @@ static void check_manual_direct_scheduler(void) {
         now += 100u;
     }
     puts("MANUAL_DIRECT_SCHEDULER_TEST_OK (direct throttle, release and reverse, stick-only yaw, SWD/VRB/RC/source/CAN/timing/STOP reset and re-arm)");
+}
+static void check_manual_logging_budget(void) {
+    uint32_t now=100000u,max_block_ms=0;
+    initialized=true;tx_fault=rx_fault=false;
+    fake_can_healthy=fake_online=fake_calibrated=fake_drive_gate=true;
+    fake_swc=2000u;fake_swb=1000u;fake_swd=1000u;fake_vrb=1000u;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;
+    control_source=(DriveSource){0};
+    last_step=last_imu=last_log=last_plan_log=last_manual_process=now;
+    straight_init(&test,now);
+    loop_at(now+=10u);fake_swd=2000u;loop_at(now+=10u);
+    assert(control_source.manual_armed);
+    fake_ry=2000u;fake_log_cost_ms=6u;
+    last_map_log=now-500u;last_plan_log=now-200u;last_log=now-100u;
+    for(unsigned i=0;i<5000u;++i) {
+        loop_at(now);
+        const uint32_t blocked=g_test_tick_ms-now;
+        if(blocked>max_block_ms) max_block_ms=blocked;
+        assert(control_source.manual_armed && control_source.release_seen);
+        assert(test.phase!=ST_FAULT);
+        now=g_test_tick_ms+2u;
+    }
+    assert(max_block_ms<50u && manual_velocity.vx==.4f);
+    fake_log_cost_ms=0;
+    loop_at(now+=51u);
+    assert(!control_source.manual_armed && last_velocity.vx==0);
+    fake_swd=1000u;fake_ry=1500u;loop_at(now+=10u);
+    printf("MANUAL_LOG_BUDGET_OK iterations=5000 line_cost_ms=6 max_batch_ms=%lu real_51ms_gap_stops\n",
+        (unsigned long)max_block_ms);
 }
 static void check_trace_adapter(void) {
     chassis_trace_init(&trace);
@@ -532,6 +580,7 @@ int main(void) {
     check_manual_direct_scheduler();
     check_trace_adapter();
     check_map_adapter();
+    check_manual_logging_budget();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");
