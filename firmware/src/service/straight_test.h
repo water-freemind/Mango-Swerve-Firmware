@@ -60,6 +60,7 @@ typedef struct {
     uint32_t laser_frame, laser_age_ms;
     uint8_t laser_stale_mask;
     uint8_t laser_updated_mask;
+    uint8_t laser_predicted_mask; /* Bounded odometry fallback; never a measured update. */
 } StraightInput;
 const char* straight_plan_name(StraightPlan plan);
 const char* straight_leg_name(StraightLeg leg);

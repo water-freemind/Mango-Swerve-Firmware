@@ -5,6 +5,15 @@ $out = Join-Path $firmwareRoot 'build/host-tests'
 New-Item -ItemType Directory -Force $out | Out-Null
 $compiler = (Get-Command gcc.exe -ErrorAction Stop).Source
 $exe = Join-Path $out 'test_auto_geometry.exe'
+$mapExe = Join-Path $out 'test_full_map.exe'
+& $compiler -std=c11 -Wall -Wextra -Werror "-I$firmwareRoot/src/service" `
+    "$PSScriptRoot/test_full_map.c" "$firmwareRoot/src/service/full_map_test.c" `
+    "$firmwareRoot/src/service/field_pose.c" "$firmwareRoot/src/service/laser_prediction.c" `
+    "$firmwareRoot/src/service/auto_motion.c" "$firmwareRoot/src/service/auto_route.c" `
+    "$firmwareRoot/src/service/auto_geometry.c" -lm -o $mapExe
+if ($LASTEXITCODE -ne 0) { throw 'Full-map compilation failed' }
+& $mapExe
+if ($LASTEXITCODE -ne 0) { throw 'Full-map tests failed' }
 & $compiler -std=c11 -Wall -Wextra -Werror "-I$firmwareRoot/src/service" `
     "$PSScriptRoot/test_auto_geometry.c" "$firmwareRoot/src/service/auto_geometry.c" -lm -o $exe
 if ($LASTEXITCODE -ne 0) { throw 'Autonomous geometry compilation failed' }

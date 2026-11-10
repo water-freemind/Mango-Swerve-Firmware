@@ -1,5 +1,6 @@
 #include "straight_test.h"
 #include "laser.h"
+#include "laser_prediction.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,7 @@ const char* straight_leg_name(StraightLeg leg) {
 bool straight_laser_ready(StraightPlan plan, StraightInput in) {
     /* These are test operating windows, not sensor range specifications. */
     if(plan == ST_PLAN_FWD) return true;
+    if(in.laser_predicted_mask) return false; /* Never ARM/GO on predicted data. */
     if(!in.laser_fresh || in.laser_stale_mask || in.left_mm < 70u || in.left_mm > LASER_ACCEPT_MAX_MM ||
        in.right_mm < 70u || in.right_mm > LASER_ACCEPT_MAX_MM || in.rear_mm < 70u ||
        in.rear_mm > LASER_ACCEPT_MAX_MM || in.front_mm < 70u || in.front_mm > LASER_ACCEPT_MAX_MM) return false;
@@ -373,6 +375,11 @@ void straight_step(StraightTest* t, uint32_t now, StraightInput in) {
                     2.0f * STRAIGHT_TEST_BRAKE_DECEL_MPS2 * clearance) - delay_velocity;
                 target = fminf(target, fmaxf(0.0f, safe_speed - STRAIGHT_TEST_SPEED_TRACKING_MARGIN_MPS));
             }
+        }
+        if(in.laser_predicted_mask) {
+            const float cap = fmaxf(LASER_PREDICT_SPEED_CAP_MPS,
+                fabsf(t->speed_mps) - t->accel_mps2 * dt);
+            target = fminf(target, cap);
         }
         const float speed = fminf(target, fabsf(t->speed_mps) + t->accel_mps2 * dt);
         t->speed_mps = t->leg == ST_LEG_BACK ? -speed : speed;

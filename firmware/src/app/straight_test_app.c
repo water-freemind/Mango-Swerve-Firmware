@@ -18,6 +18,8 @@
 #include "chassis_trace.h"
 #include "work_link.h"
 #include "laser.h"
+#include "laser_prediction.h"
+#include "full_map_test.h"
 #include "log.h"
 #include <math.h>
 #include <stddef.h>
@@ -25,6 +27,11 @@
 #include <string.h>
 
 static StraightTest test;
+static FullMapTest full_map;
+static uint32_t last_map_log;
+static LaserPrediction laser_prediction;
+static LaserPredictionOutput predicted_laser;
+static uint8_t prediction_logged_mask;
 static bool initialized;
 static uint32_t last_step, last_log, last_imu, last_plan_log;
 static volatile uint32_t motor_ms[8];
@@ -219,17 +226,29 @@ static StraightInput input(uint32_t now) {
     if(!isfinite(attitude.yaw) || !isfinite(gyro.z)) blockers |= BLOCK_NONFINITE;
     LaserSnapshot laser = {0};
     if(laser_get_snapshot(&laser)) {
+        const bool predict_enabled = blockers == 0u && drive_source_requested(&rc_state) == DRIVE_SOURCE_HOST &&
+            test.phase == ST_RUNNING && test.plan == ST_PLAN_WALL && test.leg != ST_LEG_WAIT &&
+            !test.guard_mask && !test.laser_paused;
+        predicted_laser = laser_prediction_step(&laser_prediction, &laser, now, in.vx_mps, in.vy_mps,
+            attitude.yaw, predict_enabled);
         in.laser_fresh = laser.frame_fresh && laser.frame_count != 0u;
-        in.left_mm = laser.accepted_mm[0];
-        in.right_mm = laser.accepted_mm[1];
-        in.rear_mm = laser.accepted_mm[2];
-        in.front_mm = laser.accepted_mm[3];
-        in.laser_stale_mask = (uint8_t)(~laser.valid_mask & 15u);
+        in.left_mm = predicted_laser.mm[0];
+        in.right_mm = predicted_laser.mm[1];
+        in.rear_mm = predicted_laser.mm[2];
+        in.front_mm = predicted_laser.mm[3];
+        in.laser_predicted_mask = predicted_laser.mask;
+        in.laser_stale_mask = (uint8_t)(~(laser.valid_mask | predicted_laser.mask) & 15u);
         in.laser_updated_mask = laser.updated_mask;
         in.laser_frame = laser.frame_count;
         in.laser_age_ms = HAL_GetTick() - laser.last_rx_ms;
     }
     in.healthy = blockers == 0u;
+    if(prediction_logged_mask != in.laser_predicted_mask) {
+        prediction_logged_mask = in.laser_predicted_mask;
+        log_info("TEST_PREDICT mask=0x%x rear_mm=%u front_mm=%u real_age_ms=%lu,%lu max_age_ms=%u max_path_mm=200 speed_cap=0.15",
+            prediction_logged_mask, in.rear_mm, in.front_mm, (unsigned long)laser.sample_age_ms[2],
+            (unsigned long)laser.sample_age_ms[3], LASER_PREDICT_MAX_MS);
+    }
     return in;
 }
 static bool trace_safe_to_export(StraightInput in) {
@@ -331,8 +350,17 @@ static void trace_export(uint32_t now,StraightInput in) {
         else {++trace_dump_sequence;++trace_dump_sent;}
     }
 }
+static bool hardware_healthy(void);
+static FullMapInput map_input(uint32_t now,StraightInput in) {
+    FullMapInput m={.now=now,.wheel={in.vx_mps,in.vy_mps,imu_get_gyro_corrected().z},
+        .imu_yaw=imu.get_angle().yaw,.healthy=in.healthy,.odom_ok=hardware_healthy(),
+        .stationary=in.stationary,.aligned=chassis_drive_output_allowed()};
+    (void)laser_get_snapshot(&m.laser);
+    return m;
+}
 static void commands(uint32_t now, StraightInput in) {
     if(rx_fault) {
+        if(full_map_active(&full_map)) full_map_stop(&full_map,"UART_ERROR_OR_OVERFLOW",false);
         straight_fault(&test, "UART_ERROR_OR_OVERFLOW");
         rx_tail = rx_head;
         line_len = 0u;
@@ -351,15 +379,38 @@ static void commands(uint32_t now, StraightInput in) {
             if(!strncmp(line,"TRACE ",6u)) {
                 trace_command(line,in); line_len=0u; continue;
             }
+            if(!strncmp(line,"MAP ",4u)) {
+                bool ok=false;
+                const bool read_or_stop=!strcmp(line,"MAP STATUS")||!strcmp(line,"MAP STOP");
+                const bool straight_busy=test.phase==ST_ARMED||test.phase==ST_RUNNING||test.phase==ST_STOPPING;
+                const bool allowed=read_or_stop || (control_source.mode==DRIVE_SOURCE_HOST && !straight_busy);
+                if(allowed)
+                    ok=full_map_command(&full_map,line,map_input(now,in));
+                log_info("TEST_MAP_ACK ok=%u phase=%s token=%lu segment=%u reason=%s cmd=%s",
+                    (unsigned)ok,full_map_phase_name(full_map.phase),(unsigned long)full_map.token,
+                    full_map.segment,allowed?full_map.reason:"OWNER_OR_STRAIGHT_ACTIVE",line+4);
+                if(!strcmp(line,"MAP STATUS")) {
+                    const AutoPoseSample p=full_map.localization.pose;
+                    const uint32_t age=now-p.stamp_ms;
+                    const bool valid=full_map.localization.registered&&p.valid&&hardware_healthy()&&age<=50u;
+                    log_info("TEST_MAP_SNAPSHOT valid=%u age_ms=%lu x=%.3f y=%.3f yaw_deg=%.2f phase=%s segment=%u coverage=0x%x",
+                        (unsigned)valid,(unsigned long)age,(double)p.pose.x,(double)p.pose.y,(double)p.pose.yaw*57.295779513,
+                        full_map_phase_name(full_map.phase),full_map.segment,full_map.coverage);
+                }
+                line_len=0u;continue;
+            }
             const StraightPhase before = test.phase;
             bool ok;
             if(!strcmp(line, "STOP")) {
+                if(full_map_active(&full_map)) full_map_stop(&full_map,"STOP",false);
                 drive_source_stop_manual(&control_source);
                 manual_velocity = (DriveVelocity){0};
                 chassis_yaw_hold_disable();
                 stop_outputs();
             }
-            if(control_source.mode != DRIVE_SOURCE_HOST &&
+            if(full_map_active(&full_map) && strcmp(line,"PING") && strcmp(line,"STOP")) {
+                ok=false;test.result="FULL_MAP_ACTIVE";
+            } else if(control_source.mode != DRIVE_SOURCE_HOST &&
                (!strncmp(line, "ARM", 3u) || !strncmp(line, "GO ", 3u) || !strncmp(line, "HB ", 3u))) {
                 ok = false;
                 test.result = "HOST_NOT_SELECTED";
@@ -397,6 +448,8 @@ static void log_control(uint32_t now) {
 static void update_control_source(uint32_t now, StraightInput in) {
     const bool was_manual = control_source.manual_armed;
     if(drive_source_update(&control_source, &rc_state, hardware_healthy(), in.stationary)) {
+        if(full_map_active(&full_map)||full_map.localization.registered)
+            full_map_stop(&full_map,"CONTROL_MODE_CHANGED",true);
         const float wheel_limit = control_source.mode == DRIVE_SOURCE_HOST ?
             STRAIGHT_TEST_SPEED_CEILING_MPS : APP_MANUAL_MAX_LINEAR_MPS;
         if(chassis_set_wheel_speed_limit(wheel_limit) != chassis.OK) {
@@ -599,6 +652,7 @@ void straight_test_app_init(void) {
     (void)assemble_delay();
     if(assemble_log() != SYSTEM_STATUS_OK) return;
     straight_init(&test, HAL_GetTick());
+    full_map_init(&full_map, HAL_GetTick());
     if(assemble_imu() != SYSTEM_STATUS_OK || assemble_laser() != SYSTEM_STATUS_OK ||
        !work_link_init() || assemble_can3() != SYSTEM_STATUS_OK ||
        can_register_rx_callback(CHASSIS_STEER_CAN, motor_received, NULL) != STM32_HAL_CAN_OK ||
@@ -627,6 +681,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
     log_info("TEST_READY manual_control=direct ramp=0");
+    log_info("TEST_READY full_map_proto=1 field=EMPTY_3x4.6 start=0.20,-0.50,90 default_speed=0.10 tools=DISABLED auto_start=0");
     log_info("TEST_READY laser_filter=MEDIAN3 window_gap_ms=200 near_bypass_mm=1100 laser_recovery_ms=5000 brake_delay_ms=500");
     log_info("TEST_READY manual_jerk linear=0.80 angular=1.60 target_lateral_budget=0.30 transient_budget_not_guaranteed=1");
 }
@@ -657,7 +712,13 @@ void straight_test_app_loop(void) {
         control_dt_ms = now - last_step;
         if(control_dt_ms > control_dt_max_ms) control_dt_max_ms = control_dt_ms;
         last_step = now;
-        if(control_source.mode == DRIVE_SOURCE_HOST) {
+        if(control_source.mode==DRIVE_SOURCE_HOST) {
+            const FullMapPhase before=full_map.phase;
+            full_map_step(&full_map,map_input(now,in));
+            if(before!=full_map.phase) log_info("TEST_MAP_EVENT t_ms=%lu phase=%s segment=%u reason=%s",
+                (unsigned long)now,full_map_phase_name(full_map.phase),full_map.segment,full_map.reason);
+        }
+        if(control_source.mode == DRIVE_SOURCE_HOST && !full_map_active(&full_map)) {
             const StraightPhase before = test.phase;
             const bool was_laser_paused = test.laser_paused;
             const uint8_t previous_guard = test.guard_mask;
@@ -682,10 +743,22 @@ void straight_test_app_loop(void) {
                     guards[0], guards[1], guards[2], guards[3], (double)in.vx_mps, (double)in.vy_mps);
             }
         }
-        const bool host_active = control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING &&
+        const bool map_running=control_source.mode==DRIVE_SOURCE_HOST && full_map.phase==MAP_RUNNING;
+        const bool map_paused=control_source.mode==DRIVE_SOURCE_HOST &&
+            (full_map.phase==MAP_ARMED||full_map.phase==MAP_PAUSED);
+        const bool host_active = !map_running && !map_paused && control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING &&
             test.leg != ST_LEG_WAIT && !test.guard_mask && !test.laser_paused;
         const bool host_paused = control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && !host_active;
         if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) apply_manual(now, in);
+        else if(map_running) {
+            chassis_yaw_hold_disable();
+            const AutoTwist v=full_map.command,h=full_map.hint;
+            const bool prepare=full_map.motion.out.phase==AUTO_MOTION_ALIGN;
+            const ChassisErrorCode status=prepare ? chassis_prepare_velocity(h.vx,h.vy,h.wz):chassis.set_velocity(v.vx,v.vy,v.wz);
+            if(status!=chassis.OK||chassis.process()!=chassis.OK) {
+                full_map_stop(&full_map,"CHASSIS_CONTROL",true);stop_outputs();
+            }
+        }
         else if(host_active) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
@@ -697,11 +770,12 @@ void straight_test_app_loop(void) {
         }
         /* WAIT and guard pauses stop outputs while retaining GO's heading. */
         if(!(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) &&
-           !host_active) {
+           !host_active && !map_running) {
             manual_velocity = (DriveVelocity){0};
             stop_outputs();
         }
         if(tx_fault || !can_healthy()) {
+            if(full_map_active(&full_map)) full_map_stop(&full_map,"CAN_TX_OR_BUS",true);
             straight_fault(&test, "CAN_TX_OR_BUS");
             if(control_source.manual_armed) {
                 drive_source_stop_manual(&control_source);
@@ -720,6 +794,19 @@ void straight_test_app_loop(void) {
     } else if(!control_source.manual_armed) last_manual_process = now;
     trace_capture(in);
     trace_export(now,in);
+    if(now-last_map_log>=500u) {
+        last_map_log=now;
+        const AutoPose p=full_map.localization.pose.pose;
+        log_info("TEST_MAP_STATUS proto=1 phase=%s token=%lu segment=%u total=17 coverage=0x%x origin=%u x=%.3f y=%.3f yaw_deg=%.2f speed=%.2f reason=%s",
+            full_map_phase_name(full_map.phase),(unsigned long)full_map.token,full_map.segment,full_map.coverage,
+            (unsigned)full_map.localization.registered,(double)p.x,(double)p.y,(double)p.yaw*57.295779513,
+            (double)full_map.speed,full_map.reason);
+        log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f",
+            full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
+            full_map.required_mask,full_map.predicted_mask,(double)full_map.command.vx,(double)full_map.command.vy,
+            (unsigned)full_map.motion_error,(double)full_map.localization.uncorrected_m[0],
+            (double)full_map.localization.uncorrected_m[1]);
+    }
     if(now - last_log >= 100u) {
         last_log = now;
         const ImuAngle a = imu.get_angle();
