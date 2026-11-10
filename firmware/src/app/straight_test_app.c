@@ -389,6 +389,11 @@ static void commands(uint32_t now, StraightInput in) {
                 log_info("TEST_MAP_ACK ok=%u phase=%s token=%lu segment=%u reason=%s cmd=%s",
                     (unsigned)ok,full_map_phase_name(full_map.phase),(unsigned long)full_map.token,
                     full_map.segment,allowed?full_map.reason:"OWNER_OR_STRAIGHT_ACTIVE",line+4);
+                if(ok && !strcmp(line,"MAP ORIGIN")) {
+                    const AutoPose p=full_map.localization.pose.pose;
+                    log_info("TEST_MAP_ORIGIN source=FRONT_WALL front_mm=%u x=%.3f y=%.3f entry_y=%.3f",
+                        full_map.origin_front_mm,(double)p.x,(double)p.y,(double)full_map.route.entry_y);
+                }
                 if(!strcmp(line,"MAP STATUS")) {
                     const AutoPoseSample p=full_map.localization.pose;
                     const uint32_t age=now-p.stamp_ms;
@@ -681,7 +686,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
     log_info("TEST_READY manual_control=direct ramp=0");
-    log_info("TEST_READY full_map_proto=1 field=EMPTY_3x4.6 start=0.20,-0.50,90 default_speed=0.10 tools=DISABLED auto_start=0");
+    log_info("TEST_READY full_map_proto=1 field=NOMINAL_3x4.6 start_x=0.20 start_y=FRONT_ANCHORED[-0.80,0.00] yaw_deg=90 default_speed=0.20 trees=12 tree_dwell_ms=2000 tools=DISABLED auto_start=0");
     log_info("TEST_READY laser_filter=MEDIAN3 window_gap_ms=200 near_bypass_mm=1100 laser_recovery_ms=5000 brake_delay_ms=500");
     log_info("TEST_READY manual_jerk linear=0.80 angular=1.60 target_lateral_budget=0.30 transient_budget_not_guaranteed=1");
 }
@@ -714,9 +719,15 @@ void straight_test_app_loop(void) {
         last_step = now;
         if(control_source.mode==DRIVE_SOURCE_HOST) {
             const FullMapPhase before=full_map.phase;
+            const bool tree_hold_before=full_map.tree_hold;
+            const uint16_t trees_done_before=full_map.trees_done;
             full_map_step(&full_map,map_input(now,in));
             if(before!=full_map.phase) log_info("TEST_MAP_EVENT t_ms=%lu phase=%s segment=%u reason=%s",
                 (unsigned long)now,full_map_phase_name(full_map.phase),full_map.segment,full_map.reason);
+            if(tree_hold_before!=full_map.tree_hold || trees_done_before!=full_map.trees_done)
+                log_info("TEST_MAP_TREE_EVENT t_ms=%lu segment=%u target=%u hold=%u new_done=0x%x done=0x%x reason=%s",
+                    (unsigned long)now,full_map.segment,full_map.target_tree,(unsigned)full_map.tree_hold,
+                    trees_done_before^full_map.trees_done,full_map.trees_done,full_map.reason);
         }
         if(control_source.mode == DRIVE_SOURCE_HOST && !full_map_active(&full_map)) {
             const StraightPhase before = test.phase;
@@ -755,8 +766,14 @@ void straight_test_app_loop(void) {
             const AutoTwist v=full_map.command,h=full_map.hint;
             const bool prepare=full_map.motion.out.phase==AUTO_MOTION_ALIGN;
             const ChassisErrorCode status=prepare ? chassis_prepare_velocity(h.vx,h.vy,h.wz):chassis.set_velocity(v.vx,v.vy,v.wz);
-            if(status!=chassis.OK||chassis.process()!=chassis.OK) {
+            const ChassisErrorCode process_status=status==chassis.OK?chassis.process():chassis.OK;
+            if(status!=chassis.OK||process_status!=chassis.OK) {
                 full_map_stop(&full_map,"CHASSIS_CONTROL",true);stop_outputs();
+                log_info("TEST_MAP_CONTROL_FAULT t_ms=%lu segment=%u set_code=%u process_code=%u set=%s process=%s prepare=%u cmd=%.4f,%.4f,%.4f dt_ms=%lu",
+                    (unsigned long)now,full_map.segment,(unsigned)status,(unsigned)process_status,
+                    chassis.error_code_to_str?chassis.error_code_to_str(status):"UNAVAILABLE",
+                    chassis.error_code_to_str?chassis.error_code_to_str(process_status):"UNAVAILABLE",(unsigned)prepare,
+                    (double)v.vx,(double)v.vy,(double)v.wz,(unsigned long)control_dt_ms);
             }
         }
         else if(host_active) {
@@ -801,11 +818,21 @@ void straight_test_app_loop(void) {
             full_map_phase_name(full_map.phase),(unsigned long)full_map.token,full_map.segment,full_map.coverage,
             (unsigned)full_map.localization.registered,(double)p.x,(double)p.y,(double)p.yaw*57.295779513,
             (double)full_map.speed,full_map.reason);
+        log_info("TEST_MAP_TREE target=%u row=%u number=%u hold=%u stable=%u elapsed_ms=%lu done=0x%x dwell_ms=2000",
+            full_map.target_tree,full_map.target_tree?(full_map.target_tree-1u)/2u+1u:0u,
+            full_map.target_tree?(full_map.target_tree-1u)%2u+1u:0u,
+            (unsigned)full_map.tree_hold,(unsigned)full_map.tree_hold_stable,
+            (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done);
         log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f",
             full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
             full_map.required_mask,full_map.predicted_mask,(double)full_map.command.vx,(double)full_map.command.vy,
             (unsigned)full_map.motion_error,(double)full_map.localization.uncorrected_m[0],
             (double)full_map.localization.uncorrected_m[1]);
+        const MapAisleCorrection ac=full_map.aisle_correction;
+        log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu",
+            (unsigned)ac.active,(unsigned)ac.frozen,ac.confirmations,ac.front_mm,ac.rear_mm,
+            (double)ac.error_m*1000,(double)ac.correction_m*1000,
+            (unsigned long)ac.front_surface,(unsigned long)ac.rear_surface);
     }
     if(now - last_log >= 100u) {
         last_log = now;

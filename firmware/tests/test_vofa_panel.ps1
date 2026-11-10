@@ -177,7 +177,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 96) 'Expected 96 named panel commands'
+Assert ($items.Count -eq 95) 'Expected 95 named panel commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -338,11 +338,14 @@ $mapPanel.Observe($idle + ' control=HOST',0)
 Assert (!$mapPanel.Command('UI MAP ARM ALL',1)) 'Legacy firmware accepted map ARM'
 $mapPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=READY token=0',10)
 Assert ($mapPanel.Command('UI MAP ORIGIN',11)) 'Map origin rejected'
-Assert ($mapPanel.Command('UI MAP ARM NEXT',12)) 'Map ARM rejected'
+Assert (!$mapPanel.Command('UI MAP ARM NEXT',11)) 'Removed segmented command accepted'
+Assert ($mapPanel.Command('UI MAP SPEED 0.60',11)) 'Map fast preset rejected'
+Assert (!$mapPanel.Command('UI MAP SPEED 0.10',11)) 'Old map speed accepted'
+Assert ($mapPanel.Command('UI MAP ARM ALL',12)) 'Map ARM rejected'
 Assert (!$mapPanel.Command('UI MAP GO',13)) 'Map GO before ACK accepted'
-$mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=91 segment=0 reason=ARMED cmd=ARM ALL',14)
+$mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=91 segment=0 reason=ARMED cmd=ARM NEXT',14)
 Assert (!$mapPanel.Command('UI MAP GO',15)) 'Mismatched map selection ACK armed a run'
-$mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=92 segment=0 reason=ARMED cmd=ARM NEXT',16)
+$mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=92 segment=0 reason=ARMED cmd=ARM ALL',16)
 Assert ($mapPanel.Command('UI MAP GO',17)) 'Matching map GO rejected'
 Assert ($tx[-1] -eq 'MAP GO 92') 'Wrong map token'
 $mapPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=RUNNING token=92',20)
@@ -353,4 +356,12 @@ $mapPanel.TransportReset()
 Assert (!$mapPanel.Command('UI MAP GO',24)) 'Map token survived transport reset'
 Assert ($mapPanel.Command('UI LOG QUIET',25)) 'Quiet preset rejected'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_SNAPSHOT valid=1 x=0.2 y=-0.5',26)) 'Explicit pose query hidden by quiet preset'
-'VOFA_PANEL_TEST_OK (96 commands, map handshake and isolation, acceleration/speeds, TRACE, UDP)'
+Assert ($mapPanel.Command('UI LOG MAP ON',27)) 'Map logs could not be enabled'
+Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_AISLE active=1 frozen=0',28)) 'Aisle log hidden by map toggle'
+Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE hold=1 elapsed_ms=500',28)) 'Tree dwell log hidden'
+Assert ($mapPanel.Command('UI LOG MAP OFF',29)) 'Map logs could not be disabled'
+Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_AISLE active=1 frozen=0',30)) 'Aisle log ignored map toggle'
+Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE hold=1',30)) 'Tree log ignored map toggle'
+Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE_EVENT hold=1',30)) 'Tree event hidden'
+Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_CONTROL_FAULT process_code=8',30)) 'Control fault hidden'
+'VOFA_PANEL_TEST_OK (95 commands, map handshake and isolation, acceleration/speeds, TRACE, UDP)'

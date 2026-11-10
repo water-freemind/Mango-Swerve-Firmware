@@ -6,20 +6,43 @@
 typedef enum { MAP_IDLE, MAP_READY, MAP_ARMED, MAP_RUNNING, MAP_PAUSED,
     MAP_SEGMENT_DONE, MAP_DONE, MAP_FAULT } FullMapPhase;
 typedef struct {
+    bool active;
+    uint8_t confirmations;
+    uint32_t frame, stamp_ms, front_surface, rear_surface;
+    uint16_t front_mm, rear_mm;
+    float error_m, correction_m;
+    bool checkpoint_valid, frozen;
+    uint16_t checkpoint_front_mm, checkpoint_rear_mm;
+    float checkpoint_wheel_y;
+} MapAisleCorrection;
+typedef struct {
     uint32_t now; AutoTwist wheel; float imu_yaw;
     bool healthy, odom_ok, stationary, aligned;
     LaserSnapshot laser;
 } FullMapInput;
 typedef struct {
+    float x;
+    bool configured;
+} MapTreePosition;
+typedef struct {
     FullMapPhase phase; FieldPose localization; AutoRoute route; AutoMotion motion;
     LaserPrediction prediction;
+    MapAisleCorrection aisle_correction;
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask;
+    uint16_t origin_front_mm;
     float speed; bool all, stable, initialized, user_hold;
     const char* reason;
     AutoMotionError motion_error;
+    MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */
+    uint16_t trees_done;
+    uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
+    bool tree_hold, tree_hold_stable;
+    uint32_t tree_hold_ms;
 } FullMapTest;
+/* Station vehicle-center X in metres from the west map boundary. No guessed defaults. */
+bool full_map_set_tree_x(FullMapTest* map,unsigned row,unsigned number,float x);
 void full_map_init(FullMapTest* map,uint32_t now);
 bool full_map_active(const FullMapTest* map);
 void full_map_stop(FullMapTest* map,const char* reason,bool lose_origin);

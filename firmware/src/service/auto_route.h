@@ -5,8 +5,10 @@
 typedef enum { AUTO_ROUTE_ENTER, AUTO_ROUTE_OUTBOUND, AUTO_ROUTE_SURVEY,
     AUTO_ROUTE_SHIFT, AUTO_ROUTE_RETURN, AUTO_ROUTE_PARK } AutoRouteKind;
 typedef struct { AutoSegment line; AutoRouteKind kind; uint8_t aisle, row; } AutoRouteSegment;
-typedef struct { AutoRouteSegment segment[AUTO_ROUTE_COUNT]; float scale; } AutoRoute;
+typedef struct { AutoRouteSegment segment[AUTO_ROUTE_COUNT]; float scale, entry_y; } AutoRoute;
 bool auto_route_build(AutoRoute* route,float scale,float heading);
+/* Calibrates only the out-of-field entry point; all field waypoints stay fixed. */
+bool auto_route_set_entry_y(AutoRoute* route,float entry_y);
 /* Conservative fixed-heading AABB continuous sweep, not endpoint-only check. */
 bool auto_route_clear(const AutoRoute* route,AutoEnvelope body,float margin);
 /* Conservative live AABB of the yawed footprint, including start/gate. */
