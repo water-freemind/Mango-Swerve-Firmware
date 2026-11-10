@@ -177,7 +177,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 81) 'Expected 81 named panel commands'
+Assert ($items.Count -eq 96) 'Expected 96 named panel commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -189,9 +189,9 @@ foreach ($item in $items) {
     $command = [Text.Encoding]::ASCII.GetString($bytes)
     Assert (!$command.Contains('%') -and !$command.Contains('\n')) 'Unresolved parameter or literal escape'
     $accepted = $static.Command($command, 3010)
-    if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED|ACCEL)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
+    if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED|ACCEL|MAP)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
 }
-Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
+Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^MAP (STATUS|STOP)$' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
 $messages.Clear()
 Assert ($static.Command('UI SNAPSHOT REMOTE', 4000)) 'Stale snapshot command rejected as unknown'
 Assert ($messages[-1].Contains('UART_STATUS_STALE')) 'Stale UART data was presented as a current snapshot'
@@ -333,4 +333,24 @@ try {
     Assert ($reply -eq "[INFO] TEST_PANEL stop_requested=1`n") 'UDP reply bytes changed'
     Assert ($peer.Port -eq $server.Client.LocalEndPoint.Port) 'Replies did not come from the command socket'
 } finally { $server.Dispose(); $client.Dispose() }
-'VOFA_PANEL_TEST_OK (81 commands, adjustable acceleration and five speeds, static TRACE capture, matching ACK/GO, mode isolation, parameter locks and UDP)'
+$mapPanel = [VofaTestSession]::new($true,$send,$report)
+$mapPanel.Observe($idle + ' control=HOST',0)
+Assert (!$mapPanel.Command('UI MAP ARM ALL',1)) 'Legacy firmware accepted map ARM'
+$mapPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=READY token=0',10)
+Assert ($mapPanel.Command('UI MAP ORIGIN',11)) 'Map origin rejected'
+Assert ($mapPanel.Command('UI MAP ARM NEXT',12)) 'Map ARM rejected'
+Assert (!$mapPanel.Command('UI MAP GO',13)) 'Map GO before ACK accepted'
+$mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=91 segment=0 reason=ARMED cmd=ARM ALL',14)
+Assert (!$mapPanel.Command('UI MAP GO',15)) 'Mismatched map selection ACK armed a run'
+$mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=92 segment=0 reason=ARMED cmd=ARM NEXT',16)
+Assert ($mapPanel.Command('UI MAP GO',17)) 'Matching map GO rejected'
+Assert ($tx[-1] -eq 'MAP GO 92') 'Wrong map token'
+$mapPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=RUNNING token=92',20)
+Assert (!$mapPanel.Command('UI ARM WALL 4',21)) 'Straight session interfered with full map'
+Assert ($mapPanel.Command('UI MAP PAUSE',22)) 'Map pause rejected'
+Assert ($mapPanel.Command('UI STOP',23)) 'Global stop rejected during map'
+$mapPanel.TransportReset()
+Assert (!$mapPanel.Command('UI MAP GO',24)) 'Map token survived transport reset'
+Assert ($mapPanel.Command('UI LOG QUIET',25)) 'Quiet preset rejected'
+Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_SNAPSHOT valid=1 x=0.2 y=-0.5',26)) 'Explicit pose query hidden by quiet preset'
+'VOFA_PANEL_TEST_OK (96 commands, map handshake and isolation, acceleration/speeds, TRACE, UDP)'

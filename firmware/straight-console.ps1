@@ -183,6 +183,11 @@ public sealed class VofaTestSession {
     private long lastStatus = -10000, armSent, armAck, goSent;
     private bool healthy, stopped, awaitingArm, armed, awaitingGo, running, targetMatches;
     private bool firmwareV2, firmwareOneShot, rangeFresh;
+    private bool mapFirmware, mapAwaitingArm, mapArmed;
+    private uint mapToken;
+    private long lastMap = -10000, mapArmTime;
+    private string mapPhase = "UNKNOWN";
+    private string mapArmSelection;
     private string controlMode = "UNKNOWN";
     private long lastPlan = -10000, lastRange = -10000;
     private double firmwareTarget;
@@ -190,7 +195,7 @@ public sealed class VofaTestSession {
     private int selectedTarget = 1, phaseValue;
     private readonly Dictionary<string, int> ranges = new Dictionary<string, int>();
     private static readonly string[] logCategories = {"STATUS","HEALTH","REMOTE","MOTOR","CAN1","CAN2","CAN3",
-        "IMU","IMU_RAW","IMU_BIAS","DRIFT","LASER","RANGE","PLAN","BRAKE","TIMING","WAVE"};
+        "IMU","IMU_RAW","IMU_BIAS","DRIFT","LASER","RANGE","PLAN","BRAKE","TIMING","WAVE","MAP"};
     private readonly Dictionary<string, bool> logEnabled = new Dictionary<string, bool>();
     private readonly Dictionary<string, long> lastForward = new Dictionary<string, long>();
     private bool compactLogs;
@@ -208,6 +213,7 @@ public sealed class VofaTestSession {
         foreach (string category in logCategories) logEnabled[category] = preset == "ALL";
         compactLogs = preset == "DEFAULT";
         if (compactLogs) logEnabled["STATUS"] = logEnabled["HEALTH"] = logEnabled["PLAN"] = true;
+        if (compactLogs) logEnabled["MAP"] = true;
         lastForward.Clear();
     }
     public bool ShouldForwardStatus(string raw, long now) {
@@ -215,6 +221,8 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
+        if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "PREDICT") return true;
+        if (category == "MAP_STATUS" || category == "MAP_POSE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
         if (category == "CONTROL" || category == "RAMP" || category == "WALL") category = "HEALTH";
         if (category == "PAUSE" || category == "PAUSE_RANGE") return true;
@@ -235,6 +243,7 @@ public sealed class VofaTestSession {
     }
     private void Clear() { awaitingArm = armed = awaitingGo = running = false; activeToken = 0; }
     public void TransportReset() {
+        mapFirmware = mapAwaitingArm = mapArmed = false; mapToken = 0; lastMap = -10000; mapPhase = "UNKNOWN";
         Clear(); lastStatus = lastPlan = lastRange = -10000;
         firmwareV2 = firmwareOneShot = rangeFresh = haveYaw = marking = false;
         controlMode = "UNKNOWN"; cache.Clear(); ranges.Clear();
@@ -260,6 +269,16 @@ public sealed class VofaTestSession {
         if (line.Contains("TEST_READY")) {
             TransportReset();
         }
+        Match mapState = Regex.Match(line, @"TEST_MAP_STATUS proto=1 phase=([A-Z_]+)\b");
+        if (mapState.Success) { mapFirmware = true; lastMap = now; mapPhase = mapState.Groups[1].Value; }
+        Match mapAck = Regex.Match(line, @"TEST_MAP_ACK ok=(\d) phase=([A-Z_]+) token=(\d+)\b");
+        if (mapAwaitingArm && mapAck.Success && line.EndsWith("cmd=" + mapArmSelection, StringComparison.Ordinal)) {
+            mapAwaitingArm = false;
+            mapArmed = mapAck.Groups[1].Value == "1" && mapAck.Groups[2].Value == "ARMED" &&
+                now - mapArmTime <= 1000 && UInt32.TryParse(mapAck.Groups[3].Value, out mapToken);
+            mapArmTime = now;
+            report(mapArmed ? "map_arm_ready=1 next=UI_MAP_GO expires_ms=4000" : "rejected=MAP_ARM_ACK");
+        }
         Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
         if (planStatus.Success) {
             firmwareV2 = true; lastPlan = now; observedPlan = planStatus.Groups[1].Value;
@@ -268,7 +287,7 @@ public sealed class VofaTestSession {
         Match owner = Regex.Match(line, @"(?:TEST_CONTROL[^\r\n]*\bsource=|\bcontrol=)(HOST|MANUAL|STOP)\b");
         if (owner.Success) {
             controlMode = owner.Groups[1].Value;
-            if (controlMode != "HOST") Clear();
+            if (controlMode != "HOST") { Clear(); mapArmed = mapAwaitingArm = false; }
         }
         if (line.Contains("TEST_RANGE ")) {
             lastRange = now; rangeFresh = Regex.IsMatch(line, @"\bfresh=1\b");
@@ -336,7 +355,38 @@ public sealed class VofaTestSession {
     public bool Command(string packet, long now) {
         string command = packet.Trim();
         if (command.IndexOf('\n') >= 0 || command.IndexOf('\r') >= 0) { report("rejected=BATCH_PACKET"); return false; }
-        if (command == "UI STOP") { tx("STOP"); Clear(); report("stop_requested=1"); return true; }
+        if (command == "UI STOP") { tx("STOP"); Clear(); mapArmed = mapAwaitingArm = false; report("stop_requested=1"); return true; }
+        if (command.StartsWith("UI MAP ", StringComparison.Ordinal)) {
+            string action = command.Substring(7);
+            if (action == "STATUS" || action == "STOP") {
+                tx("MAP " + action); if (action == "STOP") mapArmed = mapAwaitingArm = false;
+                return true;
+            }
+            if (!mapFirmware || now - lastMap > 1500) { report("rejected=FIRMWARE_FULL_MAP_REQUIRED_OR_STALE"); return false; }
+            if (action == "PAUSE") { tx("MAP PAUSE"); return true; }
+            if (!allowMotion) { report("rejected=STATIC_MODE_USE_MOTION_LAUNCHER_IN_OPEN_AREA"); return false; }
+            if (controlMode != "HOST" || now - lastStatus > 500 || awaitingArm || armed || awaitingGo || running) {
+                report("rejected=MAP_NEEDS_HOST_AND_NO_STRAIGHT_SESSION"); return false;
+            }
+            if (action == "GO") {
+                if (!mapArmed || now - mapArmTime > 4000 || !healthy || !stopped) { report("rejected=CLICK_MAP_ARM_FIRST_OR_NOT_READY"); return false; }
+                tx("MAP GO " + mapToken.ToString(CultureInfo.InvariantCulture)); mapArmed = false; return true;
+            }
+            if (action == "RESUME") { tx("MAP RESUME"); return true; }
+            if (mapPhase == "RUNNING" || mapPhase == "PAUSED" || mapPhase == "ARMED" || !stopped) {
+                report("rejected=MAP_NEEDS_IDLE_STOPPED"); return false;
+            }
+            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(05|10|15|20|30)$")) { tx("MAP " + action); return true; }
+            if (action == "ARM ALL" || action == "ARM NEXT") {
+                if (!healthy || mapAwaitingArm) return false;
+                mapAwaitingArm = true; mapArmTime = now; mapArmSelection = action; tx("MAP " + action); return true;
+            }
+            report("rejected=UNKNOWN_MAP_COMMAND"); return false;
+        }
+        if ((mapPhase == "RUNNING" || mapPhase == "PAUSED" || mapPhase == "ARMED" || mapArmed || mapAwaitingArm) &&
+            Regex.IsMatch(command, @"^UI (ARM|GO|SPEED|ACCEL|EDGE)\b")) {
+            report("rejected=FULL_MAP_ACTIVE"); return false;
+        }
         if (Regex.IsMatch(command, @"^UI TRACE (START|STOP|CLEAR|DUMP)$")) {
             tx(command.Substring(3)); report("capture_command=" + command.Substring(9) + " motor_command=NONE device_checks_dump_stop=1"); return true;
         }
@@ -460,6 +510,9 @@ public sealed class VofaTestSession {
         return true;
     }
     public void Tick(long now) {
+        if (mapAwaitingArm && now - mapArmTime > 1000) {
+            mapAwaitingArm = mapArmed = false; report("rejected=MAP_ARM_ACK_TIMEOUT");
+        }
         if (awaitingArm && now - armSent > 1000) { Clear(); report("rejected=ARM_ACK_TIMEOUT"); }
         if (awaitingGo && now - goSent > 500) {
             Clear();

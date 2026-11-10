@@ -133,6 +133,14 @@ static void steering_tests(void) {
 int main(void) {
     invalid_tests(); timing_tests(); steering_tests();
     setup();
+    assert(chassis_prepare_velocity(.1f,0,0)==chassis.OK);
+    for(unsigned step=0;step<30;step++) {
+        tick+=2;assert(chassis.process()==chassis.OK);all_zero();
+        for(unsigned i=0;i<4;i++) raw[i]=angle[i];
+    }
+    assert(chassis.set_velocity(.1f,0,0)==chassis.OK);
+    tick+=2;assert(chassis.process()==chassis.OK);assert(fabsf(velocity[0])>0);
+    setup();
     assert(chassis_set_wheel_speed_limit(1.0f) == chassis.OK);
     assert(chassis.get_chassis()->kine.model.max_wheel_linear_speed == 1.0f);
     assert(chassis_set_wheel_speed_limit(NAN) == chassis.INVALID_PARAM);

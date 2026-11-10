@@ -20,6 +20,8 @@ static uint16_t fake_front_mm = 7000u;
 static bool fake_drive_gate = true;
 static float fake_wheel_limit;
 ChassisErrorCode chassis_set_wheel_speed_limit(float limit) { fake_wheel_limit = limit; return CHASSIS_OK; }
+static unsigned prepare_calls;
+ChassisErrorCode chassis_prepare_velocity(float vx,float vy,float wz) { (void)vx;(void)vy;(void)wz;++prepare_calls;return CHASSIS_OK; }
 void chassis_reset_control_history(void) {}
 bool chassis_drive_output_allowed(void) { return fake_drive_gate; }
 static DriveVelocity last_velocity;
@@ -319,6 +321,40 @@ static void check_trace_adapter(void) {
     trace_export(150000u,in);assert(!trace_dumping); /* permission change cancels output immediately */
     puts("CHASSIS_TRACE_ADAPTER_OK scope, finite window, no motion, SWD/online gating, buffer bounds and export");
 }
+static void check_map_adapter(void) {
+    uint32_t now=60000u;
+    initialized=true;tx_fault=rx_fault=false;
+    fake_online=fake_calibrated=fake_can_healthy=fake_laser_ready=true;
+    fake_swc=1500u;fake_swd=1000u;fake_vrb=2000u;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;fake_yaw=.2f;fake_front_mm=7000;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_HOST};
+    straight_init(&test,now);full_map_init(&full_map,now);
+    last_step=last_imu=last_log=last_plan_log=now;last_velocity=(DriveVelocity){0};
+    loop_at(now+=10);
+    StraightInput in=input(now);
+    receive_command("MAP ORIGIN\n",now,in);
+    assert(full_map.phase==MAP_READY && full_map.localization.registered);
+    loop_at(now+=10);
+    assert(full_map.localization.registered); /* SWD off does not erase registration. */
+    fake_swd=2000u;loop_at(now+=10);in=input(now);
+    receive_command("MAP ARM NEXT\n",now,in);
+    assert(full_map.phase==MAP_ARMED && last_velocity.vx==0);
+    receive_command("MAP GO 1\n",now,in);
+    assert(full_map.phase==MAP_RUNNING);
+    fake_drive_gate=false;const unsigned before=prepare_calls;
+    loop_at(now+=10);assert(prepare_calls>before && last_velocity.vx==0);
+    receive_command("ARM WALL 4\n",now,input(now));
+    assert(test.phase==ST_IDLE && !strcmp(test.result,"FULL_MAP_ACTIVE"));
+    fake_drive_gate=true;loop_at(now+=10);
+    assert(full_map.phase==MAP_RUNNING && last_velocity.vx>0);
+    fake_swd=1000u;loop_at(now+=10);
+    assert(full_map.phase==MAP_FAULT && last_velocity.vx==0 && last_velocity.vy==0);
+    fake_swc=2000u;loop_at(now+=10);
+    assert(!full_map.localization.registered);
+    receive_command("MAP ARM ALL\n",now,input(now));
+    assert(full_map.phase==MAP_FAULT);
+    puts("FULL_MAP_ADAPTER_TEST_OK register_while_SWD_off_prepare_without_drive_owner_isolation_RC_stop");
+}
 int main(void) {
     test.phase = ST_IDLE;
     test.target_m = 4.0f;
@@ -493,6 +529,7 @@ int main(void) {
     check_round_heading("ARM WALL 1\n", -0.6f);
     check_manual_direct_scheduler();
     check_trace_adapter();
+    check_map_adapter();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");

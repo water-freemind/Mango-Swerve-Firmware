@@ -311,6 +311,12 @@ if ($LASTEXITCODE -ne 0) { throw 'Drive source compilation failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Drive source test failed.' }
 & $compiler.Source @diagnosticIncludes '-DAPP_RUN_MODE=6' `
     (Join-Path $PSScriptRoot 'test_straight_diagnostics.c') `
+    (Join-Path $firmwareRoot 'src/service/full_map_test.c') `
+    (Join-Path $firmwareRoot 'src/service/field_pose.c') `
+    (Join-Path $firmwareRoot 'src/service/auto_route.c') `
+    (Join-Path $firmwareRoot 'src/service/auto_motion.c') `
+    (Join-Path $firmwareRoot 'src/service/auto_geometry.c') `
+    (Join-Path $firmwareRoot 'src/service/laser_prediction.c') `
     (Join-Path $firmwareRoot 'src/service/chassis_profile.c') `
     (Join-Path $firmwareRoot 'src/service/chassis_trace.c') `
     (Join-Path $firmwareRoot 'src/domain/steer_wheel_kine.c') `
@@ -323,6 +329,15 @@ if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics compilation failed.' }
 $env:MANGO_TRACE_EXPORT = Join-Path $outputDir 'chassis-trace-export.log'
 & $diagnosticExe
 if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics test failed.' }
+$predictionExe = Join-Path $outputDir 'test_laser_prediction.exe'
+& $compiler.Source '-std=c11' '-Wall' '-Wextra' '-Werror' `
+    "-I$(Join-Path $firmwareRoot 'src/service')" `
+    (Join-Path $PSScriptRoot 'test_laser_prediction.c') `
+    (Join-Path $firmwareRoot 'src/service/laser_prediction.c') `
+    (Join-Path $firmwareRoot 'src/service/straight_test.c') '-lm' '-o' $predictionExe
+if ($LASTEXITCODE -ne 0) { throw 'Laser prediction compilation failed.' }
+& $predictionExe
+if ($LASTEXITCODE -ne 0) { throw 'Laser prediction regression failed.' }
 & (Join-Path $PSScriptRoot 'run_chassis_reports.ps1')
 $biasExe = Join-Path $outputDir 'test_imu_boot_bias.exe'
 foreach ($biasMode in @(6, 5)) {

@@ -195,6 +195,7 @@ static Chassis s_chassis = { 0 };
 static Chassis s_chassis_view = { 0 };
 static uint32_t s_process_tick;
 static bool s_process_clock_valid, s_alignment_acquired;
+static bool s_prepare_only;
 static float s_process_dt = CHASSIS_CONTROL_PERIOD_S;
 static bool s_low_speed_hold[CHASSIS_MODULE_COUNT];
 static bool s_command_heading_valid[CHASSIS_MODULE_COUNT];
@@ -555,6 +556,7 @@ static bool chassis_brake_targets_reached(void);
  * @return ChassisErrorCode 状态码
  */
 ChassisErrorCode chassis_init(const ChassisConfig* config) {
+    s_prepare_only = false;
     BusMotorConfig steer_config = {
         .ops = config != NULL ? config->steer_ops : NULL,
         .timeout_ms = 0u,
@@ -650,6 +652,7 @@ ChassisErrorCode chassis_init(const ChassisConfig* config) {
  * @return ChassisErrorCode 状态码
  */
 ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz) {
+    s_prepare_only = false;
     float wz_for_ik;
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
     s_drive_output_allowed = false;
@@ -674,6 +677,12 @@ ChassisErrorCode chassis_set_velocity(float vx, float vy, float wz) {
     chassis_external_to_internal_twist(vx, vy, wz_for_ik, &s_chassis.kine.control.vx, &s_chassis.kine.control.vy, &s_chassis.kine.control.wz);
 
     return ch.OK;
+}
+
+ChassisErrorCode chassis_prepare_velocity(float vx,float vy,float wz) {
+    const ChassisErrorCode status=chassis_set_velocity(vx,vy,wz);
+    s_prepare_only=status==ch.OK;
+    return status;
 }
 
 ChassisErrorCode chassis_set_wheel_speed_limit(float max_linear_mps) {
@@ -870,7 +879,7 @@ ChassisErrorCode chassis_process(void) {
                 return ch.INVALID_PARAM;
             }
             const BusMotorStatus steer_status = steer_motor.set_pos_vel(map->steer_id, target_angle, steer_speed);
-            const BusMotorStatus drive_status = drive_motor.set_spd(map->drive_id, drive_ready ? ((float)map->drive_sign * target_speed) : 0.0f);
+            const BusMotorStatus drive_status = drive_motor.set_spd(map->drive_id, drive_ready && !s_prepare_only ? ((float)map->drive_sign * target_speed) : 0.0f);
             if(steer_status != MOTOR_STATUS_OK || drive_status != MOTOR_STATUS_OK) {
                 (void)chassis_stop();
                 return ch.MOTOR_OUTPUT_FAILED;
@@ -897,6 +906,7 @@ ChassisErrorCode chassis_process(void) {
  * @return ChassisErrorCode 状态码
  */
 ChassisErrorCode chassis_stop(void) {
+    s_prepare_only = false;
     uint8_t i;
     bool output_ok = true;
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
