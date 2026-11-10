@@ -7,6 +7,8 @@ typedef struct {
     float position_tolerance, cross_tolerance, yaw_tolerance;
     float cross_abort, yaw_abort, settle_s, stop_latency_s;
     uint32_t pose_max_age_ms;
+    float finish_yaw_tolerance; /* Optional endpoint-only acceptance; zero uses yaw_tolerance. */
+    float finish_cross_tolerance; /* Optional endpoint-only lateral acceptance. */
 } AutoMotionConfig;
 typedef struct { AutoVec2 start, end; float heading; } AutoSegment;
 typedef enum { AUTO_MOTION_IDLE, AUTO_MOTION_ALIGN, AUTO_MOTION_RUN,

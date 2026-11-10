@@ -1,15 +1,16 @@
 #include "auto_route.h"
 #include <math.h>
 #include <string.h>
+#define AUTO_ROUTE_ENTRY_MIN_Y_M (-.80f)
 static AutoRouteSegment segment(float x0,float y0,float x1,float y1,float heading,AutoRouteKind kind,unsigned aisle,unsigned row) {
     return (AutoRouteSegment){{{x0,y0},{x1,y1},heading},kind,(uint8_t)aisle,(uint8_t)row};
 }
 bool auto_route_build(AutoRoute* r,float scale,float heading) {
     if(!r || !isfinite(scale)||scale<.5f||scale>2||!isfinite(heading)) return false;
-    memset(r,0,sizeof(*r)); r->scale=scale;
+    memset(r,0,sizeof(*r)); r->scale=scale;r->entry_y=-.5f*scale;
     float l=.2f*scale, right=2.8f*scale;
     unsigned k=0;
-    r->segment[k++]=segment(l,-.5f*scale,l,.2f*scale,heading,AUTO_ROUTE_ENTER,0,0);
+    r->segment[k++]=segment(l,r->entry_y,l,.2f*scale,heading,AUTO_ROUTE_ENTER,0,0);
     r->segment[k++]=segment(l,.2f*scale,l,4.4f*scale,heading,AUTO_ROUTE_OUTBOUND,0,0);
     for(int aisle=7;aisle>=1;--aisle) {
         float y=(.2f+.7f*(aisle-1))*scale;
@@ -21,10 +22,19 @@ bool auto_route_build(AutoRoute* r,float scale,float heading) {
     r->segment[k++]=segment(l,.2f*scale,l,-.5f*scale,heading,AUTO_ROUTE_PARK,0,0);
     return k==AUTO_ROUTE_COUNT;
 }
+bool auto_route_set_entry_y(AutoRoute* r,float entry_y) {
+    if(!r||!isfinite(r->scale)||r->scale<.5f||r->scale>2||!isfinite(entry_y)||
+       entry_y<AUTO_ROUTE_ENTRY_MIN_Y_M*r->scale||entry_y>0.0f) return false;
+    r->entry_y=entry_y;
+    r->segment[0].line.start.y=entry_y;
+    return true;
+}
 bool auto_route_valid(const AutoRoute* r) {
-    if(!r) return false;
+    if(!r||!isfinite(r->entry_y)||r->entry_y<AUTO_ROUTE_ENTRY_MIN_Y_M*r->scale||r->entry_y>0.0f) return false;
     AutoRoute expected;
     if(!auto_route_build(&expected,r->scale,r->segment[0].line.heading)) return false;
+    expected.entry_y=r->entry_y;
+    expected.segment[0].line.start.y=r->entry_y;
     for(unsigned i=0;i<AUTO_ROUTE_COUNT;++i) {
         AutoRouteSegment a=r->segment[i],b=expected.segment[i];
         const float av[]={a.line.start.x,a.line.start.y,a.line.end.x,a.line.end.y,a.line.heading};

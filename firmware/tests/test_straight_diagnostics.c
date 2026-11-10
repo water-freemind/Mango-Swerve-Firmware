@@ -326,7 +326,7 @@ static void check_map_adapter(void) {
     initialized=true;tx_fault=rx_fault=false;
     fake_online=fake_calibrated=fake_can_healthy=fake_laser_ready=true;
     fake_swc=1500u;fake_swd=1000u;fake_vrb=2000u;
-    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;fake_yaw=.2f;fake_front_mm=7000;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;fake_yaw=.2f;fake_front_mm=5059;
     control_source=(DriveSource){.mode=DRIVE_SOURCE_HOST};
     straight_init(&test,now);full_map_init(&full_map,now);
     last_step=last_imu=last_log=last_plan_log=now;last_velocity=(DriveVelocity){0};
@@ -338,6 +338,8 @@ static void check_map_adapter(void) {
     assert(full_map.localization.registered); /* SWD off does not erase registration. */
     fake_swd=2000u;loop_at(now+=10);in=input(now);
     receive_command("MAP ARM NEXT\n",now,in);
+    assert(full_map.phase==MAP_READY); /* Removed segmented mode cannot start a route. */
+    receive_command("MAP ARM ALL\n",now,in);
     assert(full_map.phase==MAP_ARMED && last_velocity.vx==0);
     receive_command("MAP GO 1\n",now,in);
     assert(full_map.phase==MAP_RUNNING);

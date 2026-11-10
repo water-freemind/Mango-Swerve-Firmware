@@ -15,6 +15,10 @@ bool auto_motion_begin(AutoMotion* m,const AutoMotionConfig* c,AutoSegment s,uin
        !positive(c->position_tolerance)||!positive(c->cross_tolerance)||!positive(c->yaw_tolerance)||
        !positive(c->cross_abort)||!positive(c->yaw_abort)||!positive(c->settle_s)||
        !isfinite(c->stop_latency_s)||c->stop_latency_s<0||c->stop_latency_s>2||
+       !isfinite(c->finish_yaw_tolerance)||c->finish_yaw_tolerance<0||
+       !isfinite(c->finish_cross_tolerance)||c->finish_cross_tolerance<0||
+       (c->finish_cross_tolerance>0 && (c->finish_cross_tolerance<c->cross_tolerance||c->finish_cross_tolerance>=c->cross_abort))||
+       (c->finish_yaw_tolerance>0 && (c->finish_yaw_tolerance<c->yaw_tolerance||c->finish_yaw_tolerance>=c->yaw_abort))||
        c->cross_abort<=c->cross_tolerance||c->yaw_abort<=c->yaw_tolerance||
        !c->pose_max_age_ms||c->pose_max_age_ms>10000||!isfinite(s.heading)||
        !isfinite(s.start.x)||!isfinite(s.start.y)||!isfinite(s.end.x)||!isfinite(s.end.y)) {
@@ -70,6 +74,12 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(fabsf(m->out.cross_error)<=m->config.cross_tolerance) lateral=0;
     float wz=clamp(m->config.yaw_kp*m->out.heading_error,m->config.wz_max);
     if(fabsf(m->out.heading_error)<=m->config.yaw_tolerance) wz=0;
+    const float finish_yaw=m->config.finish_yaw_tolerance>0?m->config.finish_yaw_tolerance:m->config.yaw_tolerance;
+    const float finish_cross=m->config.finish_cross_tolerance>0?m->config.finish_cross_tolerance:m->config.cross_tolerance;
+    const bool position_reached=fabsf(remaining)<=m->config.position_tolerance &&
+        fabsf(m->out.cross_error)<=finish_cross;
+    if(position_reached) lateral=0;
+    if(position_reached && fabsf(m->out.heading_error)<=finish_yaw) wz=0;
     AutoVec2 target={along*m->tangent.x+lateral*m->normal.x,along*m->tangent.y+lateral*m->normal.y};
     float target_norm=hypotf(target.x,target.y);
     if(target_norm>m->config.vmax) { target.x*=m->config.vmax/target_norm; target.y*=m->config.vmax/target_norm; }
@@ -91,8 +101,7 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     AutoVec2 body=auto_rotate(m->velocity_map,-in.pose.pose.yaw);
     m->out.command=(AutoTwist){body.x,body.y,m->out.command.wz+clamp(wz-m->out.command.wz,m->config.angular_accel*dt)};
     if(!finite_twist(m->out.command)) { fault(m,AUTO_MOTION_BAD_INPUT); return m->out; }
-    bool reached=fabsf(remaining)<=m->config.position_tolerance &&
-        fabsf(m->out.cross_error)<=m->config.cross_tolerance && fabsf(m->out.heading_error)<=m->config.yaw_tolerance;
+    bool reached=position_reached && fabsf(m->out.heading_error)<=finish_yaw;
     bool command_zero=hypotf(body.x,body.y)<.00001f && fabsf(m->out.command.wz)<.00001f;
     if(m->reversing && command_zero && in.stationary && measured_zero) m->reversing=false;
     if(!in.stop_requested && reached && command_zero && in.stationary && measured_zero) m->settled_s+=dt;

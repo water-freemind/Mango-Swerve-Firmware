@@ -1459,9 +1459,9 @@
         ]
       },
       {
-        "name": "12 全图空场调试：逐段／全程",
+        "name": "12 全图路线调试：连续全程／树位停留",
         "intro_on": true,
-        "intro": "需要支持full_map_proto=1的新固件。原尺寸围栏、起跑区无围栏、入口0.4m。空场定位只关联四周围栏，不假设存在垄与树；不是比赛模式。",
+        "intro": "名义3.0×4.6m地图、0.4m入口。含前后垄边辅助纠偏；G1–G6各两棵固定树位，按行进方向依次停稳等待2秒，G7只通行。不启动疏果器。需配套新固件。",
         "hex_on": true,
         "loop_on": false,
         "loop_ms": 100,
@@ -1484,9 +1484,9 @@
             "subCmds": []
           },
           {
-            "name": "登记起点：中心(0.20,-0.50)，车头朝场内",
+            "name": "登记起点：x=0.20、车头朝场内（前向激光标定y）",
             "intro_on": true,
-            "intro": "SWC=1500，SWD=1000，车停稳并对准起点。登记后禁止搬车；不是自动寻找起点。",
+            "intro": "SWC=1500、SWD=1000，车停稳并对准起点、x中心对准0.20m参考线。前向激光需命中远端围栏，用实测距离标定y；标定范围-0.80至0.00m。登记后禁止搬车。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
@@ -1497,48 +1497,9 @@
             "subCmds": []
           },
           {
-            "name": "全图速度0.05m/s（停车设置）",
+            "name": "全图速度0.20m/s（默认）",
             "intro_on": true,
-            "intro": "全图专用速度，不改变直线和手动速度。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 30 35 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "全图速度0.10m/s（默认）",
-            "intro_on": true,
-            "intro": "首轮逐段测试建议保留默认低速。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 31 30 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "全图速度0.15m/s",
-            "intro_on": true,
-            "intro": "仅停车且全图未准备/运行时设置。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 31 35 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "全图速度0.20m/s",
-            "intro_on": true,
-            "intro": "先完成低速全图验收。",
+            "intro": "停车且未准备时设置；入口同档正常加减速，退出段仍限0.05m/s。动态制动保护可能提前限速。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
@@ -1551,7 +1512,7 @@
           {
             "name": "全图速度0.30m/s",
             "intro_on": true,
-            "intro": "本入口上限；不沿用直线2m/s档位。",
+            "intro": "停车且未准备时设置；入口同档正常加减速，退出段仍限0.05m/s。动态制动保护可能提前限速。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
@@ -1562,22 +1523,48 @@
             "subCmds": []
           },
           {
-            "name": "准备下一段（不运动）",
+            "name": "全图速度0.40m/s",
             "intro_on": true,
-            "intro": "SWC=1500、SWD=2000；当前段起点误差须小于50mm；等map_arm_ready=1。",
+            "intro": "停车且未准备时设置；入口同档正常加减速，退出段仍限0.05m/s。动态制动保护可能提前限速。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
             "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 41 52 4D 20 4E 45 58 54 0A",
+            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 34 30 0A",
             "is_group": false,
             "down": false,
             "subCmds": []
           },
           {
-            "name": "准备全图剩余路径（不运动）",
+            "name": "全图速度0.50m/s",
             "intro_on": true,
-            "intro": "17段先直达远端后S形返回；不启动疏果器。先逐段验证。",
+            "intro": "停车且未准备时设置；入口同档正常加减速，退出段仍限0.05m/s。动态制动保护可能提前限速。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 35 30 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "全图速度0.60m/s",
+            "intro_on": true,
+            "intro": "停车且未准备时设置；入口同档正常加减速，退出段仍限0.05m/s。动态制动保护可能提前限速。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 36 30 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "准备全图（不运动）",
+            "intro_on": true,
+            "intro": "P连续直达G7，再蛇形返回。G1–G6按测得的12个固定X树位停车2秒；不启动疏果器。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
@@ -1588,7 +1575,7 @@
             "subCmds": []
           },
           {
-            "name": "开始已准备的全图/单段",
+            "name": "开始已准备的全图",
             "intro_on": true,
             "intro": "收到准备回执后4秒内点击；自动使用本次编号；开始后车端独立运行。",
             "hex_on": true,

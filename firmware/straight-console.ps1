@@ -221,8 +221,8 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
-        if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "PREDICT") return true;
-        if (category == "MAP_STATUS" || category == "MAP_POSE") category = "MAP";
+        if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "MAP_TREE_EVENT" || category == "MAP_CONTROL_FAULT" || category == "PREDICT") return true;
+        if (category == "MAP_STATUS" || category == "MAP_POSE" || category == "MAP_AISLE" || category == "MAP_TREE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
         if (category == "CONTROL" || category == "RAMP" || category == "WALL") category = "HEALTH";
         if (category == "PAUSE" || category == "PAUSE_RANGE") return true;
@@ -376,8 +376,8 @@ public sealed class VofaTestSession {
             if (mapPhase == "RUNNING" || mapPhase == "PAUSED" || mapPhase == "ARMED" || !stopped) {
                 report("rejected=MAP_NEEDS_IDLE_STOPPED"); return false;
             }
-            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(05|10|15|20|30)$")) { tx("MAP " + action); return true; }
-            if (action == "ARM ALL" || action == "ARM NEXT") {
+            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(20|30|40|50|60)$")) { tx("MAP " + action); return true; }
+            if (action == "ARM ALL") {
                 if (!healthy || mapAwaitingArm) return false;
                 mapAwaitingArm = true; mapArmTime = now; mapArmSelection = action; tx("MAP " + action); return true;
             }

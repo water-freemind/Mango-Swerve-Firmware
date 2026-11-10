@@ -97,6 +97,21 @@ int main(void) {
     in=input((AutoPose){1,-.03f,0},1010);auto_motion_step(&m,in);
     assert(!m.reversing && m.out.command.vy==0);
     in=input((AutoPose){1,-.03f,0},1020);auto_motion_step(&m,in);assert(m.out.command.vy>0);
+    /* Relax only endpoint acceptance, keeping in-flight heading correction. */
+    c.finish_yaw_tolerance=.052359878f;
+    assert(auto_motion_begin(&m,&c,s,0));
+    in=input((AutoPose){.5f,0,.04f},10);auto_motion_step(&m,in);
+    assert(m.out.command.wz<0 && m.out.phase!=AUTO_MOTION_DONE);
+    assert(auto_motion_begin(&m,&c,s,0));
+    for(unsigned t=10;t<=300;t+=10) {
+        in=input((AutoPose){1,0,.04f},t);auto_motion_step(&m,in);
+    }
+    assert(m.out.phase==AUTO_MOTION_DONE && m.out.command.wz==0);
+    assert(auto_motion_begin(&m,&c,s,0));
+    for(unsigned t=10;t<=300;t+=10) {
+        in=input((AutoPose){1,0,.06f},t);auto_motion_step(&m,in);
+    }
+    assert(m.out.phase!=AUTO_MOTION_DONE && m.out.command.wz<0);
     auto_motion_cancel(&m);assert(m.out.command.vx==0&&m.out.command.vy==0&&m.out.command.wz==0);
     puts("AUTO_MOTION_TEST_OK (four noisy lagged runs, alignment, safety, restart, stale/NaN/deviation, normal hold)");
 }
