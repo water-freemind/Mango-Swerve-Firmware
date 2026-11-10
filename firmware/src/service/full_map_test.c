@@ -25,24 +25,44 @@ void full_map_init(FullMapTest* m,uint32_t now) {
 void full_map_stop(FullMapTest* m,const char* reason,bool lose_origin) {
     m->tree_hold=m->tree_hold_stable=false;
     m->aisle_correction.active=false;
+    m->aisle_correction.centering=false;
     m->command=m->hint=(AutoTwist){0};auto_motion_cancel(&m->motion);
     m->phase=MAP_FAULT;m->reason=reason;m->prediction=(LaserPrediction){0};
     if(lose_origin) m->localization.registered=m->localization.pose.valid=false;
 }
 static AutoMotionConfig motion_config(float speed) {
-    return (AutoMotionConfig){.vmax=speed,.accel=.10f,.decel=.10f,.lateral_max=.03f,.cross_kp=.8f,
+    /* Field tuning 2026-11-11: the former 0.15 m/s^2 ramps made every tree stop
+     * and segment end cost ~3.3 s on each side at 0.50 m/s. 0.30/0.40 keeps the
+     * approach curves monotonic while roughly halving the ramp and braking time.
+     * The laser braking budget still uses its own conservative 0.10 m/s^2, so
+     * raising the chassis decel only adds stopping margin, never removes it. */
+    /* Tuning 2026-11-11: centring gain 0.8 -> 1.2. The 100 mm near floor stays
+     * an unconditional safety invariant (pinned by range_threshold_tests), so the
+     * only way to stop grazing a 0.7 m tree pitch is to hold the centreline
+     * tighter: the row correction now eats an off-centre error ~1.5x faster. */
+    return (AutoMotionConfig){.vmax=speed,.accel=.30f,.decel=.40f,.lateral_max=.10f,.cross_kp=1.2f,
         .yaw_kp=1.2f,.wz_max=.06f,.angular_accel=.15f,.position_tolerance=.02f,
-        .cross_tolerance=.008f,.yaw_tolerance=.02f,.cross_abort=.08f,.yaw_abort=.15f,
+        .cross_tolerance=.010f,.yaw_tolerance=.034906585f,.cross_abort=.08f,.yaw_abort=.15f,
         .settle_s=.4f,.stop_latency_s=.5f,.pose_max_age_ms=50,
-        .finish_yaw_tolerance=.052359878f,.finish_cross_tolerance=.02f};
+        .finish_yaw_tolerance=.069813170f,.finish_cross_tolerance=.02f,.smooth_correction=true};
 }
 static float segment_speed(const FullMapTest* m) {
     const AutoRouteKind kind=m->route.segment[m->segment].kind;
-    float speed=kind==AUTO_ROUTE_PARK?fminf(.05f,m->speed):m->speed;
+    /* Field tuning 2026-11-11: the parking/exit leg carries no ridge work and is
+     * only ~1 m through the open entry gap, so 0.10 m/s halves its cost. */
+    float speed=kind==AUTO_ROUTE_PARK?fminf(.15f,m->speed):m->speed;
     const MapAisleCorrection* a=&m->aisle_correction;
-    if(kind==AUTO_ROUTE_SURVEY && a->confirmations && (!a->active || fabsf(a->error_m)>.008f)) {
+    if(kind==AUTO_ROUTE_SURVEY && a->confirmations) {
         const uint16_t nearest=a->front_mm<a->rear_mm?a->front_mm:a->rear_mm;
-        speed=fminf(speed,nearest<130u?.08f:.15f);
+        const float clearance=fmaxf(0,fminf(1,((float)nearest-130.0f)/50.0f));
+        /* Field tuning 2026-11-11: 0.08..0.15 m/s made the G1..G6 aisles the
+         * dominant cost of a run. 0.12..0.22 still leaves the 0.4 m unobserved
+         * budget ~2 s of correction window at the slow end, while the laser
+         * braking budget below keeps deciding every genuine approach. */
+        const float correction_speed=.12f+.10f*clearance;
+        const float error_fraction=a->active ?
+            fmaxf(0,fminf(1,(fabsf(a->error_m)-.015f)/.020f)):1.0f;
+        speed=fminf(speed,speed+(correction_speed-speed)*error_fraction);
     }
     return speed;
 }
@@ -57,8 +77,8 @@ bool full_map_set_tree_x(FullMapTest* m,unsigned row,unsigned number,float x) {
 static bool begin(FullMapTest* m,uint32_t now) {
     if(m->segment>=AUTO_ROUTE_COUNT) return false;
     if(m->tree_hold) return true; /* Resume a dwell without restarting or skipping its timer. */
-    m->aisle_correction=(MapAisleCorrection){0};
     AutoMotionConfig c=motion_config(segment_speed(m));
+    if(m->segment==0u) {c.yaw_tolerance=.017453293f;c.wz_max=.10f;}
     m->segment_ms=now;
     AutoSegment line=m->route.segment[m->segment].line;
     /* The two collinear geometry records form one continuous initial drive.
@@ -76,6 +96,15 @@ static bool begin(FullMapTest* m,uint32_t now) {
             }
         }
     }
+    if(!m->target_tree && m->segment+1u<AUTO_ROUTE_COUNT)
+        c.settle_s=.15f;
+    if(m->target_tree) {
+        const float direction=line.end.x>line.start.x?1.0f:-1.0f;
+        const float past=(m->localization.pose.pose.x-line.end.x)*direction;
+        /* Reacquiring a nearby tree after a pause may need a short reverse.
+         * Use its actual start, while preserving the aisle's nominal Y line. */
+        if(past>0 && past<=.06f) line.start.x=m->localization.pose.pose.x;
+    }
     return auto_motion_begin(&m->motion,&c,line,now);
 }
 bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
@@ -89,7 +118,7 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
         m->command=m->hint=(AutoTwist){0};auto_motion_cancel(&m->motion);m->reason="USER_PAUSE";return true;
     }
     if(!strcmp(cmd,"MAP RESUME") && m->phase==MAP_PAUSED && m->user_hold && in.healthy && in.stationary) {
-        m->user_hold=false;m->pause_ms=in.now;m->recovery_frames=0;m->stable=false;
+        m->user_hold=false;m->pause_ms=in.now;m->recovery_frames=0;m->recovery_updates=0;m->stable=false;
         m->recovery_frame=in.laser.frame_count;m->reason="RESUME_CHECK";return true;
     }
     if(!strcmp(cmd,"MAP ORIGIN")) {
@@ -119,6 +148,7 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
             m->reason="ORIGIN_CALIBRATION_FAILED";return false;
         }
         m->localization=calibrated;m->origin_front_mm=in.laser.accepted_mm[AUTO_FRONT];
+        m->aisle_correction=(MapAisleCorrection){0};
         m->segment=0;m->coverage=0;m->motion_error=AUTO_MOTION_NO_ERROR;
         m->trees_done=0;m->target_tree=0;m->tree_hold=m->tree_hold_stable=false;
         m->phase=MAP_READY;m->reason="ORIGIN_FRONT_ANCHORED";return true;
@@ -159,9 +189,10 @@ static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
     const AutoPose pose=m->localization.pose.pose;
     const LaserSnapshot* l=&in.laser;
     if(segment.kind!=AUTO_ROUTE_SURVEY || segment.aisle==7u || !l->frame_fresh ||
-       (l->valid_mask&12u)!=12u || (l->updated_mask&12u)!=12u ||
-       l->sample_age_ms[AUTO_FRONT]>200u || l->sample_age_ms[AUTO_REAR]>200u ||
-       fabsf(auto_wrap_angle(pose.yaw-1.570796327f))>.087266463f || fabsf(in.wheel.wz)>.1f)
+       (l->valid_mask&12u)!=12u ||
+       l->sample_age_ms[AUTO_FRONT]>LASER_FRAME_TIMEOUT_MS ||
+       l->sample_age_ms[AUTO_REAR]>LASER_FRAME_TIMEOUT_MS ||
+       fabsf(auto_wrap_angle(pose.yaw-1.570796327f))>.139626340f || fabsf(in.wheel.wz)>.15f)
         goto invalid;
     AutoPlane front,rear;float expected_front,expected_rear;
     const AutoLaserMount fm={.origin={.04098f,0},.yaw=0};
@@ -172,18 +203,24 @@ static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
        (front.surface_id<10u && rear.surface_id<10u) ||
        expected_front>.6f || expected_rear>.6f)
         goto invalid;
-    /* Keep away from ridge ends: slight yaw or pose error can change targets. */
+    /* Reserve the projected ray displacement plus 20mm near ridge ends.
+     * Straight, short opposing rays can qualify before the old 80mm cutoff. */
+    const float edge_margin=.02f+(fmaxf(expected_front,expected_rear)+.04098f)*fabsf(cosf(pose.yaw));
     for(unsigned row=1;row<=6;++row) {
         if((front.surface_id>=10u+4u*row && front.surface_id<=13u+4u*row) ||
            (rear.surface_id>=10u+4u*row && rear.surface_id<=13u+4u*row)) {
             const float low=row==4u?.6f:.4f, high=row==4u?2.4f:2.6f;
-            if(pose.x<low+.08f || pose.x>high-.08f) goto invalid;
+            if(pose.x<low+edge_margin || pose.x>high-edge_margin) goto invalid;
         }
     }
     const uint16_t f=l->accepted_mm[AUTO_FRONT],r=l->accepted_mm[AUTO_REAR];
-    if(!f||!r||f>600u||r>600u ||
-       fabsf((f+r)*.001f-expected_front-expected_rear)>.08f) goto invalid;
-    const float dy=((r*.001f-expected_rear)-(f*.001f-expected_front))*.5f*sinf(pose.yaw);
+    if(!f||!r||f>600u||r>600u) goto invalid;
+    const AutoVec2 velocity=auto_rotate((AutoVec2){in.wheel.vx,in.wheel.vy},pose.yaw);
+    const float projection=sinf(pose.yaw);
+    const float front_m=f*.001f-velocity.y*l->sample_age_ms[AUTO_FRONT]*.001f/projection;
+    const float rear_m=r*.001f+velocity.y*l->sample_age_ms[AUTO_REAR]*.001f/projection;
+    if(front_m<=0||rear_m<=0||fabsf(front_m+rear_m-expected_front-expected_rear)>.08f) goto invalid;
+    const float dy=((rear_m-expected_rear)-(front_m-expected_front))*.5f*projection;
     const float observed_y=pose.y+dy;
     if(fabsf(observed_y-segment.line.start.y)>.08f) goto invalid;
     if(!s->checkpoint_valid || front.surface_id!=s->front_surface || rear.surface_id!=s->rear_surface ||
@@ -193,34 +230,76 @@ static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
         s->checkpoint_wheel_y=m->localization.wheel_position.y;
     } else if(fabsf(m->localization.wheel_position.y-s->checkpoint_wheel_y)>.03f) s->frozen=true;
     if(s->frozen) goto invalid;
-    if(l->frame_count==s->frame || (s->confirmations && l->last_rx_ms==s->stamp_ms)) return;
+    /* Median source timestamps advance independently. Collect each direction
+     * once per board frame, then consume a pair after both have advanced.
+     * Freshness and geometry above still apply while waiting for its partner. */
+    if(l->frame_count==s->frame) return;
+    s->frame=l->frame_count;
+    s->pending_updates|=(uint8_t)(l->updated_mask&12u);
+    if(s->pending_updates!=12u || (s->confirmations && l->last_rx_ms==s->stamp_ms)) return;
+    const uint32_t sample_ms[2]={in.now-l->sample_age_ms[AUTO_FRONT],in.now-l->sample_age_ms[AUTO_REAR]};
+    for(unsigned sample=0;sample<2u;++sample) {
+        const uint32_t advance=sample_ms[sample]-s->sample_ms[sample];
+        if(s->confirmations && (!advance || advance>=0x80000000u)) return;
+    }
+    s->pending_updates=0;
     const uint32_t elapsed=l->last_rx_ms-s->stamp_ms;
-    if(!s->confirmations || elapsed>200u || front.surface_id!=s->front_surface ||
-       rear.surface_id!=s->rear_surface || abs((int)f-s->front_mm)>50 || abs((int)r-s->rear_mm)>50)
-        s->confirmations=0;
-    s->frame=l->frame_count;s->stamp_ms=l->last_rx_ms;
+    if(s->confirmations && (front.surface_id!=s->front_surface || rear.surface_id!=s->rear_surface ||
+       abs((int)f-s->front_mm)>50 || abs((int)r-s->rear_mm)>50)) {
+        s->confirmations=0;s->centering=false;
+    }
+    s->stamp_ms=l->last_rx_ms;
+    s->sample_ms[0]=sample_ms[0];s->sample_ms[1]=sample_ms[1];
     s->front_surface=front.surface_id;s->rear_surface=rear.surface_id;s->front_mm=f;s->rear_mm=r;
+    const bool already_confirmed=s->confirmations>=3u;
     if(s->confirmations<3u) ++s->confirmations;
-    s->error_m=observed_y-segment.line.start.y;s->correction_m=0;
+    const float error=observed_y-segment.line.start.y;
+    if(!already_confirmed) s->error_m=error;
+    else s->error_m+=.25f*(error-s->error_m);
+    s->correction_m=0;
     s->active=s->confirmations>=3u;
     if(!s->active) return;
+    if(fabsf(s->error_m)>.035f) s->centering=true;
+    else if(fabsf(s->error_m)<=.015f) s->centering=false;
     /* Limit observation corrections to 20mm/s and 2mm per fresh pair. The
      * existing motion controller then drives back toward the nominal aisle. */
     const float limit=fminf(.002f,.02f*fminf(elapsed*.001f,.2f));
-    s->correction_m=fmaxf(-limit,fminf(limit,dy*.2f));
+    const float filtered_delta=segment.line.start.y+s->error_m-pose.y;
+    s->correction_m=fmaxf(-limit,fminf(limit,filtered_delta*.2f));
     m->localization.pose.pose.y+=s->correction_m;
     m->localization.used_mask|=12u;m->localization.constrained_axes|=2u;
     m->localization.rejected_mask&=(uint8_t)~12u;
     m->localization.uncorrected_m[1]=0;
     return;
 invalid:
-    s->active=false;s->confirmations=0;s->error_m=s->correction_m=0;
+    s->active=s->centering=false;s->confirmations=s->pending_updates=0;s->error_m=s->correction_m=0;
 }
 void full_map_step(FullMapTest* m,FullMapInput in) {
     if(!m->initialized) full_map_init(m,in.now);
     const AutoTwist previous_command=m->command;
     m->command=m->hint=(AutoTwist){0};
+    const bool entry_leg=m->segment==0u;
     LaserSnapshot observation=in.laser;
+    for(unsigned i=0u;i<LASER_CHANNEL_COUNT;++i) {
+        const uint8_t bit=(uint8_t)(1u<<i);
+        if(observation.median_valid_mask&bit) {
+            observation.accepted_mm[i]=observation.median_mm[i];
+            observation.sample_age_ms[i]=observation.median_age_ms[i];
+            observation.updated_mask=(uint8_t)((observation.updated_mask&~bit)|(observation.median_updated_mask&bit));
+        }
+    }
+    if(entry_leg) {
+        /* Along the west entry lane, ridge-end returns on the right are not
+         * lateral references. The front ray constrains Y only at the north fence. */
+        uint8_t excluded=(uint8_t)((1u<<AUTO_RIGHT)|(1u<<AUTO_REAR));
+        AutoPose p=m->localization.pose.pose;
+        p.yaw=auto_wrap_angle(in.imu_yaw+m->localization.imu_offset);
+        AutoPlane front;float distance;
+        if(!field_pose_ray(p,AUTO_FRONT,&front,&distance) || front.surface_id!=3u)
+            excluded|=(uint8_t)(1u<<AUTO_FRONT);
+        observation.valid_mask&=(uint8_t)~excluded;
+        observation.updated_mask&=(uint8_t)~excluded;
+    }
     /* In G7 the south-facing ray crosses R6 and changes target at its end.
      * It must not become a south-fence position observation during this leg.
      * Keep the north/front fence and east/west observations. The original
@@ -229,7 +308,12 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         observation.valid_mask&=(uint8_t)~(1u<<AUTO_REAR);
         observation.updated_mask&=(uint8_t)~(1u<<AUTO_REAR);
     }
-    if(m->localization.registered && !field_pose_step(&m->localization,in.wheel,in.imu_yaw,in.odom_ok,&observation,in.now)) {
+    /* Horizontal ridge aisles already use the independently confirmed pair
+     * below. Do not apply a second, faster ridge correction on that axis. */
+    const bool paired_aisle=m->segment<AUTO_ROUTE_COUNT &&
+        m->route.segment[m->segment].kind==AUTO_ROUTE_SURVEY && m->route.segment[m->segment].row!=0u;
+    const AutoRoute* pose_route=paired_aisle || entry_leg ? NULL:&m->route;
+    if(m->localization.registered && !field_pose_step_route(&m->localization,in.wheel,in.imu_yaw,in.odom_ok,&observation,in.now,pose_route)) {
         if(full_map_active(m)) full_map_stop(m,"ODOMETRY_INVALID",true);
     }
     if(m->phase==MAP_ARMED) {
@@ -242,26 +326,49 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     }
     m->last_ms=in.now;
     if(m->phase==MAP_PAUSED && m->user_hold) {m->reason="USER_PAUSE";return;}
-    correct_aisle_position(m,in);
+    FullMapInput correction_input=in;
+    correction_input.laser=observation;
+    correct_aisle_position(m,correction_input);
     if(in.now-m->run_ms>900000u||in.now-m->segment_ms>120000u) {full_map_stop(m,"RUN_TIMEOUT",false);return;}
-    if(!auto_route_pose_clear(&m->route,(AutoEnvelope){.155f,.155f,.155f,.155f},m->localization.pose.pose,.01f)) {
+    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    if(!auto_route_pose_clear(&m->route,body,m->localization.pose.pose,0)) {
         full_map_stop(m,"MAP_ENVELOPE",false);return;
     }
+    const bool margin_limited=!auto_route_pose_clear(&m->route,body,m->localization.pose.pose,.01f);
     LaserPredictionOutput range=laser_prediction_step(&m->prediction,&in.laser,in.now,
         in.wheel.vx,in.wheel.vy,in.imu_yaw,m->phase==MAP_RUNNING);
     m->predicted_mask=range.mask;
     /* Necessary ray follows both measured motion and the next segment direction;
      * entering an open start/gate ray relies on the registered map envelope.
      * Other failed directions do not invalidate localization/navigation. */
-    const AutoSegment seg=m->route.segment[m->segment].line;
+    const AutoSegment seg=m->motion.initialized?m->motion.segment:m->route.segment[m->segment].line;
     AutoVec2 direction=auto_rotate((AutoVec2){seg.end.x-seg.start.x,seg.end.y-seg.start.y},-m->localization.pose.pose.yaw);
     const float len=hypotf(direction.x,direction.y);direction.x/=len;direction.y/=len;
     const float toward[4]={fmaxf(0,in.wheel.vy),fmaxf(0,-in.wheel.vy),fmaxf(0,-in.wheel.vx),fmaxf(0,in.wheel.vx)};
     const float commanded[4]={fmaxf(0,previous_command.vy),fmaxf(0,-previous_command.vy),
         fmaxf(0,-previous_command.vx),fmaxf(0,previous_command.vx)};
     const float ahead[4]={direction.y,-direction.y,-direction.x,direction.x};
-    const bool pose_limited=m->localization.uncorrected_m[0]>.4f||m->localization.uncorrected_m[1]>.4f;
-    uint8_t required=0;bool safe=!pose_limited;
+    /* Field tuning 2026-11-11: the entry/exit gap leaves the parking leg without
+     * a south fence, so its Y axis can never be corrected; at 0.10 m/s it covers
+     * ~1 m, where wheel-odometry drift stays far inside the 80 mm envelope
+     * margin. Exempt that leg from the unobserved-travel pause and raise the
+     * general budget from 0.40 m to 0.80 m, so one sparse stretch no longer ends
+     * a whole run. Envelope and laser protection below are untouched. */
+    const bool park_leg=m->route.segment[m->segment].kind==AUTO_ROUTE_PARK;
+    const bool entry_side_observed=entry_leg && observation.frame_fresh && (observation.valid_mask&1u) &&
+        observation.sample_age_ms[AUTO_LEFT]<=LASER_FRAME_TIMEOUT_MS &&
+        in.now-m->localization.constrained_ms[0]<=LASER_FRAME_TIMEOUT_MS &&
+        m->localization.uncorrected_m[0]<.05f &&
+        fabsf(auto_wrap_angle(m->localization.pose.pose.yaw-1.570796327f))<.139626340f;
+    const float y_budget=entry_side_observed?3.5f:1.2f;
+    const bool pose_limited=!park_leg && (m->localization.uncorrected_m[0]>1.2f||
+        m->localization.uncorrected_m[1]>y_budget);
+    const bool entry_needs_north=entry_leg && m->route.segment[1].line.end.y-m->localization.pose.pose.y<.30f &&
+        in.now-m->localization.constrained_ms[1]>500u;
+    uint8_t required=0;bool safe=!pose_limited && !entry_needs_north;
+    float range_speed=segment_speed(m);
+    if(entry_side_observed && m->localization.uncorrected_m[1]>.4f) range_speed=fminf(range_speed,.25f);
+    if(margin_limited) range_speed=fminf(range_speed,.05f);
     for(unsigned i=0;i<4;++i) {
         AutoPlane plane;float predicted;
         const bool wall=field_pose_ray(m->localization.pose.pose,i,&plane,&predicted);
@@ -272,33 +379,60 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         const float budget=FULL_MAP_MIN_LASER_RANGE_M+speed*.5f+speed*speed/.2f;
         if((ahead[i]>.2f||toward[i]>.01f) && (in.laser.valid_mask&bit) &&
            in.laser.accepted_mm[i]*.001f<=budget) safe=false;
+        if(ahead[i]>.2f && in.laser.frame_fresh && ((in.laser.valid_mask|range.mask)&bit)) {
+            /* Brake before entering the existing emergency pause envelope.
+             * Include frame age and one producer interval in the lookahead. */
+            const float delay=.70f+fminf(.30f,in.laser.sample_age_ms[i]*.001f);
+            const float available=fmaxf(0,range.mm[i]*.001f-FULL_MAP_MIN_LASER_RANGE_M-.03f);
+            /* Protection uses the conservative 0.10m/s^2 braking model.
+             * Leave 0.03m/s for feedback tracking above the requested speed. */
+            const float decel=.10f;
+            const float closing_limit=sqrtf(decel*decel*delay*delay+2*decel*available)-decel*delay;
+            range_speed=fminf(range_speed,fmaxf(0,closing_limit-.03f)/ahead[i]);
+        }
         if(!wall) continue;
         if(ahead[i]>.2f||toward[i]>.01f) required|=bit;
         if(!(required&bit)) continue;
         if(!in.laser.frame_fresh||!((in.laser.valid_mask|range.mask)&bit)) {safe=false;continue;}
         if(range.mm[i]*.001f<=budget) safe=false;
     }
+    if(m->required_mask!=required) {
+        m->recovery_frames=0;m->recovery_updates=0;m->stable=false;
+    }
     m->required_mask=required;
     if(!safe) {
         m->tree_hold_stable=false;
         if(m->phase!=MAP_PAUSED) {
             m->phase=MAP_PAUSED;m->pause_ms=in.now;m->stable=false;m->recovery_frames=0;
+            m->recovery_updates=0;
             m->recovery_frame=in.laser.frame_count;auto_motion_cancel(&m->motion);
         }
-        m->reason=pose_limited?"POSE_OBSERVATION_PAUSE":"RANGE_PAUSE";
+        m->reason=pose_limited?"POSE_OBSERVATION_PAUSE":entry_needs_north?"ENTRY_NORTH_PAUSE":"RANGE_PAUSE";
     }
     if(m->phase==MAP_PAUSED) {
-        if(in.now-m->pause_ms>=5000u) {
+        /* Field tuning 2026-11-11: 5 s was shorter than one braking-and-settle
+         * cycle plus two independent fresh frames whenever the pause started at
+         * the far end of a 0.80 m unobserved stretch, which turned a recoverable
+         * pause into a latched FAULT. 8 s keeps the same 2-frame + 200 ms gate. */
+        if(in.now-m->pause_ms>=12000u) {
             const char* timeout_reason="RANGE_TIMEOUT";
             if(!strcmp(m->reason,"POSE_OBSERVATION_PAUSE")) timeout_reason="POSE_OBSERVATION_TIMEOUT";
+            else if(!strcmp(m->reason,"ENTRY_NORTH_PAUSE")) timeout_reason="ENTRY_NORTH_TIMEOUT";
             else if(!strcmp(m->reason,"RANGE_PAUSE")) timeout_reason="RANGE_PAUSE_TIMEOUT";
             full_map_stop(m,timeout_reason,false);return;
         }
-        if(!safe||!in.stationary) {m->stable=false;m->recovery_frames=0;return;}
+        if(!safe||!in.stationary) {
+            m->stable=false;m->recovery_frames=0;m->recovery_updates=0;
+            m->recovery_frame=in.laser.frame_count;return;
+        }
         if(in.laser.frame_count!=m->recovery_frame) {
             m->recovery_frame=in.laser.frame_count;
-            if((in.laser.updated_mask&required)==required) ++m->recovery_frames;
-            else m->recovery_frames=0;
+            /* A repeated median is fresh but adds no independent evidence.
+             * Retain earlier clear samples while the next required rays advance. */
+            m->recovery_updates|=(uint8_t)(in.laser.updated_mask&required);
+            if((m->recovery_updates&required)==required) {
+                ++m->recovery_frames;m->recovery_updates=0;
+            }
         }
         if(m->recovery_frames<2u) return;
         if(!m->stable) {m->stable=true;m->stable_ms=in.now;}
@@ -307,10 +441,17 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         m->phase=MAP_RUNNING;m->reason="RESUMED";
     }
     if(m->tree_hold) {
+        if(m->aisle_correction.active && m->aisle_correction.centering) {
+            m->tree_hold=m->tree_hold_stable=false;
+            if(!begin(m,in.now))
+                full_map_stop(m,"TREE_RECENTER_FAILED",false);
+            else m->reason="TREE_RECENTER";
+            return;
+        }
         const AutoPose p=m->localization.pose.pose;
         const AutoVec2 target=m->motion.segment.end;
-        if(fabsf(p.x-target.x)>.02f || fabsf(p.y-target.y)>.02f ||
-           fabsf(auto_wrap_angle(p.yaw-m->motion.segment.heading))>.052359878f) {
+        if(fabsf(p.x-target.x)>.03f || fabsf(p.y-target.y)>.03f ||
+           fabsf(auto_wrap_angle(p.yaw-m->motion.segment.heading))>m->motion.config.finish_yaw_tolerance) {
             m->tree_hold=m->tree_hold_stable=false;
             if(!begin(m,in.now)) full_map_stop(m,"TREE_REPOSITION_FAILED",false);
             else m->reason="TREE_REPOSITION";
@@ -328,17 +469,23 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         else m->reason="TREE_NEXT";
         return;
     }
+    m->motion.config.vmax=fmaxf(.001f,m->predicted_mask ?
+        fminf(range_speed,LASER_PREDICT_SPEED_CAP_MPS):range_speed);
+    /* The previous segment's alignment flag describes its old wheel targets.
+     * Prime the new direction with a zero-drive preparation cycle first. */
     AutoMotionInput input={.pose=m->localization.pose,.measured=in.wheel,.healthy=true,
-        .aligned=in.aligned,.stationary=in.stationary,.now_ms=in.now};
+        .aligned=in.aligned && m->motion.started,.stationary=in.stationary,.now_ms=in.now};
+    if(m->aisle_correction.active && m->aisle_correction.centering) {
+        /* Use the confirmed pair immediately for centering. The separately
+         * rate-limited fused pose remains the map/envelope state. */
+        input.pose.pose.y=seg.start.y+m->aisle_correction.error_m;
+        input.hold_along=true;
+        m->reason="AISLE_CENTERING";
+    } else if(!strcmp(m->reason,"AISLE_CENTERING")) m->reason="AISLE_CENTERED";
     AutoMotionOutput out=auto_motion_step(&m->motion,input);
     if(out.phase==AUTO_MOTION_FAULT) {m->motion_error=out.error;full_map_stop(m,"MOTION_FAULT",false);return;}
     if(out.progress<-.05f) {full_map_stop(m,"WRONG_DIRECTION",false);return;}
     m->command=out.command;m->hint=out.steering_hint;
-    if(m->predicted_mask) {
-        /* Prediction is a degraded interval; request
-         * braking via the motion profile on the next step, not fictitious fixes. */
-        m->motion.config.vmax=fminf(segment_speed(m),LASER_PREDICT_SPEED_CAP_MPS);
-    } else m->motion.config.vmax=segment_speed(m);
     if(out.phase==AUTO_MOTION_DONE) {
         if(m->target_tree) {
             m->tree_hold=true;m->tree_hold_stable=false;
@@ -347,6 +494,9 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         const unsigned aisle=m->route.segment[m->segment].aisle;
         if(aisle) m->coverage|=(uint8_t)(1u<<(aisle-1));
         m->segment+=(m->segment==0u?2u:1u);m->command=m->hint=(AutoTwist){0};
+        /* Tree targets and pause recovery stay on the same aisle. A new
+         * route segment needs its own surface and independent-frame history. */
+        m->aisle_correction=(MapAisleCorrection){0};
         if(m->segment==AUTO_ROUTE_COUNT) {m->phase=MAP_DONE;m->reason="ROUTE_COMPLETE";return;}
         if(!begin(m,in.now)) {full_map_stop(m,"MOTION_CONFIG",false);return;}
         m->reason="NEXT_SEGMENT";

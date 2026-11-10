@@ -1049,6 +1049,132 @@ TEST_MAP_TREE报告全局target（Rn第k棵对应2×(n−1)+k）、row/number、
 
 复测：回入口、SWD=1000，停稳登记起点；设置全图0.20m/s，再SWD=2000准备全程并在4秒内开始。重点看G7 `segment=2` 是否转到 `segment=3`，随后G6为段4；G7没有树停留，G6依次在X=1.885m、0.675m停稳各2秒。若再停，先保存MAP_EVENT、MAP_STATUS、MAP_POSE、MAP_AISLE及四路接纳距离，不要在G7重新登记起点。
 
+### 8.1.22 G6速度过渡与G5驻留中止排查（2026-11-10）
+
+完整日志 `firmware/build/logs/straight-console-20261110-193420.log` 中，token2设置0.40m/s。上行段0在2534154ms、G7段2在2551575ms因RANGE_PAUSE暂停，分别在约1.20秒、0.98秒后恢复。首处接纳前距从2177mm降至857mm，现有记录不能证明对应实物障碍或测距异常。G6段4内未记录新的RANGE_PAUSE，居中误差在8mm附近变化时，旧速度上限在设定值、0.15及0.08m/s之间跳变。G5右树在2620387ms进入驻留，2621507ms因FEEDBACK_OR_PERMIT中止，相邻状态明确报告RC_STICK；该次未完成2秒驻留。低频遥控日志未捕获瞬时摇杆通道值，不能区分实际碰杆与输入毛刺。
+
+当前优化候选将居中误差8–20mm区间改为连续限速，并将130–180mm近侧净空的纠偏速度连续插值为0.08–0.15m/s。接近端点采用制动距离方程的解析速度上限，避免当前速度参与减法导致目标反复变化。航向纠偏过零通过角加速度限制，不再触发平移反向等待。全图运动在原动态停车范围之前增加带帧龄和预留量的平滑限速，暂停/故障事件增记TEST_MAP_INPUT与TEST_MAP_RANGE，含瞬时遥控值、blockers、控制周期及四路接纳距离。
+
+专项回归覆盖航向纠偏过零仍连续平移、端点目标不随速度反馈噪声跳变、8mm阈值连续过渡、提前限速及近障/许可丢失停车。完整主机回归含49项Python测试通过，Diagnostics、ManualStandalone、StraightTest均完成96源文件构建。最终StraightTest编译已修正新增诊断日志的整数格式警告，烧录获Verified OK及FLASH_OK，复位后恢复COM12/921600至UDP1347/1348监听，车辆为STOP、停稳、IDLE，四路有效位0xf。最终烧录前1MB备份为 `firmware/build/backup/before-flash-20261110-201348-826.bin`，此前部署版保存在同目录 `before-flash-20261110-200848-196.bin`。镜像、源码补丁、测试及烧录证据归档于 `firmware/build/deployed/20261110-map-speed-smoothing/`。实车速度均匀性及两处暂停是否复现待验证，复位后需回入口重新登记起点。
+
+### 8.1.23 起点重登记、纵向失配与横向树位复核（2026-11-10）
+
+已部署速度优化版的完整记录为 `firmware/build/logs/straight-console-20261110-201550.log`。token1、2在上行段分别以纵向未校正行程0.405m、0.406m触发POSE_OBSERVATION_PAUSE，第二次等待5秒后超时。相邻遥控许可正常，前距2230/1979mm与围栏模型不匹配，不能认定测距数据有效位0xf即代表能参与地图定位。后续ORIGIN_OUTSIDE_ENTRY_ZONE时前距约164mm，用户确认车辆尚未回入口。返回后前距恢复约4.75m，重新登记成功，token4完成G6至G2的10个树点；G2转G1的段13再次出现纵向观测超时，后续CONTROL_MODE_CHANGED是另一个状态变化。
+
+用户明确本轮对树问题是横移方向没有对准。token4到树前最近定位的X误差约3–18mm，不能当作物理实测误差。以相同含轮速比例误差的仿真分别回放优化前和当前控制器，12树物理模拟到点偏差均约19mm，方向与横移方向相反，符合原有20mm到点窗口；优化前后树坐标一致。该比较不能证明实车对树精度已达标，也不能用纵向失配解释横向对树问题。
+
+源码中的独立定位候选新增field_pose_step_route，对有已知田垄模型且入射角、150mm残差门限通过的回波建立关联；横移田垄段继续使用已有成对确认的居中校正，避免叠加两次田垄修正。旧field_pose_step保留围栏模型语义。专项覆盖已知田垄面、重复时间戳和无法关联的入口2230mm回波，完整主机回归含49项Python测试及StraightTest 96源文件构建通过，证据为 `firmware/build/map-observation-host.log` 与 `map-observation-build.log`。该版本已于2026-11-10 22:36完成StraightTest烧录，OpenOCD报告Verified OK及FLASH_OK；1MB烧录前备份为 `firmware/build/backup/before-flash-20261110-223505-376.bin`，部署镜像及证据归档于 `firmware/build/deployed/20261110-map-observation/`。复位后车辆STOP、停稳、IDLE，四路有效位0xf，COM12/921600与UDP1347/1348持续记录正常。无法关联的入口回波来源仍待核实，20mm到点容差、树位坐标及现场对齐基准本轮未重新标定。
+
+### 8.1.24 全图换向等待优化（2026-11-10）
+
+模式6普通段末的连续停稳确认从400ms调整为150ms，树点到位与最终停车仍采用400ms确认。每次新段首个控制周期强制进入零驱动轮向准备，防止将上一段的alignment状态当作新方向已对齐；随后依据底盘新目标的反馈门禁启动加速。当前低速阈值仅0.0001/0.00015m/s，不能将转弯停留主要归因于低速阈值等待。树旁2秒驻留、轮向角门禁及位置/航向到点窗口沿用既有契约。
+
+专项测试覆盖旧方向alignment为真时仍先零驱动准备、轮向未到位持续等待、反馈放行后有界起步，以及每个树点与最终停车的确认时间。完整主机回归含49项Python测试通过，StraightTest 96源文件构建通过。相同0.20m/s仿真由272.23秒缩短至268.69秒，停车误差约20.4mm，约3.54秒收益属于模拟结果，实车效果待验证。
+
+版本经用户停稳确认后烧录，Verified OK及FLASH_OK，烧录前1MB备份为 `firmware/build/backup/before-flash-20261110-225327-445.bin`。镜像、补丁及证据归档于 `firmware/build/deployed/20261110-map-corner/`。上一部署日志 `straight-console-20261110-223738.log` 的token1已完整ROUTE_COMPLETE；后续轮次仍出现POSE_OBSERVATION_TIMEOUT及MAP_ENVELOPE，不能将首轮成功推广为所有轮次均通过。这些定位/包络异常与本次换向等待优化分别记录。
+
+### 8.1.25 G1入口预留带与优先居中（2026-11-10）
+
+上一部署日志 `straight-console-20261110-225607.log` 的token1、2均在段14进入G1时触发MAP_ENVELOPE，第一份故障后快照分别为(0.543,0.233)、(0.574,0.233)m。前后距离116/206及119/206mm对应成对观测偏差约45/43.5mm，遥控与硬件blockers为0。旧80mm垄端排除窗口与3帧确认叠加后，观测开始参与时已接近带10mm预留的包络边界。
+
+当前候选将包络分为实际车身与10mm预留带两层。实际车身模型按0.155m四向半尺寸检查，越界触发MAP_ENVELOPE；仅进入10mm预留带则将速度上限限制为0.05m/s，允许已确认的居中修正。田垄观测的端部排除宽度改为20mm加当前射线横向投影，近于正向、短距离的可靠双束可更早参与。三帧确认后误差超过20mm进入AISLE_CENTERING，沿路线方向通过既有加减速斜率收至零，并用已确认偏差执行横向修正；误差收至10mm内恢复路线速度。此迟滞减少门槛附近来回切换，TEST_MAP_AISLE新增centering字段。
+
+专项模拟以现场两组距离和89.29°/88.69°航向构造入口，初始已按0.20/0.30m/s横移且执行器带40ms滞后。两组均经过预留带并恢复到Y约0.2004/0.1986m后继续行驶；结果为模拟验证，不能替代实车净空或传感器外参标定。完整回归包含49项Python测试通过，StraightTest 96源文件构建通过。新增覆盖实际包络越界锁故障、99mm近距暂停、独立帧确认、20/10mm迟滞、沿线暂停时居中可用及恢复起步有界。证据为 `firmware/build/map-margin-host.log`、`map-margin-build.log`；Diagnostics、ManualStandalone也完成96源构建。用户停稳确认后已烧录StraightTest，获Verified OK及FLASH_OK。1MB原固件备份为 `firmware/build/backup/before-flash-20261110-232707-868.bin`，部署归档为 `firmware/build/deployed/20261110-map-margin/`。复位后STOP、停稳、IDLE，新增centering字段已出现，COM12/921600与UDP1347/1348持续更新；实车入口恢复效果待复测。
+
+### 8.1.26 到点窗口与优先居中冲突修复（2026-11-10）
+
+日志 `straight-console-20261110-232909.log` 的token3在G4第二树附近（段8、X约1.204m）持续AISLE_CENTERING至少100秒。确认误差约-17.5至-18mm、centering=1，而速度命令为零。8.1.25新增优先居中要求误差收至10mm内，原运动控制器却在沿线到点且横向偏差进入20mm终点窗口时将横向速度清零，导致双条件互锁。这是该新增逻辑的缺陷，原G1入口闭环与中段暂停测试未覆盖已到树点的场景。
+
+修复使hold_along期间继续按行驶横向容差执行居中，直到上层解除hold_along，再使用终点验收窗口。已进入树旁驻留后才确认居中需求时，退出驻留并重新初始化当前树点的运动控制，保留有效成对观测；居中完成后重新完整计时2秒，不跳树。新增双向17.5mm单元测试，以及G4树1到点前居中、驻留期间延迟观测的40ms执行器滞后回放，两种集成情形均约3.49秒完成纠偏与驻留。完整回归含49项Python测试及StraightTest构建通过，实车结果待确认。证据为 `firmware/build/centering-endpoint-host.log`、`centering-endpoint-autonomy.log`、`centering-endpoint-build.log`。当前版本已完成StraightTest烧录，Verified OK及FLASH_OK；Diagnostics、ManualStandalone亦构建通过。烧录前1MB备份为 `firmware/build/backup/before-flash-20261110-235034-296.bin`，部署归档于 `firmware/build/deployed/20261110-centering-endpoint/`。烧录前实时遥控SWD=1000、摇杆回中且车辆停稳，复位后为STOP/IDLE、四路有效0xf，COM12/921600与UDP1347/1348恢复持续更新。修复后的实车树点节奏待验证。
+
+### 8.1.27 手动控制周期与周期日志叠加（2026-11-11）
+
+日志 `straight-console-20261110-235234.log` 中遥控接收持续online=1、VRB约1000且硬件起初正常。手动曾成功解锁并输出速度，随后MANUAL_CONTROL_TIMING清除解锁状态，控制周期历史最大55ms，超过50ms看门狗。首次故障前集中输出了全图四行状态、PLAN/RANGE/BRAKE及STATUS/FW/明细；这些记录共用64字节分块且块间1ms的同步无线日志路径。后续另出现CAN1 tx_fail=1并锁存CAN_TX_OR_BUS，电机反馈仍持续更新，不能将该后续硬件门禁归为遥控无线掉线。
+
+修复按控制来源限制周期日志，MANUAL期间输出遥控、健康、实际状态和13通道波形，自动任务的周期全图与计划日志由其他模式输出；显式查询与故障回执按原命令处理。手动控制周期超时时增加TEST_REMOTE事件及gap_ms，50ms控制周期检查继续执行。新增发送耗时回归对每条日志模拟6ms占用，原部署源码会失去manual_armed，新源码连续5000次循环通过，最大批次30ms；额外插入真实51ms间隔仍触发停车。此测试补足旧的零耗时日志桩不能覆盖主循环阻塞的问题。
+
+完整主机回归含49项Python测试和StraightTest 96源文件构建通过，证据为 `firmware/build/manual-log-budget-host.log`、`manual-log-budget-baseline.log`、`manual-log-budget-build.log`。用户此前已授权修复，实时状态确认SWD=1000、回中停稳后完成StraightTest烧录，Verified OK及FLASH_OK。1MB原固件备份为 `firmware/build/backup/before-flash-20261111-000423-233.bin`，部署归档于 `firmware/build/deployed/20261111-manual-log-budget/`。Diagnostics、ManualStandalone也构建通过；复位后遥控在线、hw_ok=1、CAN发送失败计数回到0，COM12/921600与UDP1347/1348恢复。实车手动持续性及CAN1发送失败是否复现待验证。
+
+### 8.1.28 全图连续距离滤波、加减速与树位更新（2026-11-11）
+
+日志 `straight-console-20261111-000547.log` 的token2以0.40m/s完成12树与7沟，出现三次RANGE_PAUSE，持续1.199、0.991、1.105秒。第一处前距2720→1087→2634mm含明显短时变化；另两处在前距1056mm、左距992mm附近，实测速度0.390/0.376m/s触及动态停车范围。三次都自动恢复，随后ROUTE_COMPLETE。
+
+激光快照新增连续median_mm及实际源样本年龄、有效位和独立更新位，四路共用既有三点历史。全图输入通常使用连续中值，包含1100mm以内的普通短距回波；原始读数和原accepted_mm接口仍提供既有即时近距语义。中值若再次选到相同或更早源样本，不作为新的独立观测；缓存过期也按源样本年龄判断。全图急近距旁路按 `max(200mm, 100mm + 5000*v² + 100*v)` 判断，v取该方向实测与命令接近速度的较大值，直接使用即时近距值；该值对应0.10m/s²制动模型及100ms短时响应余量。现有100mm硬近距与动态停车检查继续执行。
+
+全图加速、减速规划由0.10提高至0.15m/s²。提前限速使用0.10m/s²保护模型，并预留0.03m/s跟随余量，样本年龄包含中值选样延迟。测试覆盖现场1087mm孤立毛刺、源年龄、重复/倒退源样本、过期、前距1056与左距992的适配及紧急900/99mm旁路；0.40m/s接近端墙/左墙的闭环加入100ms滤波延迟、50ms执行器滞后，两组连续减速完成，无RANGE_PAUSE。相同0.20m/s全图仿真268.69→257.40秒，属于模拟结果。
+
+本轮用户提供的左右树位以厘米计，从西侧地图边界量至底盘中心对齐参考。
+
+| 通道 | 树1 | 树2 |
+| --- | --- | --- |
+| G1 | 123 | 215 |
+| G2 | 73 | 163 |
+| G3 | 68 | 222 |
+| G4 | 119 | 210 |
+| G5 | 130 | 220 |
+| G6 | 66.5 | 187.5 |
+
+数据写入full_map_tree_positions.h并经12点配置与全路线回归核对。完整C/PowerShell与49项Python测试、StraightTest 96源文件构建通过，证据为 `firmware/build/map-filter-accel-trees-host.log`、`map-filter-accel-trees-build.log`。用户已授权本轮优化，实时SWD=1000、回中停稳后已完成StraightTest烧录，Verified OK及FLASH_OK；Diagnostics、ManualStandalone也完成96源文件构建。1MB原固件备份为 `firmware/build/backup/before-flash-20261111-005549-702.bin`，部署归档于 `firmware/build/deployed/20261111-map-filter-accel-trees/`。复位后STOP/IDLE、遥控在线、硬件正常，COM12/921600与UDP1347/1348持续更新。实车暂停次数、速度过渡及对树误差待复测。
+
+### 8.1.29 轮向准备与起步同步、定位距离平滑（2026-11-11）
+
+`straight-console-20261111-005724.log` 中token1在上行处触发MAP_ENVELOPE，左距连续约107–111mm，故障快照X=0.159m、航向92.01°，属于持续近距与包络条件，不能当作单帧毛刺删除。token2上行因前距约6894mm与地图不匹配，未获纵向修正行程达到0.4m，暂停2.135秒后恢复。后续token3、4以0.50m/s经过相近位置时，前距约2.8m降至1145/1157mm，分别暂停约1.695/2.195秒；这些与轮向反复准备分别分析。
+
+用户确认“跳舞”主要为轮子反复转向、车身基本不动。原规划器用完整目标线速度与角速度生成prepare hint，实际起步分别限制线加速度、角加速度，导致其比例改变，轮向目标随之改变并可能重新关闭对齐门禁。已改为按二者更严格的约束采用共同推进比例，保证起步首帧与准备阶段的四轮方向一致；门禁关闭期间保持零驱动命令。原部署源码在新增四轮方向一致性测试中失败，修复版在0.50m/s及低速居中场景通过。
+
+定位与居中使用含近距的连续中值快照，距离保护使用独立即时/常规过滤路径；持续贴边仍进入保护。成对居中增加按两束各自样本年龄的位移投影及0.25 EMA，仅确认后的新独立样本更新平滑量。未出现新中值样本时保留仍有效的确认状态，样本超龄、几何不匹配或冻结则退出资格。TEST_MAP_POSE新增wz及motion_phase供复测区分ALIGN/RUN。
+
+紧急近距旁路按当前有效的motion.config.decel计算制动项，当前规划为0.15m/s²；未初始化时回退0.10。其200mm下限和100ms响应项继续参与计算，常规动态保护仍按0.10m/s²执行。新增0.50m/s的1145mm孤立跳变、中值进入连续近距以及600mm即时旁路回归。该调整依赖已启用的减速规划，实车停止距离仍需验证。持续无可靠纵向观测时仍会暂停，不以平滑值伪造地图修正。
+
+完整主机回归含49项Python测试和StraightTest构建通过，证据为 `firmware/build/steering-filter-host.log`、`steering-filter-autonomy.log`、`steering-filter-before.log`、`steering-filter-build.log`。本版已烧录并Verified OK，镜像与启动检查记录于 `firmware/build/deployed/20261111-steering-filter-chassis/`。后续参数版于03时06分烧录并归档 `firmware/build/deployed/20261111-relaxed-guards/`，使用全图加速0.30、减速0.40m/s²及12秒暂停上限。本轮新增修复见8.1.30。
+
+### 8.1.30 中值观测配对与暂停恢复（2026-11-11）
+
+本轮依据 `straight-console-20261111-033233.log` 的token2分析。0.50m/s设置下，G4横移段segment8在树点附近反复进入AISLE_CENTERING、AISLE_CENTERED和TREE_DWELL，第一树点从首次驻留到TREE_NEXT约6.5秒。随后约479.5、483.0、489.0秒进入RANGE_PAUSE，第三次持续12秒后报RANGE_PAUSE_TIMEOUT，停车位置约X=0.930、Y=2.280m。最后一次暂停期间采得120帧后向原始波形，读数持续96–100mm。模式切换记录在约507.5秒，发生在超时之后。
+
+三点中值的前后源样本会独立更新。旧居中逻辑要求二者在同一CAN帧更新，超过200ms的配对间隔也会清除确认。中值选到两帧前的源样本时，100ms生产周期下其年龄从200ms继续增加，旧200ms准入会在下一控制周期退出。确认与限速反复变化，使同一条直线反复加减速，贴边修正也容易中断。旧暂停恢复逻辑还会在某帧中值未独立更新时清除已获得的安全样本计数。
+
+修复后按前后各自独立更新积累配对，同时检查两束实际源时间戳都晚于上次使用值。缓存重复或时间倒退不会新增确认。居中准入使用既有LASER_FRAME_TIMEOUT_MS的300ms源样本时效，并按年龄补偿位移。几何不匹配、失效、超龄和冻结仍撤销资格。同一垄内切换树点及暂停恢复保留配对状态，在登记起点和切换路线段时重新建立观测。暂停恢复在条件持续安全、车辆停稳时积累两组必要方向独立更新，再确认200ms停稳。
+
+新增异步配对、缓存/倒退时间戳、250/301ms源样本边界、树点衔接和间歇独立更新恢复测试。旧逻辑分别在配对与恢复回归中失败。另以实际laser.c三点中值模块、100ms测距、±2mm噪声、40ms执行器滞后和5mm/s横向漂移模拟G4横移，旧版出现RANGE_PAUSE_TIMEOUT，修复版15.47秒进入下一段，零暂停，末端横向误差约15mm，10ms速度步进最大0.004m/s。这些数值为软件模拟结果。
+
+完整C/PowerShell与49项Python回归通过，StraightTest、Diagnostics、ManualStandalone各96源文件构建通过。证据为 `firmware/build/aisle-continuity-host.log`、`aisle-continuity-targeted.log`、`aisle-continuity-before.log`、`aisle-continuity-recovery-before.log`、`aisle-continuity-replay.log`及三个模式构建日志。用户确认SWD关闭且停稳后，本版已烧录StraightTest，OpenOCD报告Verified OK及FLASH_OK。完整1MB原固件备份为 `firmware/build/backup/before-aisle-continuity-20261111-040735-135.bin`，写入前已校验。镜像与证据归档于 `firmware/build/deployed/20261111-aisle-continuity/`，HEX SHA256为 `F224BDFB444A2A50261116F68C101F8C57D6FDBE96657B0EDAA37F382475725A`。复位后STOP、停稳、零命令、hw_ok=1、遥控在线、IMU校准2000/2000、CAN1/2/3正常、四路测距有效0xf。COM12/921600与UDP1347/1348持续更新，PING回执和WAVE放行已确认，日志为 `straight-console-20261111-040757.log`。下一轮须回到实际入口重新登记起点，实车暂停次数及速度平顺性待复测。
+
+### 8.1.31 轮向准备稳定与小误差连续纠偏（2026-11-11）
+
+本轮分析 `straight-console-20261111-040757.log` 的token1，速度设置0.20m/s。G4段segment8从约282.447秒的X=2.227m接近2.10m树点，至308.533秒终止，期间多次motion_phase=ALIGN且行走指令为零。航向一度达到95–96°，超过旧成对测距5°准入，居中确认随之退出。305.560秒因后向103mm及接近速度约0.014m/s进入RANGE_PAUSE，307.735秒恢复，307.915秒后距100mm再暂停，308.420秒恢复。308.533秒以MAP_ENVELOPE终止，附近位姿约X=2.124、Y=2.261m、航向92.47°，对应旋转车体模型的下侧包络边界。
+
+全图控制启用连续死区纠偏，先从误差中减去死区再计算比例输出，抑制刚越过阈值时的指令跳变。轮向准备可保持相容的方向最多250ms，让转向电机跟上目标。纠偏反向会立即重新准备，驱动保持零。首个行走指令沿已准备方向起步，并按当前有效速度上限同比缩放线速度与角速度。车辆已停稳且目标指令为零时，允许正常累计到点确认时间。新增行为由AutoMotionConfig.smooth_correction显式启用。
+
+| 全图参数 | 旧值 | 本版 |
+| --- | --- | --- |
+| 行驶航向纠偏死区 | 约1.15° | 2° |
+| 到点航向容差 | 3° | 4° |
+| 行驶横向纠偏死区 | 8mm | 10mm |
+| 居中暂停进入/释放 | 20/10mm | 35/15mm |
+| 成对测距航向准入 | ±5° | ±8° |
+| 成对测距角速度准入 | 0.10rad/s | 0.15rad/s |
+
+15–35mm居中误差连续收紧行驶速度，超过35mm转为沿程暂停居中，降至15mm释放。树点的2秒驻留、各轴20mm位置验收、100mm近距和模型包络检查仍参与执行。大幅位置/航向偏离、失效测距和控制许可撤销仍走停车路径。
+
+新增死区边界、零目标闭门禁到点、200ms准备目标保持、方向改变重新准备和降速后的起步限幅回归。test_chassis_control.c将真实chassis.c门禁与auto_motion.c联合模拟，含转向速度限制、执行器滞后、±3mm位置噪声和约±0.69°航向噪声。相同参数下旧版到点11.23秒、门禁反复关闭81次，本版3.33秒、反复关闭0次，最终横向误差均约17.1mm。真实laser.c中值模块的含噪G4模拟亦完成，零暂停，末端横向误差约20.8mm。以上均为软件模拟，实车精度与平顺性待复测。
+
+完整C/PowerShell与49项Python回归通过，三个模式各96源文件构建通过。证据为 `firmware/build/wheel-settle-host.log`、`wheel-settle-before.log`、`wheel-settle-prepare-before.log`、`wheel-settle-gate-before.log`、`wheel-settle-gate-after.log`、`wheel-settle-range-replay.log`及各模式构建日志。用户确认停稳并授权烧录后，已通过HID实际400kHz完成完整1MB备份、校验及StraightTest写入，Verified OK及FLASH_OK。备份为 `firmware/build/backup/before-wheel-settle-hid-20261111-045857-465.bin`，归档 `firmware/build/deployed/20261111-wheel-settle/`，HEX SHA256为 `83D76D0CE94866EBD807AFC55347B7945ABB6A741DABFEDF2BA1F6818222951D`。此前多次CMD_INFO或SWD超时的失败均发生在写入前。VOFA与桥接已恢复UDP1347/1348，COM12/921600原始日志为 `straight-console-20261111-050301.log`，WAVE显示已开启。复位后遥控在线、IMU2000/2000、硬件与三路CAN正常，后续现场三轮的新增故障另行分析。
+
+### 8.1.32 入口观测角色与树点驻留回差（2026-11-11）
+
+`straight-console-20261111-050301.log` 中三轮均设置0.40m/s。token1在133.343秒因纵向未修正行程超过1.2m进入POSE_OBSERVATION_PAUSE，136.482秒报MAP_ENVELOPE，附近X=0.168m、Y=1.297m、航向94.44°。token2在165.896秒因同一观测门限暂停，167.779秒恢复，之后到达G6；214.074秒树点定位值移至目标西侧约21mm，触发TREE_REPOSITION，10ms后报MOTION_FAULT且motion_error=5，即超调。token3在434.599秒报MAP_ENVELOPE，附近X=0.161m、Y=2.676m、航向94.28°。这些时刻遥控、IMU和CAN许可正常。
+
+入口右向光束会穿过垄端，其读数曾与左墙同时参与X定位，与8.1.6所记录的入口传感器职责不一致。本版入口定位采用左向外围栏约束X、前向北围栏约束Y，右/后观测从入口定位快照排除。原始四向快照继续供距离保护读取。入口航向纠偏死区为1°，角速度上限0.10rad/s，帮助前向光束保持北墙观测。一般定位的中值样本源年龄统一采用300ms，独立更新、几何残差和冻结检查继续执行。
+
+仅入口段在左墙数据有效、X约束年龄≤300ms、横向未修正行程小于50mm且航向偏差小于8°时，可把无纵向修正行程预算放宽到3.5m。无纵向修正超过0.4m时将速度限制为0.25m/s，失去上述左墙条件即采用一般1.2m预算。距离G7不足0.30m时，北墙纵向约束必须在最近500ms内有效，否则ENTRY_NORTH_PAUSE，12秒未恢复则ENTRY_NORTH_TIMEOUT。路线转入G7前有单独北墙确认。
+
+树点首次到达仍使用各轴20mm位置窗口，已建立的驻留允许各轴30mm位置回差。超过驻留窗口且沿程小幅越过目标时，60mm以内从当前X重新建立局部回退段，采用当前运动段方向计算必要距离保护。树点横向重居中复用相同重建逻辑，避免立即触发旧线段超调。连续2秒驻留成立后才记录该树完成。
+
+新增现场冲突右距、左墙失效退出降级、G7北墙重新确认、21mm驻留漂移及45mm局部回退的回归。旧入口逻辑在相同冲突测距下失败。闭环模拟将前距在Y=0.3–2.2m区间设置为7031mm，并加入210mm右侧回波、3.2%轮速比例误差、0.01rad/s航向扰动和执行器滞后，修复版19.09秒进入G7，最终Y=4.3806m，无暂停。该结果为软件模拟，实车效果待验证。完整C/PowerShell与49项Python测试及三个模式构建均通过，证据为 `firmware/build/entry-observer-host.log`、`entry-observer-before.log`及各模式构建日志。
+
+用户确认停稳后，本版已通过HID实际400kHz完成完整1MB备份校验及StraightTest烧录，Verified OK及FLASH_OK。备份为 `firmware/build/backup/before-entry-observer-20261111-054314-909.bin`，镜像与证据归档 `firmware/build/deployed/20261111-entry-observer/`，HEX SHA256为 `6E57C4BB898AF97E6CDF357C7EA31B74455B2D78C5A8FA158BE0F77F4473B5CD`。复位后STOP、停稳、零命令，遥控在线、hw_ok=1、IMU2000/2000、CAN1/2/3正常，四路测距有效0xf。VOFA+ FireWater/UDP1347与COM12/921600桥接1348均已重新连接，WAVE显示开启，持续原始日志为 `straight-console-20261111-054930.log`。完整实车入口至G7及树点驻留仍需复测。持续近距、真实包络越界或北墙长期无法确认仍可停车，需依据本版首个事件继续分析。
+
 ### 8.2 源码版本与最近部署标识
 
 当前车端实际部署为2026-11-10 14:49在`d76ca21`基线上构建的`StraightTest`模式6，包含PR #9机械参数、proto1全图入口和前向围栏入口纵坐标标定。OpenOCD `Verified OK`，镜像与日志归档于`firmware/build/deployed/20261110-full-map-origin/`；烧录前1MB备份为`firmware/build/backup/before-flash-20261110-144950-707.bin`。复位后静态状态健康、停稳、IMU标定完成，未启动移动；修复后的全图实车验收仍待进行。下表历史部署哈希不代表当前镜像。

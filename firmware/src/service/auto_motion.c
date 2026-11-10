@@ -65,18 +65,29 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         if(!in.stationary || !measured_zero) { zero(m); m->out.phase=AUTO_MOTION_ALIGN; return m->out; }
         m->started=true;
     }
-    float closing=fmaxf(hypotf(in.measured.vx,in.measured.vy),hypotf(m->velocity_map.x,m->velocity_map.y));
-    float brake_distance=fmaxf(0,remaining-.5f*m->config.position_tolerance-closing*m->config.stop_latency_s);
-    float along=fminf(m->config.vmax,sqrtf(2*m->config.decel*brake_distance));
+    const float brake_distance=fmaxf(0,remaining-.5f*m->config.position_tolerance);
+    const float delay_speed=m->config.decel*m->config.stop_latency_s;
+    /* Solve d = v*T + v*v/(2*a) for the target speed. Subtracting the
+     * current speed's delay distance made the target oscillate near a stop. */
+    float along=fminf(m->config.vmax,
+        sqrtf(delay_speed*delay_speed+2*m->config.decel*brake_distance)-delay_speed);
     along=fminf(along,2*fmaxf(0,remaining)); /* low-gain endpoint approach */
     if(fabsf(remaining)<=m->config.position_tolerance) along=0;
-    float lateral=clamp(-m->config.cross_kp*m->out.cross_error,m->config.lateral_max);
+    if(in.hold_along) along=0;
+    float cross_error=m->out.cross_error,heading_error=m->out.heading_error;
+    if(m->config.smooth_correction) {
+        cross_error=copysignf(fmaxf(0,fabsf(cross_error)-m->config.cross_tolerance),cross_error);
+        heading_error=copysignf(fmaxf(0,fabsf(heading_error)-m->config.yaw_tolerance),heading_error);
+    }
+    float lateral=clamp(-m->config.cross_kp*cross_error,m->config.lateral_max);
     if(fabsf(m->out.cross_error)<=m->config.cross_tolerance) lateral=0;
-    float wz=clamp(m->config.yaw_kp*m->out.heading_error,m->config.wz_max);
+    float wz=clamp(m->config.yaw_kp*heading_error,m->config.wz_max);
     if(fabsf(m->out.heading_error)<=m->config.yaw_tolerance) wz=0;
     const float finish_yaw=m->config.finish_yaw_tolerance>0?m->config.finish_yaw_tolerance:m->config.yaw_tolerance;
     const float finish_cross=m->config.finish_cross_tolerance>0?m->config.finish_cross_tolerance:m->config.cross_tolerance;
-    const bool position_reached=fabsf(remaining)<=m->config.position_tolerance &&
+    /* A centering hold must keep correcting to cross_tolerance even inside
+     * the wider endpoint acceptance window. Completion waits for release. */
+    const bool position_reached=!in.hold_along && fabsf(remaining)<=m->config.position_tolerance &&
         fabsf(m->out.cross_error)<=finish_cross;
     if(position_reached) lateral=0;
     if(position_reached && fabsf(m->out.heading_error)<=finish_yaw) wz=0;
@@ -84,27 +95,56 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     float target_norm=hypotf(target.x,target.y);
     if(target_norm>m->config.vmax) { target.x*=m->config.vmax/target_norm; target.y*=m->config.vmax/target_norm; }
     if(in.stop_requested) { target=(AutoVec2){0}; wz=0; }
-    if(target.x*m->velocity_map.x+target.y*m->velocity_map.y<0 || wz*m->out.command.wz<0) m->reversing=true;
+    /* Heading feedback can change sign while translation continues. Its own
+     * angular slew crosses zero without stopping the translational profile. */
+    if(target.x*m->velocity_map.x+target.y*m->velocity_map.y<0) m->reversing=true;
     if(m->reversing) { target=(AutoVec2){0}; wz=0; }
-    if(!in.aligned) {
+    const bool zero_target=target.x==0 && target.y==0 && wz==0;
+    const AutoVec2 requested_body=auto_rotate(target,-in.pose.pose.yaw);
+    const AutoTwist requested_hint={requested_body.x,requested_body.y,wz};
+    const AutoTwist prepared=m->out.steering_hint;
+    const bool prepared_translation=prepared.vx!=0 || prepared.vy!=0;
+    const bool prepared_valid=m->config.smooth_correction && m->out.phase==AUTO_MOTION_ALIGN &&
+        (prepared_translation || prepared.wz!=0);
+    const bool compatible=prepared_translation==(target.x!=0 || target.y!=0) &&
+        requested_body.x*prepared.vx+requested_body.y*prepared.vy>=0 && wz*prepared.wz>=0;
+    if((!in.aligned || (prepared_valid && !compatible)) && !zero_target) {
+        AutoTwist hint=requested_hint;
+        /* Hold a feasible direction long enough for the wheel servos to catch
+         * up. Reversals immediately replace it and require a new zero-drive cycle. */
+        if(prepared_valid && compatible && in.now_ms-m->prepare_ms<250u) hint=prepared;
+        else m->prepare_ms=in.now_ms;
         zero(m); m->out.phase=AUTO_MOTION_ALIGN;
-        AutoVec2 hint=auto_rotate(target,-in.pose.pose.yaw);
-        m->out.steering_hint=(AutoTwist){hint.x,hint.y,wz};
+        m->out.steering_hint=hint;
         return m->out; /* never accumulate a command behind closed wheel gate */
+    }
+    /* A stationary goal needs no new wheel direction. Closed alignment still
+     * enforces zero drive while allowing the ordinary settle timer to finish. */
+    if(!in.aligned) {m->velocity_map=(AutoVec2){0};m->out.command=(AutoTwist){0};}
+    if(prepared_valid && !zero_target) {
+        const float norm=hypotf(prepared.vx,prepared.vy);
+        const float scale=norm>m->config.vmax?m->config.vmax/norm:1;
+        target=auto_rotate((AutoVec2){prepared.vx*scale,prepared.vy*scale},in.pose.pose.yaw);
+        wz=prepared.wz*scale;
     }
     m->out.steering_hint=(AutoTwist){0};
     m->out.phase=in.stop_requested?AUTO_MOTION_HOLD:AUTO_MOTION_RUN;
     float limit=(hypotf(target.x,target.y)<hypotf(m->velocity_map.x,m->velocity_map.y)?m->config.decel:m->config.accel)*dt;
     float dvx=target.x-m->velocity_map.x,dvy=target.y-m->velocity_map.y,dv=hypotf(dvx,dvy);
     float scale=dv>limit ? limit/dv:1;
+    const float dw=wz-m->out.command.wz;
+    const float angular_limit=m->config.angular_accel*dt;
+    if(fabsf(dw)>angular_limit) scale=fminf(scale,angular_limit/fabsf(dw));
+    /* A shared progress fraction preserves the prepared wheel directions on
+     * launch, while satisfying both linear and angular acceleration limits. */
     m->velocity_map.x+=dvx*scale; m->velocity_map.y+=dvy*scale;
     AutoVec2 body=auto_rotate(m->velocity_map,-in.pose.pose.yaw);
-    m->out.command=(AutoTwist){body.x,body.y,m->out.command.wz+clamp(wz-m->out.command.wz,m->config.angular_accel*dt)};
+    m->out.command=(AutoTwist){body.x,body.y,m->out.command.wz+dw*scale};
     if(!finite_twist(m->out.command)) { fault(m,AUTO_MOTION_BAD_INPUT); return m->out; }
     bool reached=position_reached && fabsf(m->out.heading_error)<=finish_yaw;
     bool command_zero=hypotf(body.x,body.y)<.00001f && fabsf(m->out.command.wz)<.00001f;
     if(m->reversing && command_zero && in.stationary && measured_zero) m->reversing=false;
-    if(!in.stop_requested && reached && command_zero && in.stationary && measured_zero) m->settled_s+=dt;
+    if(!in.stop_requested && !in.hold_along && reached && command_zero && in.stationary && measured_zero) m->settled_s+=dt;
     else m->settled_s=0;
     if(m->settled_s>=m->config.settle_s) { zero(m); m->out.phase=AUTO_MOTION_DONE; }
     return m->out;

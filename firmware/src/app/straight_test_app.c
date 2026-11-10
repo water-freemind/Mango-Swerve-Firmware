@@ -356,6 +356,22 @@ static FullMapInput map_input(uint32_t now,StraightInput in) {
         .imu_yaw=imu.get_angle().yaw,.healthy=in.healthy,.odom_ok=hardware_healthy(),
         .stationary=in.stationary,.aligned=chassis_drive_output_allowed()};
     (void)laser_get_snapshot(&m.laser);
+    const float approach[4]={fmaxf(in.vy_mps,full_map.command.vy),
+        fmaxf(-in.vy_mps,-full_map.command.vy),fmaxf(-in.vx_mps,-full_map.command.vx),
+        fmaxf(in.vx_mps,full_map.command.vx)};
+    const float braking_decel=full_map.motion.initialized ? full_map.motion.config.decel:.10f;
+    for(unsigned i=0u;i<LASER_CHANNEL_COUNT;++i) {
+        const uint8_t bit=(uint8_t)(1u<<i);
+        const float closing=fmaxf(0,approach[i]);
+        /* A close return inside the braking-only envelope is immediate.
+         * Other short returns use the timestamped continuous median. */
+        const float urgent_mm=fmaxf(200,100+500*closing*closing/braking_decel+100*closing);
+        if((m.laser.median_valid_mask&bit) && m.laser.accepted_mm[i]>urgent_mm) {
+            m.laser.accepted_mm[i]=m.laser.median_mm[i];
+            m.laser.sample_age_ms[i]=m.laser.median_age_ms[i];
+            m.laser.updated_mask=(uint8_t)((m.laser.updated_mask&~bit)|(m.laser.median_updated_mask&bit));
+        }
+    }
     return m;
 }
 static void commands(uint32_t now, StraightInput in) {
@@ -730,9 +746,22 @@ void straight_test_app_loop(void) {
             const FullMapPhase before=full_map.phase;
             const bool tree_hold_before=full_map.tree_hold;
             const uint16_t trees_done_before=full_map.trees_done;
-            full_map_step(&full_map,map_input(now,in));
+            const FullMapInput map_state=map_input(now,in);
+            full_map_step(&full_map,map_state);
             if(before!=full_map.phase) log_info("TEST_MAP_EVENT t_ms=%lu phase=%s segment=%u reason=%s",
                 (unsigned long)now,full_map_phase_name(full_map.phase),full_map.segment,full_map.reason);
+            if(before!=full_map.phase && (full_map.phase==MAP_PAUSED || full_map.phase==MAP_FAULT)) {
+                log_info("TEST_MAP_INPUT t_ms=%lu blockers=0x%lx dt_ms=%lu online=%u centered=%u SWA=%u SWC=%u SWD=%u VRA=%u RX=%u RY=%u LX=%u",
+                    (unsigned long)now,(unsigned long)blockers,(unsigned long)control_dt_ms,(unsigned)rc_online,
+                    (unsigned)drive_source_centered(&rc_state),rc_state.rc_data.channel[REMOTE_CH_SWA],
+                    rc_state.rc_data.channel[REMOTE_CH_SWC],rc_state.rc_data.channel[REMOTE_CH_SWD],
+                    rc_state.rc_data.channel[REMOTE_CH_VRA],rc_state.rc_data.channel[REMOTE_CH_RIGHT_X],
+                    rc_state.rc_data.channel[REMOTE_CH_RIGHT_Y],rc_state.rc_data.channel[REMOTE_CH_LEFT_X]);
+                log_info("TEST_MAP_RANGE t_ms=%lu valid=0x%x predicted=0x%x required=0x%x mm=%u,%u,%u,%u wheel=%.3f,%.3f",
+                    (unsigned long)now,map_state.laser.valid_mask,full_map.predicted_mask,full_map.required_mask,
+                    map_state.laser.accepted_mm[0],map_state.laser.accepted_mm[1],
+                    map_state.laser.accepted_mm[2],map_state.laser.accepted_mm[3],(double)in.vx_mps,(double)in.vy_mps);
+            }
             if(tree_hold_before!=full_map.tree_hold || trees_done_before!=full_map.trees_done)
                 log_info("TEST_MAP_TREE_EVENT t_ms=%lu segment=%u target=%u hold=%u new_done=0x%x done=0x%x reason=%s",
                     (unsigned long)now,full_map.segment,full_map.target_tree,(unsigned)full_map.tree_hold,
@@ -834,16 +863,16 @@ void straight_test_app_loop(void) {
             full_map.target_tree?(full_map.target_tree-1u)%2u+1u:0u,
             (unsigned)full_map.tree_hold,(unsigned)full_map.tree_hold_stable,
             (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done);
-        log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f",
+        log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f wz=%.4f motion_phase=%u",
             full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
             full_map.required_mask,full_map.predicted_mask,(double)full_map.command.vx,(double)full_map.command.vy,
             (unsigned)full_map.motion_error,(double)full_map.localization.uncorrected_m[0],
-            (double)full_map.localization.uncorrected_m[1]);
+            (double)full_map.localization.uncorrected_m[1],(double)full_map.command.wz,(unsigned)full_map.motion.out.phase);
         const MapAisleCorrection ac=full_map.aisle_correction;
-        log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu",
+        log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu centering=%u",
             (unsigned)ac.active,(unsigned)ac.frozen,ac.confirmations,ac.front_mm,ac.rear_mm,
             (double)ac.error_m*1000,(double)ac.correction_m*1000,
-            (unsigned long)ac.front_surface,(unsigned long)ac.rear_surface);
+            (unsigned long)ac.front_surface,(unsigned long)ac.rear_surface,(unsigned)ac.centering);
     }
     if(now - last_log >= 100u) {
         last_log = now;

@@ -40,9 +40,10 @@ bool field_pose_register(FieldPose* s,AutoPose p,float yaw,uint32_t now) {
     memset(s,0,sizeof(*s));s->pose=(AutoPoseSample){p,now,true};
     s->wheel_position=(AutoVec2){p.x,p.y};
     s->imu_offset=auto_wrap_angle(p.yaw-yaw);s->last_ms=now;s->registered=true;
+    s->constrained_ms[0]=s->constrained_ms[1]=now;
     return true;
 }
-bool field_pose_step(FieldPose* s,AutoTwist v,float yaw,bool healthy,const LaserSnapshot* l,uint32_t now) {
+bool field_pose_step_route(FieldPose* s,AutoTwist v,float yaw,bool healthy,const LaserSnapshot* l,uint32_t now,const AutoRoute* route) {
     if(!s||!l||!s->registered) return false;
     s->used_mask=s->rejected_mask=s->constrained_axes=0;
     const uint32_t ms=now-s->last_ms;
@@ -63,12 +64,28 @@ bool field_pose_step(FieldPose* s,AutoTwist v,float yaw,bool healthy,const Laser
     for(unsigned ch=0;ch<4;ch++) {
         const uint8_t bit=(uint8_t)(1u<<ch);const uint32_t age=l->sample_age_ms[ch];
         const uint32_t stamp=l->last_rx_ms; /* Immutable receipt time of updated_mask. */
-        if(!l->frame_fresh||!(l->valid_mask&bit)||!(l->updated_mask&bit)||age>200||
+        if(!l->frame_fresh||!(l->valid_mask&bit)||!(l->updated_mask&bit)||age>LASER_FRAME_TIMEOUT_MS||
            ((s->seen_mask&bit)&&stamp==s->used_stamp[ch])) continue;
         s->seen_mask|=bit;s->used_stamp[ch]=stamp;
-        AutoPlane plane;float expected;
-        if(!field_pose_ray(prior,ch,&plane,&expected)) continue;
         if(!l->accepted_mm[ch]||l->accepted_mm[ch]>7500u||fabsf(v.wz)>.1f) {s->rejected_mask|=bit;continue;}
+        AutoPlane plane;float expected;
+        bool associated=field_pose_ray(prior,ch,&plane,&expected);
+        if(route) {
+            const float angle=laser_yaw(ch);
+            const AutoLaserMount mount={.origin={.04098f*cosf(angle),.04098f*sinf(angle)},.yaw=angle};
+            AutoPlane ridge;float ridge_distance;
+            if(auto_route_ray(route,prior,mount,7.5f,&ridge,&ridge_distance) && ridge.surface_id>=10u) {
+                const float incidence=ridge.normal.x*cosf(prior.yaw+angle)+ridge.normal.y*sinf(prior.yaw+angle);
+                if(incidence>=.2f) {
+                    const float corrected=l->accepted_mm[ch]*.001f-
+                        (ridge.normal.x*velocity.x+ridge.normal.y*velocity.y)*age*.001f/incidence;
+                    if(corrected>0 && fabsf(corrected-ridge_distance)<=.15f) {
+                        plane=ridge;expected=ridge_distance;associated=true;
+                    }
+                }
+            }
+        }
+        if(!associated) continue;
         if((s->checkpoint_mask&bit) && s->checkpoint_surface[ch]==plane.surface_id &&
            fabsf((float)l->accepted_mm[ch]-s->checkpoint_mm[ch])<=5.0f) {
             const AutoVec2 old=s->checkpoint_position[ch];
@@ -93,7 +110,10 @@ bool field_pose_step(FieldPose* s,AutoTwist v,float yaw,bool healthy,const Laser
     }
     /* Parallel observations do not double the gain. No invented constraint along
      * a wall; all rejected samples leave a pure wheel/IMU prediction. */
-    if(wx>0) {prior.x+=fmaxf(-.005f,fminf(.005f,.15f*dx/wx));s->constrained_axes|=1;s->uncorrected_m[0]=0;}
-    if(wy>0) {prior.y+=fmaxf(-.005f,fminf(.005f,.15f*dy/wy));s->constrained_axes|=2;s->uncorrected_m[1]=0;}
+    if(wx>0) {prior.x+=fmaxf(-.005f,fminf(.005f,.15f*dx/wx));s->constrained_axes|=1;s->uncorrected_m[0]=0;s->constrained_ms[0]=now;}
+    if(wy>0) {prior.y+=fmaxf(-.005f,fminf(.005f,.15f*dy/wy));s->constrained_axes|=2;s->uncorrected_m[1]=0;s->constrained_ms[1]=now;}
     s->pose=(AutoPoseSample){prior,now,true};return true;
+}
+bool field_pose_step(FieldPose* s,AutoTwist v,float yaw,bool healthy,const LaserSnapshot* l,uint32_t now) {
+    return field_pose_step_route(s,v,yaw,healthy,l,now,NULL);
 }

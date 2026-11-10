@@ -43,7 +43,164 @@ static void simulate(float dx,float dy) {
     printf("MOTION_SIM dx=%.1f dy=%.1f time_s=%.2f error_m=%.5f\n",(double)dx,(double)dy,tick*.01,
         (double)hypotf(actual.x-s.end.x,actual.y-s.end.y));
 }
+static void heading_reversal_while_translating(void) {
+    AutoMotion m;AutoMotionConfig c=config();
+    assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{2,0},0},0));
+    for(unsigned now=10;now<=1000;now+=10) {
+        AutoMotionInput in=input((AutoPose){.2f,0,.03f},now);
+        auto_motion_step(&m,in);
+    }
+    assert(m.out.command.wz<0);
+    const float previous_speed=hypotf(m.out.command.vx,m.out.command.vy);
+    AutoMotionInput in=input((AutoPose){.2f,0,-.03f},1010);
+    in.stationary=false;in.measured=(AutoTwist){.vx=.2f,.wz=-.03f};
+    auto_motion_step(&m,in);
+    assert(!m.reversing);
+    assert(hypotf(m.out.command.vx,m.out.command.vy)>=previous_speed-.00001f);
+    assert(fabsf(m.out.command.wz+.03f)<=c.angular_accel*.01f+.00001f);
+    puts("MOTION_HEADING_REVERSAL_OK translation_continuous angular_slew_bounded");
+}
+static void endpoint_speed_envelope(void) {
+    AutoMotionConfig c=config();c.accel=10;float previous=0;
+    for(unsigned sample=0;sample<3;++sample) {
+        AutoMotion m;
+        assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+        m.started=true;m.velocity_map=(AutoVec2){.1f,0};
+        AutoMotionInput in=input((AutoPose){.90f,0,0},10);
+        in.measured.vx=sample*.1f;in.stationary=false;
+        m.config.stop_latency_s=.5f;
+        auto_motion_step(&m,in);
+        if(sample) assert(fabsf(m.out.command.vx-previous)<.000001f);
+        previous=m.out.command.vx;
+        assert(previous>0 && previous<=c.vmax);
+    }
+    puts("MOTION_ENDPOINT_ENVELOPE_OK feedback_noise_does_not_switch_target");
+}
+static void along_hold_centering_test(void) {
+    AutoMotion m;const AutoMotionConfig c=config();
+    assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+    for(unsigned now=10;now<=500;now+=10) {
+        AutoMotionInput in=input((AutoPose){.5f,.03f,0},now);in.hold_along=true;
+        auto_motion_step(&m,in);
+        assert(m.out.command.vx==0 && m.out.command.vy<0);
+        assert(m.out.phase!=AUTO_MOTION_DONE && m.out.phase!=AUTO_MOTION_FAULT);
+    }
+    AutoMotionInput in=input((AutoPose){.5f,.005f,0},510);
+    auto_motion_step(&m,in);assert(m.out.command.vx>0 && m.out.command.vx<=.00201f);
+    in.now_ms=520;in.hard_stop=true;auto_motion_step(&m,in);
+    assert(m.out.phase==AUTO_MOTION_FAULT && m.out.command.vx==0 && m.out.command.vy==0);
+    puts("MOTION_ALONG_HOLD_OK lateral_correction bounded_release hard_stop");
+}
+static void endpoint_centering_hold_test(void) {
+    for(int sign=-1;sign<=1;sign+=2) {
+        AutoMotion m;AutoMotionConfig c=config();
+        c.cross_tolerance=.008f;c.finish_cross_tolerance=.02f;
+        assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+        for(unsigned now=10;now<=500;now+=10) {
+            AutoMotionInput in=input((AutoPose){1,sign*.0175f,0},now);
+            in.hold_along=true;auto_motion_step(&m,in);
+            assert(sign*m.out.command.vy<0 && m.out.command.vx==0);
+            assert(m.out.phase!=AUTO_MOTION_DONE);
+        }
+        for(unsigned now=510;now<=1500;now+=10) {
+            AutoMotionInput in=input((AutoPose){1,sign*.009f,0},now);
+            auto_motion_step(&m,in);
+        }
+        assert(m.out.phase==AUTO_MOTION_DONE);
+    }
+    puts("MOTION_ENDPOINT_CENTERING_OK 17_5mm_both_directions correction_then_completion");
+}
+static void prepared_wheel_direction_test(void) {
+    for(unsigned run=0;run<2;++run) {
+        AutoMotion m;AutoMotionConfig c=config();
+        c.vmax=run?.02f:.5f;c.accel=c.decel=c.angular_accel=.15f;
+        assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{2,0},0},0));
+        AutoMotionInput in=input((AutoPose){0,0,.04f},10);in.aligned=false;
+        const AutoMotionOutput prepare=auto_motion_step(&m,in);
+        assert(prepare.command.vx==0 && prepare.command.wz==0);
+        in.now_ms=20;in.pose.stamp_ms=20;in.aligned=true;
+        const AutoMotionOutput launch=auto_motion_step(&m,in);
+        const float position[4][2]={{.12f,.12f},{.12f,-.12f},{-.12f,-.12f},{-.12f,.12f}};
+        for(unsigned wheel=0;wheel<4;++wheel) {
+            const AutoTwist h=prepare.steering_hint,v=launch.command;
+            const float x=position[wheel][0],y=position[wheel][1];
+            const float prepared_angle=atan2f(h.vy+h.wz*x,h.vx-h.wz*y);
+            const float launch_angle=atan2f(v.vy+v.wz*x,v.vx-v.wz*y);
+            assert(fabsf(auto_wrap_angle(launch_angle-prepared_angle))<.0001f);
+        }
+        assert(hypotf(launch.command.vx,launch.command.vy)<=c.accel*.01f+.000001f);
+        assert(fabsf(launch.command.wz)<=c.angular_accel*.01f+.000001f);
+    }
+    puts("MOTION_PREPARED_WHEEL_DIRECTION_OK four_modules fast_and_slow_launch shared_slew");
+}
+static void smooth_correction_boundary_test(void) {
+    AutoMotion m;AutoMotionConfig c=config();c.smooth_correction=true;
+    for(int sign=-1;sign<=1;sign+=2) {
+        assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+        AutoMotionInput in=input((AutoPose){.5f,sign*(c.cross_tolerance+.0001f),
+            sign*(c.yaw_tolerance+.0001f)},10);
+        in.aligned=false;
+        const AutoMotionOutput out=auto_motion_step(&m,in);
+        assert(fabsf(out.steering_hint.wz)<.0002f);
+        const AutoVec2 map_hint=auto_rotate((AutoVec2){out.steering_hint.vx,out.steering_hint.vy},in.pose.pose.yaw);
+        assert(fabsf(map_hint.y)<.0002f);
+    }
+    puts("MOTION_SMOOTH_CORRECTION_OK no_deadband_boundary_step");
+}
+static void stopped_goal_alignment_test(void) {
+    AutoMotion m;const AutoMotionConfig c=config();
+    assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+    for(unsigned now=10;now<=300;now+=10) {
+        AutoMotionInput in=input((AutoPose){1,0,0},now);in.aligned=false;
+        const AutoMotionOutput out=auto_motion_step(&m,in);
+        assert(out.command.vx==0 && out.command.vy==0 && out.command.wz==0);
+    }
+    assert(m.out.phase==AUTO_MOTION_DONE);
+    puts("MOTION_STOPPED_GOAL_OK stationary_zero_target_completes_with_closed_gate");
+}
+static void stable_preparation_test(void) {
+    AutoMotion m;AutoMotionConfig c=config();c.smooth_correction=true;c.vmax=.03f;
+    assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+    AutoTwist first={0};
+    for(unsigned now=10;now<=200;now+=10) {
+        AutoMotionInput in=input((AutoPose){.5f,.02f+(now%20u?.001f:0),.04f+(now%20u?.005f:0)},now);
+        in.aligned=false;
+        const AutoMotionOutput out=auto_motion_step(&m,in);
+        if(now==10u) first=out.steering_hint;
+        assert(out.command.vx==0 && out.command.vy==0 && out.command.wz==0);
+        assert(fabsf(out.steering_hint.vx-first.vx)<.000001f);
+        assert(fabsf(out.steering_hint.vy-first.vy)<.000001f);
+        assert(fabsf(out.steering_hint.wz-first.wz)<.000001f);
+    }
+    /* A changed correction direction needs a new preparation despite the old gate. */
+    AutoMotionInput in=input((AutoPose){.5f,.02f,-.04f},210);
+    const AutoMotionOutput changed=auto_motion_step(&m,in);
+    assert(changed.phase==AUTO_MOTION_ALIGN && changed.command.wz==0);
+    assert(changed.steering_hint.wz>0);
+    in.now_ms=in.pose.stamp_ms=220;
+    const AutoMotionOutput launch=auto_motion_step(&m,in);
+    assert(launch.command.vx>0 && launch.command.wz>0);
+    const float hint_angle=atan2f(changed.steering_hint.vy+.1f*changed.steering_hint.wz,
+        changed.steering_hint.vx-.1f*changed.steering_hint.wz);
+    const float launch_angle=atan2f(launch.command.vy+.1f*launch.command.wz,
+        launch.command.vx-.1f*launch.command.wz);
+    assert(fabsf(auto_wrap_angle(hint_angle-launch_angle))<.00001f);
+    assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+    in=input((AutoPose){.5f,.02f,.04f},10);in.aligned=false;auto_motion_step(&m,in);
+    m.config.vmax=.001f;
+    in.now_ms=in.pose.stamp_ms=20;in.aligned=true;
+    const AutoMotionOutput limited=auto_motion_step(&m,in);
+    assert(hypotf(limited.command.vx,limited.command.vy)<=.001001f);
+    puts("MOTION_STABLE_PREPARATION_OK hold_200ms direction_change_reprepare launch_matches");
+}
 int main(void) {
+    stable_preparation_test();
+    smooth_correction_boundary_test();
+    stopped_goal_alignment_test();
+    prepared_wheel_direction_test();
+    endpoint_centering_hold_test();
+    along_hold_centering_test();
+    heading_reversal_while_translating();endpoint_speed_envelope();
     simulate(1,0); simulate(-1,0); simulate(0,1); simulate(0,-1);
     AutoMotion m; AutoMotionConfig c=config(); AutoSegment s={{0,0},{1,0},0};
     assert(auto_motion_begin(&m,&c,s,0));

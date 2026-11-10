@@ -21,5 +21,5 @@ Invoke-ChassisTest 'dji-timing' @('tests/test_dji_motor_timing.c','src/device/bu
 Invoke-ChassisTest 'dm-numeric' @('tests/test_dm_motor_numeric.c','src/device/bus_motor/dm_motor.c')
 Invoke-ChassisTest 'trace' @('tests/test_chassis_trace.c','src/service/chassis_trace.c','src/domain/steer_wheel_kine.c')
 foreach($mode in @(0,5,6)) {
-    Invoke-ChassisTest 'chassis-control' @('tests/test_chassis_control.c','src/service/chassis.c','src/device/bus_motor/agv_motor.c','src/domain/steer_wheel_kine.c') $mode
+    Invoke-ChassisTest 'chassis-control' @('tests/test_chassis_control.c','src/service/chassis.c','src/device/bus_motor/agv_motor.c','src/domain/steer_wheel_kine.c','src/service/auto_motion.c','src/service/auto_geometry.c') $mode
 }
