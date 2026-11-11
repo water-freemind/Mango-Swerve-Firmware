@@ -20,7 +20,10 @@ void remote_process(void) {
     FsIa10bData rc_data;
 
     ibus_maintain();
-    if(!ibus_get_data(&rc_data) || !ibus_is_online(REMOTE_TIMEOUT_MS)) {
+    const bool valid = ibus_get_data(&rc_data);
+    if(valid) s_remote_state.rc_data = rc_data;
+    const uint32_t now = delay_now_ms();
+    if(!valid || (uint32_t)(now - rc_data.last_update_ms) > REMOTE_TIMEOUT_MS) {
         s_remote_state.online = false;
         s_remote_state.manual_request = false;
         s_remote_state.manual_source = REMOTE_MANUAL_SOURCE_NONE;
@@ -28,11 +31,10 @@ void remote_process(void) {
     }
 
     s_remote_state.online = true;
-    s_remote_state.rc_data = rc_data;
-    s_remote_state.stamp_ms = delay_now_ms();
-    s_remote_state.manual_request = rc_data.channel[REMOTE_CH_SWD] == REMOTE_SW_LOW;
+    s_remote_state.stamp_ms = rc_data.last_update_ms;
+    s_remote_state.manual_request = remote_switch_matches(rc_data.channel[REMOTE_CH_SWD], REMOTE_SW_LOW);
     s_remote_state.manual_source = REMOTE_MANUAL_SOURCE_NONE;
-    if(rc_data.channel[REMOTE_CH_SWA] == REMOTE_SW_HIGH) {
+    if(remote_switch_matches(rc_data.channel[REMOTE_CH_SWA], REMOTE_SW_HIGH)) {
         s_remote_state.manual_source = REMOTE_MANUAL_SOURCE_CHASSIS;
     }
 }

@@ -29,8 +29,12 @@
 #define REMOTE_SW_CENTER 1500u
 #define REMOTE_SW_HIGH 1000u
 #define REMOTE_SWITCH_TOLERANCE 250u
-
 #define REMOTE_VR_LOW_THRESHOLD 1200u
+
+static inline bool remote_switch_matches(uint16_t value, uint16_t position) {
+    return (uint32_t)value + REMOTE_SWITCH_TOLERANCE >= position &&
+           value <= (uint32_t)position + REMOTE_SWITCH_TOLERANCE;
+}
 
 typedef enum {
     REMOTE_MANUAL_SOURCE_NONE = 0,
