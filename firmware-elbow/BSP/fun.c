@@ -102,6 +102,7 @@ void OLED_Display(void)
 {
     static uint32_t last_display = 0;
     static uint8_t first_display = 1;
+    static uint8_t transfer_page = 0;
     uint32_t now = HAL_GetTick();
     uint8_t i, phase, motor, pwm;
     uint32_t remaining_tenths;
@@ -110,18 +111,24 @@ void OLED_Display(void)
     static const char *laser_names[4] = {"LEFT", "RIGHT", "REAR", "FRONT"};
     uint16_t distance_mm;
     uint8_t laser_status;
-    if (!first_display && (uint32_t)(now - last_display) < 100U) return;
-    first_display = 0;
-    last_display = now;
     /* 屏幕初始化或刷新失败后，每秒重试一次，避免每轮反复初始化。 */
     if (!OLED_Ready)
     {
         static uint32_t last_retry = 0;
+        /* Reinitialization clears the whole panel. Defer it during an action
+         * or its image check so display recovery cannot extend motor timing. */
+        if (Vision_MotorPhase || Vision_WorkState == VISION_WORK_CHECK ||
+            Vision_WorkState == VISION_WORK_ACTING) return;
         if ((uint32_t)(now - last_retry) < 1000U) return;
         last_retry = now;
         OLED_Init();
         if (!OLED_Ready) return;
+        first_display = 1;
+        transfer_page = 0;
     }
+    if (!first_display && (uint32_t)(now - last_display) < 100U) goto transfer;
+    first_display = 0;
+    last_display = now;
     phase = Vision_MotorPhase;
     motor = Vision_MotorRegion;
     pwm = (phase == 1 || phase == 3) ? VISION_MOTOR_PWM : 0;
@@ -205,10 +212,13 @@ void OLED_Display(void)
         }
         OLED_ShowString(0, 32 + i * 8, str, OLED_6X8);
     }
-    /* 显存绘制完毕后统一传送到屏幕，I2C 失败则安排后续重试。 */
+transfer:
+    /* One page costs about 19ms at the configured 5us I2C delay. A full
+     * frame blocks CAN polling and motor phase updates for at least 151ms. */
     OLED_I2C_LastError = 0;
-    OLED_Update();
+    OLED_UpdateArea(0, (int16_t)(transfer_page * 8U), 128, 8);
     if (OLED_I2C_LastError != 0) OLED_Ready = 0;
+    else transfer_page = (uint8_t)((transfer_page + 1U) % 8U);
 }
 
 

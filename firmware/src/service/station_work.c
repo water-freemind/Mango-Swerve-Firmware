@@ -7,7 +7,7 @@ static volatile WorkCanPacket inbox;
 static volatile uint32_t inbox_ms;
 static volatile bool pending;
 static uint32_t peer_ms, sent_ms, started_ms, next_task;
-static bool initialized, dirty, seen_peer;
+static bool initialized, dirty, seen_peer, task_acknowledged;
 
 static bool receive_station(const Can3Frame* frame, void* user) {
     WorkCanPacket packet;
@@ -22,7 +22,7 @@ static bool receive_station(const Can3Frame* frame, void* user) {
 
 bool station_work_init(void) {
     memset(&g_station_work, 0, sizeof(g_station_work));
-    pending = seen_peer = false;
+    pending = seen_peer = task_acknowledged = false;
     peer_ms = sent_ms = started_ms = next_task = 0u;
     dirty = true;
     initialized = true;
@@ -60,7 +60,7 @@ bool station_work_reset(bool stationary) {
     g_station_work.result = WORK_RESULT_OK;
     g_station_work.online = g_station_work.hold = false;
     g_station_work.returned = g_station_work.slow_requested = g_station_work.stop_requested = false;
-    pending = seen_peer = false;
+    pending = seen_peer = task_acknowledged = false;
     dirty = true;
     return true;
 }
@@ -75,6 +75,7 @@ bool station_work_begin(uint8_t station, uint32_t now) {
     g_station_work.hold = false;
     g_station_work.returned = false;
     g_station_work.slow_requested = g_station_work.stop_requested = false;
+    task_acknowledged = false;
     started_ms = now;
     dirty = true;
     return true;
@@ -100,6 +101,10 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
             dirty = true;
         }
     } else if(packet.state == STATION_READY && packet.task == 0u && packet.region == 0u) {
+        /* An idle READY may already be in flight when APPROACH is created.
+         * Ignore it without extending freshness until this task is acknowledged. */
+        if(g_station_work.phase == STATION_LINK_APPROACH && !task_acknowledged)
+            return false;
         if(g_station_work.phase == STATION_LINK_APPROACH ||
            g_station_work.phase == STATION_LINK_WORKING ||
            g_station_work.phase == STATION_LINK_RELEASE) {
@@ -113,6 +118,7 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
         if(g_station_work.phase == STATION_LINK_APPROACH &&
            (packet.state == STATION_TRACKING || packet.state == STATION_SLOW ||
             packet.state == STATION_WAIT)) {
+            task_acknowledged = true;
             g_station_work.slow_requested = g_station_work.slow_requested ||
                 packet.state == STATION_SLOW || packet.state == STATION_WAIT;
             g_station_work.stop_requested = g_station_work.stop_requested || packet.state == STATION_WAIT;

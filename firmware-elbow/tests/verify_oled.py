@@ -1,6 +1,7 @@
 """Exercise the production OLED display with simulated chassis replies."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
@@ -33,6 +34,7 @@ volatile int32_t Vision_TreeDX = 9999;
 volatile uint8_t OLED_Ready = 1;
 static uint32_t tick;
 static uint8_t online, reply, moving, result, fail_update;
+static unsigned page_transfers, page_mask, init_calls;
 static uint8_t laser_status[4];
 uint8_t CAN_Laser_Read(uint8_t channel, uint16_t *mm) {
     *mm = 15000;
@@ -47,9 +49,14 @@ uint8_t Work_CAN_GetReply(uint32_t task) { (void)task; return online ? reply : 0
 uint8_t Work_CAN_Moving(void) { return online && moving; }
 uint8_t Work_CAN_Result(void) { return result; }
 uint32_t Vision_Motor_RemainingMs(void) { return 600; }
-void OLED_Init(void) { OLED_Ready = 1; }
+void OLED_Init(void) { ++init_calls; OLED_Ready = 1; }
 void OLED_Clear(void) { memset(rows, 0, sizeof(rows)); }
-void OLED_Update(void) { if (fail_update) OLED_I2C_LastError = 1; }
+void OLED_UpdateArea(int16_t x, int16_t y, uint8_t width, uint8_t height) {
+    assert(x == 0 && y >= 0 && y <= 56 && y % 8 == 0 && width == 128 && height == 8);
+    ++page_transfers;
+    page_mask |= 1u << (y / 8);
+    if (fail_update) OLED_I2C_LastError = 1;
+}
 void OLED_ShowString(int x, int y, char *text, int font) {
     assert(x == 0 && y >= 0 && y < 64 && font == 6);
     assert(strlen(text) <= 21);
@@ -69,9 +76,33 @@ static void check_car(uint8_t state, const char *expected) {
     }
 }
 int main(void) {
+    unsigned before, i;
     tick = 1000;
     OLED_Display();
     assert(strcmp(rows[2], ELBOW_TEST_MODE == 1 ? "MODE:VISION TEST" : "CAR:OFFLINE CAN:OFF") == 0);
+    before = page_transfers;
+    for (i = 0; i < 8; ++i) { ++tick; OLED_Display(); }
+    assert(page_transfers == before + 8 && page_mask == 255u);
+    fail_update = 1;
+    ++tick;
+    OLED_Display();
+    assert(!OLED_Ready);
+    fail_update = 0;
+    before = init_calls;
+    Vision_MotorPhase = 1;
+    tick += 1000;
+    OLED_Display();
+    assert(!OLED_Ready && init_calls == before);
+    Vision_MotorPhase = 0;
+    Vision_WorkState = VISION_WORK_CHECK;
+    tick += 1000;
+    OLED_Display();
+    assert(!OLED_Ready && init_calls == before);
+    Vision_WorkState = VISION_WORK_BOOT;
+    tick += 1000;
+    OLED_Display();
+    assert(OLED_Ready && init_calls == before + 1);
+    puts("OLED_PAGED_PROGRESS_AND_ACTION_RECOVERY_GATE_OK");
     Vision_WorkState = VISION_WORK_TEST;
     tick += 100;
     OLED_Display();
@@ -161,3 +192,5 @@ with tempfile.TemporaryDirectory(prefix="oled_", dir=root / "tests") as director
             "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)], check=True)
+
+subprocess.run([sys.executable, str(root / "tests/verify_oled_budget.py")], check=True)

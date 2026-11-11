@@ -147,3 +147,25 @@ H723原1MB备份为 `firmware/build/backup/before-station-work-20261111-164012-3
 随后用户关闭相机与两板电源，转为离线测试。离线补测发现相机曾就绪后断开，疏果端空闲状态可能保留READY，本次源码已修复，恢复视觉后重新握手。此补充修复的F407候选HEX SHA256为 `E0BFD8026E868EF41B53D7CA79B0E6AB753F92BE06AF3CD5CEFA8FE58829299A`，已完成0错误、0警告构建，待下次上电更新F407。H723当前已烧录镜像可配套使用。
 
 VOFA源文件、E盘安装副本和用户默认context均已更新为31条命令并核对一致。断电后按用户要求结束现场监听，后续使用联合启动入口重新连接UDP。25种组合、300次作业属于离线模拟，完整实车联合运行和疏果效果验收待进行。
+
+<a id="offline-review-pr16"></a>
+## PR #16本机离线复审补充（2026-11-11）
+
+底盘与肘击器的任务主链为APPROACH → SLOW/WAIT → 映射树位到点停稳 → START → WORKING → DONE → RELEASE → RELEASED。作业期间底盘行走锁持续有效，错误任务/树号及提前释放不能解除锁；取消或故障后已启动的电机继续原定时返回，收到FAULT后才允许停稳重新握手。定时结束不等于真实机构到位，现场仍须验收回位与净空。
+
+复审复现并修正两项问题。
+
+- 首树任务刚建立时，F407上一空闲状态的READY可能仍在途中。旧代码将其视为对端复位并立即结束路线。当前在本任务收到TRACKING/SLOW/WAIT之前忽略该旧READY，也不刷新对端有效时间；确认任务后再收到READY仍按复位故障处理。回归分别验证旧报文、确认后复位及连续旧READY不能绕过500ms超时。
+- F407周期OLED原本一次传完整1024字节显存。按生产驱动的5µs延时逐次计数，整屏仅规定延时就占151240µs，GPIO调用与CPU开销尚未计入。160ms主循环回放中，单树四区域动作触发8秒作业超时。当前每次只传128×8的一页，规定延时18905µs，期间可返回主循环收CAN和推进电机；状态文字每100ms重绘，整屏按8页轮转。动作和图像复检期间推迟屏幕重初始化。显示回归检查8页推进、错误恢复门禁和生产I2C调用预算；25ms调度回放中，单树四区域7000ms完成并确认释放。
+
+本机使用MSYS2 UCRT64 GCC 16.2.0、Python 3.10运行完整主机回归，包含49项Python测试、25种全图速度组合的300次树位事务及上述新增专项。PATH原先命中32位MinGW GCC 6.3，出现浮点常量断言和聚合初始化告警失败；切换工具链后通过，未因此修改运行参数。该机可先在PowerShell为本次终端选择工具链，再执行根README中的检查命令。
+
+```powershell
+$env:PATH = 'D:\EmbeddedToolchain\msys2\ucrt64\bin;' + $env:PATH
+gcc --version
+powershell -NoProfile -ExecutionPolicy Bypass -File firmware/tests/run_host_tests.ps1
+```
+
+H723的FullMapWork、StraightTest、ManualStandalone各97源文件构建通过。F407当前31个C文件通过Cortex-M4 ARM GCC编译与可重定位链接，HAL和OLED字库存在原有告警；本机没有ARMCC5，未复现当前追加修复后的Keil最终链接和HEX。原PR中的0错误/0警告及镜像哈希属于追加复审前的队友构建。
+
+本机证据归档于`firmware/build/review-pr16/`，不提交生成日志和二进制。当前H723与F407均有新增源码修复，**下一次实车联调前应重新构建并烧录H723 FullMapWork和F407 ELBOW_TEST_MODE=2**；上面的已部署哈希及旧F407候选哈希不包含这些追加修复。现场还要验证总线负载、主循环实测耗时、实际停车位置、四区域连续动作、返回净空和疏果效果。

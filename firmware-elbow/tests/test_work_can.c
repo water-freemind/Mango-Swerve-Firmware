@@ -373,12 +373,12 @@ static void test_standalone(void) {
     puts("STANDALONE_STABILITY_MAPPING_LATCH_REARM_TIMEOUT_WRAP_OK");
 }
 
-static void run_station(unsigned duration, unsigned region, int dx, int camera,
-                        int healthy, int stationary) {
+static void run_station_period(unsigned duration, unsigned region, int dx, int camera,
+                               int healthy, int stationary, unsigned period) {
     unsigned elapsed;
-    for(elapsed = 0; elapsed < duration; elapsed += 10) {
+    for(elapsed = 0; elapsed < duration; elapsed += period) {
         char report[40];
-        now_ms += 10;
+        now_ms += period;
         if(camera && (uint32_t)(now_ms - last_camera) >= 50u) {
             int size = snprintf(report, sizeof(report), "$VIS,%u,%d\r\n", region, dx);
             Vision_Motor_Receive((const uint8_t*)report, (uint16_t)size);
@@ -396,6 +396,10 @@ static void run_station(unsigned duration, unsigned region, int dx, int camera,
         CAN_Test_Task();
         station_work_process(now_ms, healthy != 0, stationary != 0);
     }
+}
+static void run_station(unsigned duration, unsigned region, int dx, int camera,
+                        int healthy, int stationary) {
+    run_station_period(duration, region, dx, camera, healthy, stationary, 10u);
 }
 static void reset_station(uint32_t tick) {
     now_ms = tick;
@@ -420,6 +424,38 @@ static void request_station(unsigned station, unsigned region) {
     run_station(150, region, 20, 1, 1, 1);
     assert(Vision_MotorPhase == 0);
     assert(station_work_start(now_ms, true));
+}
+static void test_station_inflight_ready(void) {
+    Can3Frame frame = {0};
+    WorkCanPacket packet = {0, STATION_READY, 0, WORK_RESULT_OK};
+    reset_station(0);
+    assert(station_work_begin(12, now_ms));
+    frame.len = 8;
+    frame.rx_ms = now_ms;
+    station_can_encode(frame.data, packet);
+    assert(request_callback(&frame, NULL));
+    station_work_process(now_ms, true, true);
+    /* READY sent before APPROACH reached the peer is not a peer reset. */
+    assert(g_station_work.phase == STATION_LINK_APPROACH && !g_station_work.hold);
+    run_station(400, 1, 20, 1, 1, 1);
+    assert(g_station_work.stop_requested);
+    frame.rx_ms = now_ms;
+    assert(request_callback(&frame, NULL));
+    station_work_process(now_ms, true, true);
+    /* Once the peer acknowledged this task, READY does indicate lost state. */
+    assert(g_station_work.phase == STATION_LINK_FAULT &&
+           g_station_work.result == WORK_RESULT_RESET);
+    reset_station(0);
+    assert(station_work_begin(12, now_ms));
+    for(unsigned i = 0; i < 6; ++i) {
+        now_ms += 100u;
+        frame.rx_ms = now_ms;
+        assert(request_callback(&frame, NULL));
+        station_work_process(now_ms, true, true);
+    }
+    assert(!g_station_work.online && g_station_work.phase == STATION_LINK_FAULT &&
+           g_station_work.result == WORK_RESULT_LINK);
+    puts("STATION_INFLIGHT_READY_OK idle_reply_no_refresh acknowledged_reset_and_timeout_faults");
 }
 static void test_station_sequence(void) {
     unsigned station;
@@ -567,14 +603,37 @@ static void test_station_empty_and_limits(void) {
     puts("STATION_NO_TARGET_AND_ATTEMPTS_NEVER_REPORT_FALSE_SUCCESS_OK");
 }
 
+static void test_station_four_regions_scheduled(void) {
+    unsigned completed = 0u, started;
+    reset_station(0);
+    assert(station_work_begin(1, now_ms));
+    /* Production page transfer is ~19ms; allow another 6ms of loop work. */
+    run_station_period(400, 1, 20, 1, 1, 1, 25u);
+    assert(g_station_work.stop_requested && station_work_start(now_ms, true));
+    started = now_ms;
+    while ((uint32_t)(now_ms - started) < 10000u &&
+           g_station_work.phase != STATION_LINK_DONE &&
+           g_station_work.phase != STATION_LINK_FAULT) {
+        if (!Vision_MotorPhase && starts > completed) completed = starts;
+        run_station_period(25, completed < 4u ? completed + 1u : 0u,
+            completed < 4u ? 20 : 9999, 1, 1, 1, 25u);
+    }
+    assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
+    assert(starts == 4u && Vision_MotorPhase == 0);
+    printf("STATION_FOUR_REGIONS_25MS_OK actions=%u elapsed_ms=%lu\n",
+        starts, (unsigned long)(now_ms - started));
+}
+
 int main(void) {
     setbuf(stdout, NULL);
     if (ELBOW_TEST_MODE == 2) {
+        test_station_inflight_ready();
         test_station_sequence();
         test_station_faults();
         test_station_replay_and_release_gate();
         test_station_empty_and_limits();
         test_station_laser_without_camera();
+        test_station_four_regions_scheduled();
     } else if (ELBOW_TEST_MODE == 1) {
         test_standalone();
     } else {
