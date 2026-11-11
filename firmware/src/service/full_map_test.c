@@ -18,7 +18,8 @@ bool full_map_active(const FullMapTest* m) {
 }
 void full_map_init(FullMapTest* m,uint32_t now) {
     memset(m,0,sizeof(*m));m->initialized=auto_route_build(&m->route,1,1.570796327f);
-    m->phase=MAP_IDLE;m->reason="NEED_ORIGIN";m->speed=.20f;m->last_ms=now;
+    m->phase=MAP_IDLE;m->reason="NEED_ORIGIN";m->speed=.30f;m->last_ms=now;
+    m->approach_speed=.10f;
     for(unsigned row=1;row<=6;++row) for(unsigned number=1;number<=2;++number)
         if(!full_map_set_tree_x(m,row,number,full_map_tree_x_m[row-1][number-1])) m->initialized=false;
 }
@@ -156,10 +157,20 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
     if(!strncmp(cmd,"MAP SPEED ",10)) {
         if(full_map_active(m)||!in.stationary) return false;
         const char* p=cmd+10;
-        if(strcmp(p,"0.20")&&strcmp(p,"0.30")&&strcmp(p,"0.40")&&strcmp(p,"0.50")&&strcmp(p,"0.60")) return false;
+        if(strcmp(p,"0.20")&&strcmp(p,"0.30")&&strcmp(p,"0.40")&&strcmp(p,"0.50")&&strcmp(p,"0.60")&&strcmp(p,"0.70")) return false;
         m->speed=strtof(p,NULL);m->reason="SPEED_SET";return true;
     }
+    if(!strncmp(cmd,"MAP APPROACH ",13)) {
+        const char* value=cmd+13;
+        if(full_map_active(m)||!in.stationary) return false;
+        if(strcmp(value,"0.05")&&strcmp(value,"0.10")&&strcmp(value,"0.15")&&
+           strcmp(value,"0.20")&&strcmp(value,"0.25")) return false;
+        m->approach_speed=strtof(value,NULL);m->reason="APPROACH_SPEED_SET";return true;
+    }
     if(!strcmp(cmd,"MAP ARM ALL")) {
+        if(in.work_enabled && (!in.work_online || !in.work_ready || in.work_failed)) {
+            m->reason="WORK_PEER_NOT_READY";return false;
+        }
         if(full_map_active(m)||m->phase==MAP_FAULT||!m->localization.registered||
            m->segment>=AUTO_ROUTE_COUNT||!in.healthy||!in.stationary) {m->reason="ARM_NOT_READY";return false;}
         /* No tree/work peer or competition-start waiver: this is a separate
@@ -321,6 +332,9 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         return;
     }
     if(m->phase!=MAP_RUNNING&&m->phase!=MAP_PAUSED) return;
+    if(in.work_enabled && (!in.work_online || in.work_failed)) {
+        full_map_stop(m,"WORK_PEER_FAULT",false);return;
+    }
     if(!in.healthy||!m->localization.pose.valid||in.now-m->last_ms>50u) {
         full_map_stop(m,"FEEDBACK_OR_PERMIT",!in.odom_ok);return;
     }
@@ -367,6 +381,8 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         in.now-m->localization.constrained_ms[1]>500u;
     uint8_t required=0;bool safe=!pose_limited && !entry_needs_north;
     float range_speed=segment_speed(m);
+    if(in.work_enabled && in.work_slow && in.work_station==m->target_tree)
+        range_speed=fminf(range_speed,m->approach_speed);
     if(entry_side_observed && m->localization.uncorrected_m[1]>.4f) range_speed=fminf(range_speed,.25f);
     if(margin_limited) range_speed=fminf(range_speed,.05f);
     for(unsigned i=0;i<4;++i) {
@@ -442,6 +458,9 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     }
     if(m->tree_hold) {
         if(m->aisle_correction.active && m->aisle_correction.centering) {
+            if(in.work_enabled && in.work_active) {
+                full_map_stop(m,"WORK_STATION_MOVED",false);return;
+            }
             m->tree_hold=m->tree_hold_stable=false;
             if(!begin(m,in.now))
                 full_map_stop(m,"TREE_RECENTER_FAILED",false);
@@ -452,6 +471,9 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         const AutoVec2 target=m->motion.segment.end;
         if(fabsf(p.x-target.x)>.03f || fabsf(p.y-target.y)>.03f ||
            fabsf(auto_wrap_angle(p.yaw-m->motion.segment.heading))>m->motion.config.finish_yaw_tolerance) {
+            if(in.work_enabled && in.work_active) {
+                full_map_stop(m,"WORK_STATION_MOVED",false);return;
+            }
             m->tree_hold=m->tree_hold_stable=false;
             if(!begin(m,in.now)) full_map_stop(m,"TREE_REPOSITION_FAILED",false);
             else m->reason="TREE_REPOSITION";
@@ -462,7 +484,14 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         }
         if(!m->tree_hold_stable) {m->tree_hold_stable=true;m->tree_hold_ms=in.now;}
         m->reason="TREE_DWELL";
-        if(in.now-m->tree_hold_ms<2000u) return;
+        if(in.work_enabled) {
+            m->reason=in.work_wait?"TREE_WORK_WAIT":"TREE_REQUEST_WAIT";
+            if(in.work_station!=m->target_tree || !in.work_done) {
+                if(!in.work_wait && in.now-m->tree_hold_ms>=5000u)
+                    full_map_stop(m,"TREE_REQUEST_TIMEOUT",false);
+                return;
+            }
+        } else if(in.now-m->tree_hold_ms<2000u) return;
         m->trees_done|=(uint16_t)(1u<<(m->target_tree-1u));
         m->tree_hold=m->tree_hold_stable=false;
         if(!begin(m,in.now)) full_map_stop(m,"TREE_NEXT_FAILED",false);

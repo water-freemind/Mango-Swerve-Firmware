@@ -57,7 +57,7 @@ static void run_empty_field(bool all,bool bad_rear) {
     AutoPose actual={.2f,-.5f,1.570796327f};AutoTwist actual_v={0};
     FullMapInput in={.healthy=true,.odom_ok=true,.stationary=true,.aligned=true,.laser=scan(actual,0)};
     assert(full_map_command(&m,"MAP ORIGIN",in));
-    if(!all) assert(full_map_command(&m,"MAP SPEED 0.60",in));
+    if(!all) assert(full_map_command(&m,"MAP SPEED 0.70",in));
     assert(full_map_command(&m,"MAP ARM ALL",in));
     assert(full_map_command(&m,"MAP GO 1",in));
     bool rear_injected=false,entry_crossed_moving=false;unsigned segment_stops=0,tree_count=0;
@@ -122,10 +122,10 @@ static void command_tests(void) {
         .laser=scan((AutoPose){.2f,-.5f,1.570796327f},0)};
     assert(!full_map_command(&m,"MAP ARM ALL",in));
     assert(full_map_command(&m,"MAP ORIGIN",in));
-    assert(fabsf(m.speed-.20f)<.00001f);
+    assert(fabsf(m.speed-.30f)<.00001f);
     assert(!full_map_command(&m,"MAP ARM NEXT",in));
     assert(!full_map_command(&m,"MAP SPEED 0.10",in));
-    const char* presets[]={"0.20","0.30","0.40","0.50","0.60"};
+    const char* presets[]={"0.30","0.40","0.50","0.60","0.70"};
     for(unsigned i=0;i<5;++i) {char speed[32];snprintf(speed,sizeof(speed),"MAP SPEED %s",presets[i]);assert(full_map_command(&m,speed,in));}
     assert(full_map_command(&m,"MAP SPEED 0.20",in));
     assert(!full_map_command(&m,"MAP SPEED 2.00",in));
@@ -848,6 +848,44 @@ static void ridge_localization_tests(void) {
     assert(ridges.rejected_mask&(1u<<AUTO_FRONT));
     puts("RIDGE_LOCALIZATION_OK known_faces repeated_stamp unknown_entry_return_rejected");
 }
+static void station_work_gate_test(void) {
+    FullMapTest map;
+    FullMapInput input = setup_aisle(&map, 4, .665f);
+    const AutoPose pose = {.665f, 3.7f, 1.570796327f};
+    unsigned now;
+    assert(field_pose_register(&map.localization, pose, 0, 0));
+    map.target_tree = 11;
+    map.trees_done = 1u << 11;
+    map.motion.segment.end = (AutoVec2){.665f, 3.7f};
+    map.motion.out.phase = AUTO_MOTION_DONE;
+    map.tree_hold = map.tree_hold_stable = true;
+    input.work_enabled = input.work_online = true;
+    for(now=10; now<=3000; now+=10) {
+        input.now = now;
+        input.laser = ridge_scan(pose, now);
+        full_map_step(&map, input);
+        assert(map.phase == MAP_RUNNING && map.tree_hold);
+        assert(map.trees_done == (1u << 11));
+        assert(map.command.vx == 0 && map.command.vy == 0);
+    }
+    input.work_wait = input.work_active = true;
+    input.work_done = true;
+    input.work_station = 12; /* Completion for a different tree cannot release. */
+    input.now += 10;
+    input.laser = ridge_scan(pose, input.now);
+    full_map_step(&map, input);
+    assert(map.tree_hold && map.trees_done == (1u << 11));
+    input.work_station = 11;
+    input.work_done = false;
+    map.localization.pose.pose.x += .05f;
+    input.now += 10;
+    input.laser = ridge_scan(map.localization.pose.pose, input.now);
+    full_map_step(&map, input);
+    assert(map.phase == MAP_FAULT && !strcmp(map.reason, "WORK_STATION_MOVED"));
+    assert(map.command.vx == 0 && map.command.vy == 0);
+    puts("STATION_MAP_GATE_OK no_timer_release wrong_tree_done active_tool_blocks_reposition");
+}
+
 int main(void) {
     entry_observer_role_test();
     entry_observation_bridge_test();
@@ -873,6 +911,7 @@ int main(void) {
         if(s.aisle==7) assert(s.row==0);
         if(s.aisle>=1&&s.aisle<=6) assert(s.row==s.aisle);
     }
+    station_work_gate_test();
     localization_tests();command_tests();protection_tests();range_threshold_tests();endpoint_acceptance_tests();
     g7_ridge_exit_test();aisle_correction_tests();
     aisle_closed_loop_test();

@@ -3,7 +3,7 @@ param(
     [string]$Toolchain = '',
     [ValidateSet('auto', 'hid', 'usb_bulk')][string]$DapBackend = 'hid',
     [switch]$ProbeOnly,
-    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest', 'StraightTest')][string]$Mode = 'Diagnostics'
+    [ValidateSet('Diagnostics', 'Manual', 'ManualStandalone', 'Steering', 'Can2Query', 'ZeroTest', 'StraightTest', 'FullMapWork')][string]$Mode = 'Diagnostics'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,9 +44,11 @@ try {
     $connection = @('-s', $scripts, '-f', 'interface/cmsis-dap.cfg',
         '-c', "cmsis-dap backend $DapBackend",
         '-c', 'cmsis-dap quirk enable',
-        '-c', 'transport select swd', '-c', 'adapter speed 1000', '-f', 'target/stm32h7x.cfg')
+        '-c', 'transport select swd', '-f', 'target/stm32h7x.cfg',
+        '-c', 'adapter speed 400',
+        '-c', 'stm32h7x.cpu0 configure -event reset-init {adapter speed 400}')
     if ($ProbeOnly) {
-        & $openocd @connection -c 'init; targets; shutdown'
+        & $openocd @connection -c 'init; targets stm32h7x.cpu0; targets; shutdown'
         if ($LASTEXITCODE -ne 0) { throw 'SWD probe failed' }
         return
     }
@@ -54,11 +56,12 @@ try {
     New-Item -ItemType Directory -Force 'build/backup' | Out-Null
     $backup = 'build/backup/before-flash-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.bin'
     # Read and verify the original 1 MB flash before programming the selected image.
-    & $openocd @connection -c "init; halt; dump_image $backup 0x08000000 0x100000; verify_image $backup 0x08000000 bin; resume; shutdown"
+    & $openocd @connection -c "init; targets stm32h7x.cpu0; reset halt; dump_image $backup 0x08000000 0x100000; verify_image $backup 0x08000000 bin; resume; shutdown"
     if ($LASTEXITCODE -ne 0) { throw 'Backup failed. Check the SWD connection and retry.' }
     if ((Get-Item -LiteralPath $backup).Length -ne 0x100000) { throw 'Incomplete backup' }
     $image = 'build/Debug/robot.hex'
     if ($Mode -eq 'StraightTest') { $image = 'build/StraightTest/robot.hex' }
+    if ($Mode -eq 'FullMapWork') { $image = 'build/FullMapWork/robot.hex' }
     if ($Mode -eq 'Manual') { $image = 'build/Manual/robot.hex' }
     if ($Mode -eq 'ManualStandalone') { $image = 'build/ManualStandalone/robot.hex' }
     if ($Mode -eq 'Steering') { $image = 'build/Steering/robot.hex' }

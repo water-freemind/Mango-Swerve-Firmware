@@ -1,0 +1,10 @@
+MDK-ARM/RED_Demo/
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.uvoptx
+MDK-ARM/*.bak
+*.log
+*.crf
+*.lst
+*.htm
+tests/work_can_*/
+tests/oled_*/

@@ -48,7 +48,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -195,7 +195,7 @@ public sealed class VofaTestSession {
     private int selectedTarget = 1, phaseValue;
     private readonly Dictionary<string, int> ranges = new Dictionary<string, int>();
     private static readonly string[] logCategories = {"STATUS","HEALTH","REMOTE","MOTOR","CAN1","CAN2","CAN3",
-        "IMU","IMU_RAW","IMU_BIAS","DRIFT","LASER","RANGE","PLAN","BRAKE","TIMING","WAVE","MAP"};
+        "IMU","IMU_RAW","IMU_BIAS","DRIFT","LASER","RANGE","PLAN","BRAKE","TIMING","WAVE","MAP","WORK"};
     private readonly Dictionary<string, bool> logEnabled = new Dictionary<string, bool>();
     private readonly Dictionary<string, long> lastForward = new Dictionary<string, long>();
     private bool compactLogs;
@@ -214,6 +214,7 @@ public sealed class VofaTestSession {
         compactLogs = preset == "DEFAULT";
         if (compactLogs) logEnabled["STATUS"] = logEnabled["HEALTH"] = logEnabled["PLAN"] = true;
         if (compactLogs) logEnabled["MAP"] = true;
+        if (compactLogs) logEnabled["WORK"] = true;
         lastForward.Clear();
     }
     public bool ShouldForwardStatus(string raw, long now) {
@@ -221,6 +222,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
+        if (category == "WORK" || category == "WORK_EVENT") return true;
         if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "MAP_TREE_EVENT" || category == "MAP_CONTROL_FAULT" || category == "PREDICT") return true;
         if (category == "MAP_STATUS" || category == "MAP_POSE" || category == "MAP_AISLE" || category == "MAP_TREE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
@@ -358,8 +360,9 @@ public sealed class VofaTestSession {
         if (command == "UI STOP") { tx("STOP"); Clear(); mapArmed = mapAwaitingArm = false; report("stop_requested=1"); return true; }
         if (command.StartsWith("UI MAP ", StringComparison.Ordinal)) {
             string action = command.Substring(7);
-            if (action == "STATUS" || action == "STOP") {
+            if (action == "STATUS" || action == "STOP" || action == "WORK STATUS" || action == "WORK RESET") {
                 tx("MAP " + action); if (action == "STOP") mapArmed = mapAwaitingArm = false;
+                if (action == "WORK RESET") mapArmed = mapAwaitingArm = false;
                 return true;
             }
             if (!mapFirmware || now - lastMap > 1500) { report("rejected=FIRMWARE_FULL_MAP_REQUIRED_OR_STALE"); return false; }
@@ -376,7 +379,8 @@ public sealed class VofaTestSession {
             if (mapPhase == "RUNNING" || mapPhase == "PAUSED" || mapPhase == "ARMED" || !stopped) {
                 report("rejected=MAP_NEEDS_IDLE_STOPPED"); return false;
             }
-            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(20|30|40|50|60)$")) { tx("MAP " + action); return true; }
+            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(20|30|40|50|60|70)$") ||
+                Regex.IsMatch(action, @"^APPROACH 0\.(05|10|15|20|25)$")) { tx("MAP " + action); return true; }
             if (action == "ARM ALL") {
                 if (!healthy || mapAwaitingArm) return false;
                 mapAwaitingArm = true; mapArmTime = now; mapArmSelection = action; tx("MAP " + action); return true;

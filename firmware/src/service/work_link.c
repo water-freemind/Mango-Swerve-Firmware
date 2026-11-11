@@ -1,6 +1,7 @@
 #include "work_link.h"
 #include "work_config.h"
 #include "chassis_can_map.h"
+#include "station_work.h"
 
 #include <math.h>
 #include <string.h>
@@ -214,7 +215,8 @@ void work_link_process(uint32_t now_ms, bool chassis_ready) {
 }
 
 bool work_link_hold(void) {
-    return !initialized || (WORK_LINK_ENABLED && g_work_link.hold);
+    return !initialized || (WORK_LINK_ENABLED && g_work_link.hold) ||
+        (WORK_STATION_ENABLED && g_station_work.hold);
 }
 
 void work_link_limit_velocity(float* vx, float* vy, float* wz) {
