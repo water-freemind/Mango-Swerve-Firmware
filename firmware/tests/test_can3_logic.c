@@ -206,6 +206,39 @@ static void test_laser_jump_confirmation(void) {
     }
 }
 
+static void test_continuous_median_timestamps(void) {
+    uint8_t data[8]={0x0a,0xa0,0x0a,0xa0,0x0a,0xa0,0x0a,0xa0};
+    LaserSnapshot s;
+    for(unsigned now=20000;now<=20200;now+=100) laser_accept_frame(data,now);
+    data[6]=0x04;data[7]=0x3f; /* 1087mm, the recorded short spike. */
+    laser_accept_frame(data,20300);
+    assert(laser_get_snapshot_at(&s,20300));
+    assert(s.accepted_mm[3]==1087 && s.median_mm[3]==2720);
+    assert(s.median_age_ms[3]==100 && !(s.median_updated_mask&8u));
+    data[6]=0x0a;data[7]=0x4a; /* Recovery to 2634mm. */
+    laser_accept_frame(data,20400);assert(laser_get_snapshot_at(&s,20400));
+    assert(s.median_mm[3]==2634 && s.median_age_ms[3]==0 && (s.median_updated_mask&8u));
+    data[6]=0x05;data[7]=0xdc;
+    laser_accept_frame(data,20750); /* A gap resets history. */
+    data[6]=0x05;data[7]=0xb4;laser_accept_frame(data,20850); /* 1460. */
+    data[6]=0x05;data[7]=0x8c;laser_accept_frame(data,20950); /* 1420. */
+    assert(laser_get_snapshot_at(&s,20950));
+    assert(s.median_mm[3]==1460 && s.median_age_ms[3]==100 && !(s.median_updated_mask&8u));
+    data[6]=0x05;data[7]=0x64;laser_accept_frame(data,21050); /* 1380. */
+    assert(laser_get_snapshot_at(&s,21050));
+    assert(s.median_mm[3]==1420 && s.median_age_ms[3]==100 && (s.median_updated_mask&8u));
+    data[6]=0xfe;data[7]=0x6b;laser_accept_frame(data,21150);
+    assert(laser_get_snapshot_at(&s,21150));
+    assert(s.median_mm[3]==1420 && s.median_age_ms[3]==200 && !(s.median_updated_mask&8u));
+    assert(laser_get_snapshot_at(&s,21351) && !(s.median_valid_mask&8u));
+    data[6]=0x03;data[7]=0xe8;laser_accept_frame(data,22000); /* 1000. */
+    data[6]=0x04;data[7]=0xb0;laser_accept_frame(data,22100); /* 1200. */
+    data[6]=0x04;data[7]=0x4c;laser_accept_frame(data,22200); /* 1100, new median. */
+    data[6]=0x05;data[7]=0x14;laser_accept_frame(data,22300); /* 1300 selects the older 1200. */
+    assert(laser_get_snapshot_at(&s,22300));
+    assert(s.median_mm[3]==1200 && s.median_age_ms[3]==200 && !(s.median_updated_mask&8u));
+    puts("LASER_CONTINUOUS_MEDIAN_OK 1087mm_spike source_age independent_updates expiry");
+}
 int main(void) {
     test_laser_boot_snapshot();
     test_registry();
@@ -214,6 +247,7 @@ int main(void) {
     test_laser_tick_wraparound();
     test_laser_accepted_samples();
     test_laser_jump_confirmation();
+    test_continuous_median_timestamps();
     puts("LASER_OFFLINE_PREPARATION_TEST_OK");
     puts("CAN3_LOGIC_TEST_OK");
     return 0;

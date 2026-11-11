@@ -9,6 +9,7 @@ typedef struct {
     uint32_t pose_max_age_ms;
     float finish_yaw_tolerance; /* Optional endpoint-only acceptance; zero uses yaw_tolerance. */
     float finish_cross_tolerance; /* Optional endpoint-only lateral acceptance. */
+    bool smooth_correction; /* Subtract correction deadbands before applying proportional gains. */
 } AutoMotionConfig;
 typedef struct { AutoVec2 start, end; float heading; } AutoSegment;
 typedef enum { AUTO_MOTION_IDLE, AUTO_MOTION_ALIGN, AUTO_MOTION_RUN,
@@ -19,6 +20,7 @@ typedef enum { AUTO_MOTION_NO_ERROR, AUTO_MOTION_BAD_CONFIG, AUTO_MOTION_BAD_INP
 typedef struct {
     AutoPoseSample pose; AutoTwist measured;
     bool healthy, aligned, stationary, stop_requested, hard_stop;
+    bool hold_along; /* Keep lateral/yaw correction active while braking along the line. */
     uint32_t now_ms;
 } AutoMotionInput;
 typedef struct {
@@ -29,7 +31,7 @@ typedef struct {
 typedef struct {
     AutoMotionConfig config; AutoSegment segment; AutoMotionOutput out;
     AutoVec2 tangent, normal, velocity_map;
-    float length, settled_s; uint32_t last_ms;
+    float length, settled_s; uint32_t last_ms, prepare_ms;
     bool initialized, started, reversing;
 } AutoMotion;
 bool auto_motion_begin(AutoMotion* motion,const AutoMotionConfig* config,AutoSegment segment,uint32_t now_ms);

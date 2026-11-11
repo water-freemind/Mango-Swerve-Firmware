@@ -6,9 +6,10 @@
 typedef enum { MAP_IDLE, MAP_READY, MAP_ARMED, MAP_RUNNING, MAP_PAUSED,
     MAP_SEGMENT_DONE, MAP_DONE, MAP_FAULT } FullMapPhase;
 typedef struct {
-    bool active;
-    uint8_t confirmations;
+    bool active, centering;
+    uint8_t confirmations, pending_updates;
     uint32_t frame, stamp_ms, front_surface, rear_surface;
+    uint32_t sample_ms[2]; /* Source timestamps of the last confirmed front/rear pair. */
     uint16_t front_mm, rear_mm;
     float error_m, correction_m;
     bool checkpoint_valid, frozen;
@@ -30,7 +31,7 @@ typedef struct {
     MapAisleCorrection aisle_correction;
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
-    unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask;
+    unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;
     uint16_t origin_front_mm;
     float speed; bool all, stable, initialized, user_hold;
     const char* reason;

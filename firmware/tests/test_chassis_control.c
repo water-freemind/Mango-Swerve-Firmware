@@ -1,6 +1,7 @@
 #include "chassis.h"
 #include "app_config.h"
 #include "log.h"
+#include "auto_motion.h"
 #include <assert.h>
 #include <float.h>
 #include <math.h>
@@ -130,7 +131,58 @@ static void steering_tests(void) {
     tick+=2; assert(chassis.process()==chassis.OK);
     assert(fabsf(angle[0]-raw[0])<.04f);
 }
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+static void endpoint_motion_alignment_test(void) {
+    setup();ChassisConfig cc=config();cc.model.length=cc.model.width=.16f;
+    assert(chassis.init(&cc)==chassis.OK);assert(chassis.process()==chassis.OK);
+    const AutoMotionConfig c={.vmax=.20f,.accel=.30f,.decel=.40f,.lateral_max=.10f,.cross_kp=1.2f,
+        .yaw_kp=1.2f,.wz_max=.06f,.angular_accel=.15f,.position_tolerance=.02f,
+        .cross_tolerance=.010f,.yaw_tolerance=.034906585f,.cross_abort=.08f,.yaw_abort=.15f,
+        .settle_s=.4f,.stop_latency_s=.5f,.pose_max_age_ms=50,
+        .finish_yaw_tolerance=.069813170f,.finish_cross_tolerance=.02f,.smooth_correction=true};
+    AutoMotion m;assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},tick));
+    AutoPose actual={1,.022f,.034906585f};AutoTwist measured={0},applied={0};
+    unsigned blocked=0,reclosed=0;bool previous_gate=false;
+    for(unsigned step=1;step<=500u;++step) {
+        tick+=10;
+        for(unsigned wheel=0;wheel<4u;++wheel) {
+            const float correction=(angle[wheel]-raw[wheel])*.25f;
+            raw[wheel]+=fmaxf(-.06f,fminf(.06f,correction));
+        }
+        measured.vx+=(applied.vx-measured.vx)*.25f;
+        measured.vy+=(applied.vy-measured.vy)*.25f;
+        measured.wz+=(applied.wz-measured.wz)*.25f;
+        const AutoVec2 delta=auto_rotate((AutoVec2){measured.vx*.01f,measured.vy*.01f},actual.yaw);
+        actual.x+=delta.x;actual.y+=delta.y;actual.yaw+=measured.wz*.01f;
+        AutoPose observed=actual;
+        observed.y+=.003f*sinf(step*.63f);observed.yaw+=.012f*sinf(step*.47f);
+        AutoMotionInput in={.pose={observed,tick,true},.measured=measured,.healthy=true,
+            .aligned=chassis_drive_output_allowed(),
+            .stationary=hypotf(measured.vx,measured.vy)<.01f && fabsf(measured.wz)<.02f,.now_ms=tick};
+        const AutoMotionOutput out=auto_motion_step(&m,in);
+        if(out.phase==AUTO_MOTION_ALIGN)
+            assert(chassis_prepare_velocity(out.steering_hint.vx,out.steering_hint.vy,out.steering_hint.wz)==chassis.OK);
+        else assert(chassis.set_velocity(out.command.vx,out.command.vy,out.command.wz)==chassis.OK);
+        assert(chassis.process()==chassis.OK);
+        const bool gate=chassis_drive_output_allowed();
+        blocked+=out.phase==AUTO_MOTION_ALIGN;
+        if(previous_gate && !gate) ++reclosed;
+        previous_gate=gate;
+        applied=gate && out.phase!=AUTO_MOTION_ALIGN?out.command:(AutoTwist){0};
+        assert(out.phase!=AUTO_MOTION_FAULT);
+        if(out.phase==AUTO_MOTION_DONE) {
+            assert(reclosed<=2u && fabsf(actual.y)<.02f);
+            printf("CHASSIS_MOTION_ALIGNMENT_OK time_s=%.2f align_ticks=%u gate_reclosures=%u cross_mm=%.1f\n",
+                step*.01,blocked,reclosed,actual.y*1000);return;
+        }
+    }
+    assert(0);
+}
+#endif
 int main(void) {
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    endpoint_motion_alignment_test();
+#endif
     invalid_tests(); timing_tests(); steering_tests();
     setup();
     assert(chassis_prepare_velocity(.1f,0,0)==chassis.OK);

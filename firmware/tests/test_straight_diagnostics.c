@@ -12,7 +12,6 @@ uint32_t g_test_tick_ms;
 static uint32_t fake_us;
 static bool fake_online = true, fake_calibrated = true, fresh_flag;
 static bool fake_can_healthy, fake_laser_ready;
-static uint32_t fake_log_cost_ms;
 static uint16_t fake_swd = 2000u, fake_vrb = 1500u;
 static uint16_t fake_swc = 1500u, fake_ry = 1500u, fake_lx = 1500u;
 static uint16_t fake_swb = 1500u, fake_rx = 1500u;
@@ -32,6 +31,9 @@ static unsigned chassis_process_calls;
 static float fake_yaw;
 static char last_line[1024];
 static FILE* trace_test_log;
+static uint32_t fake_log_cost_ms;
+static bool fake_filtered_laser_ready;
+static LaserSnapshot fake_filtered_laser;
 FDCAN_HandleTypeDef hfdcan1, hfdcan2, hfdcan3;
 UART_HandleTypeDef huart1;
 static ChassisErrorCode fake_set_velocity(float vx, float vy, float wz) {
@@ -122,6 +124,7 @@ bool can_get_diagnostics(FDCAN_HandleTypeDef* b, STM32HalCanDiagnostics* d) {
     return true;
 }
 bool laser_get_snapshot(LaserSnapshot* s) {
+    if(fake_filtered_laser_ready) { *s=fake_filtered_laser;return true; }
     *s = (LaserSnapshot){.distance_mm = {65535, 65535, 65535, 65535}, .frame_count = UINT32_MAX};
     if(fake_laser_ready) *s = (LaserSnapshot){.distance_mm = {800, 600, 7000, fake_front_mm},
         .accepted_mm = {800, 600, 7000, fake_front_mm}, .valid_mask = 15u, .updated_mask = 15u,
@@ -329,6 +332,40 @@ static void check_manual_logging_budget(void) {
     fake_swd=1000u;fake_ry=1500u;loop_at(now+=10u);
     printf("MANUAL_LOG_BUDGET_OK iterations=5000 line_cost_ms=6 max_batch_ms=%lu real_51ms_gap_stops\n",
         (unsigned long)max_block_ms);
+}
+static void check_map_laser_filter(void) {
+    fake_filtered_laser_ready=true;
+    fake_filtered_laser=(LaserSnapshot){.accepted_mm={179,162,6129,1087},
+        .median_mm={179,162,6129,2720},.median_age_ms={0,0,0,100},
+        .valid_mask=15,.updated_mask=15,.median_valid_mask=15,.median_updated_mask=7,
+        .frame_fresh=true,.frame_count=1,.last_rx_ms=g_test_tick_ms};
+    full_map.command=(AutoTwist){.vx=.4f};
+    StraightInput in={.vx_mps=.364f};
+    FullMapInput m=map_input(g_test_tick_ms,in);
+    assert(m.laser.accepted_mm[3]==2720 && m.laser.sample_age_ms[3]==100);
+    assert(!(m.laser.updated_mask&8u));
+    fake_filtered_laser.accepted_mm[3]=1056;
+    fake_filtered_laser.median_mm[3]=1095;fake_filtered_laser.median_updated_mask=15;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[3]==1095);
+    fake_filtered_laser.accepted_mm[3]=900;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[3]==900);
+    full_map.command=(AutoTwist){.vy=.4f};in=(StraightInput){.vy_mps=.376f};
+    fake_filtered_laser.accepted_mm[0]=992;fake_filtered_laser.median_mm[0]=1026;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[0]==1026);
+    fake_filtered_laser.accepted_mm[0]=99;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[0]==99);
+    full_map.motion.initialized=true;full_map.motion.config.decel=.15f;
+    full_map.command=(AutoTwist){.vx=.5f};in=(StraightInput){.vx_mps=.482f};
+    fake_filtered_laser.accepted_mm[3]=1145;fake_filtered_laser.median_mm[3]=2794;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[3]==2794);
+    /* Two real short returns move the median into the protective envelope. */
+    fake_filtered_laser.accepted_mm[3]=1131;fake_filtered_laser.median_mm[3]=1145;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[3]==1145);
+    fake_filtered_laser.accepted_mm[3]=600;
+    m=map_input(g_test_tick_ms,in);assert(m.laser.accepted_mm[3]==600);
+    full_map.motion.initialized=false;
+    fake_filtered_laser_ready=false;full_map.command=(AutoTwist){0};
+    puts("MAP_LASER_FILTER_ADAPTER_OK recorded_front_and_left_ranges median_age urgent_bypass");
 }
 static void check_trace_adapter(void) {
     chassis_trace_init(&trace);
@@ -581,6 +618,7 @@ int main(void) {
     check_trace_adapter();
     check_map_adapter();
     check_manual_logging_budget();
+    check_map_laser_filter();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");

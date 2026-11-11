@@ -20,6 +20,9 @@ typedef struct {
     uint32_t sample_age_ms[LASER_CHANNEL_COUNT];
     uint8_t valid_mask; /* Fresh accepted samples, one bit per channel. */
     uint8_t updated_mask; /* Accepted channels in the latest raw board frame. */
+    uint16_t median_mm[LASER_CHANNEL_COUNT]; /* Continuous median, including short ranges. */
+    uint32_t median_age_ms[LASER_CHANNEL_COUNT]; /* Age of the selected source sample. */
+    uint8_t median_valid_mask, median_updated_mask;
     uint32_t last_rx_ms;
     uint32_t frame_count;
     bool frame_fresh; /* Freshness of the board CAN frame, evaluated with the 300 ms timeout. */
