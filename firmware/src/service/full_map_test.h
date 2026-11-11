@@ -20,6 +20,9 @@ typedef struct {
     uint32_t now; AutoTwist wheel; float imu_yaw;
     bool healthy, odom_ok, stationary, aligned;
     LaserSnapshot laser;
+    bool work_enabled, work_online, work_ready, work_done, work_failed;
+    bool work_slow, work_wait, work_active;
+    uint8_t work_station;
 } FullMapInput;
 typedef struct {
     float x;
@@ -33,7 +36,7 @@ typedef struct {
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;
     uint16_t origin_front_mm;
-    float speed; bool all, stable, initialized, user_hold;
+    float speed, approach_speed; bool all, stable, initialized, user_hold;
     const char* reason;
     AutoMotionError motion_error;
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */

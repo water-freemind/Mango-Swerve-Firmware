@@ -177,7 +177,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 95) 'Expected 95 named panel commands'
+Assert ($items.Count -eq 31) 'Expected 31 full-map and work commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -191,7 +191,7 @@ foreach ($item in $items) {
     $accepted = $static.Command($command, 3010)
     if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED|ACCEL|MAP)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
 }
-Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^MAP (STATUS|STOP)$' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
+Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^MAP (STATUS|STOP|WORK STATUS|WORK RESET)$' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
 $messages.Clear()
 Assert ($static.Command('UI SNAPSHOT REMOTE', 4000)) 'Stale snapshot command rejected as unknown'
 Assert ($messages[-1].Contains('UART_STATUS_STALE')) 'Stale UART data was presented as a current snapshot'
@@ -253,13 +253,13 @@ foreach ($preset in @('0.50','1.00','1.50','1.80','2.00')) {
     Assert ($tx[-1] -eq "SPEED $preset") 'Speed preset changed in bridge'
 }
 $panelFile = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '../vofa/vofa+.cmds.json') | ConvertFrom-Json
-$buttons = ($panelFile.ctx.subCmds | Where-Object name -like '08 *').subCmds
-$speedButtons = @($buttons | Where-Object cmd_hex -like '55 49 20 53 50 45 45 44 *')
+$buttons = ($panelFile.ctx.subCmds | Where-Object name -like '02 *').subCmds
+$speedButtons = @($buttons | Where-Object cmd_hex -like '55 49 20 4D 41 50 20 53 50 45 45 44 *')
 Assert ($speedButtons.Count -eq 5) 'Five speed buttons expected'
-$expectedPresets = @('0.50','1.00','1.50','1.80','2.00')
+$expectedPresets = @('0.30','0.40','0.50','0.60','0.70')
 for ($i = 0; $i -lt 5; ++$i) {
     $decoded = [Text.Encoding]::ASCII.GetString([byte[]]($speedButtons[$i].cmd_hex.Split(' ') | ForEach-Object {[Convert]::ToByte($_,16)}))
-    Assert ($decoded -eq "UI SPEED $($expectedPresets[$i])`n") 'Speed button bytes do not match label'
+    Assert ($decoded -eq "UI MAP SPEED $($expectedPresets[$i])`n") 'Speed button bytes do not match label'
 }
 foreach ($accel in @('0.10','0.20','0.30','0.50')) {
     Assert ($config.Command("UI ACCEL $accel",3)) 'Stopped acceleration setting rejected'
@@ -268,7 +268,7 @@ foreach ($accel in @('0.10','0.20','0.30','0.50')) {
 foreach ($badAccel in @('UI ACCEL 0','UI ACCEL 0.51','UI ACCEL NaN','UI ACCEL -0.1',"UI ACCEL 0.2`nUI GO")) {
     Assert (!$config.Command($badAccel,3)) 'Invalid acceleration accepted'
 }
-Assert (@($buttons | Where-Object cmd_hex -like '55 49 20 41 43 43 45 4C *').Count -eq 4) 'Four acceleration buttons expected'
+Assert (@($items | Where-Object name -like '*单次*').Count -eq 0) 'Single-run tests remain on the routine panel'
 Assert (!$config.Command('UI ARM ROUND 1',4)) 'Static launcher permitted new motion'
 Assert (!$config.Command('UI EDGE LEFT',601)) 'Stale contact sample accepted'
 
@@ -364,4 +364,18 @@ Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_AISLE active=1 frozen=0'
 Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE hold=1',30)) 'Tree log ignored map toggle'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE_EVENT hold=1',30)) 'Tree event hidden'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_CONTROL_FAULT process_code=8',30)) 'Control fault hidden'
-'VOFA_PANEL_TEST_OK (95 commands, map handshake and isolation, acceleration/speeds, TRACE, UDP)'
+'VOFA_PANEL_TEST_OK (31 commands, map handshake and isolation, acceleration/speeds, TRACE, UDP)'
+
+$workPanel = [VofaTestSession]::new($true,$send,$report)
+$workPanel.Observe($idle + ' control=HOST',0)
+$workPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=READY token=0 segment=0',1)
+foreach ($preset in @('0.05','0.10','0.15','0.20','0.25')) {
+    Assert ($workPanel.Command("UI MAP APPROACH $preset",2)) 'Approach preset rejected'
+    Assert ($tx[-1] -eq "MAP APPROACH $preset") 'Approach command changed in bridge'
+}
+Assert (!$workPanel.Command('UI MAP APPROACH 0.30',2)) 'Unsupported approach speed accepted'
+Assert ($workPanel.Command('UI MAP WORK STATUS',3)) 'Work status query rejected'
+Assert ($tx[-1] -eq 'MAP WORK STATUS') 'Work query changed in bridge'
+Assert ($workPanel.Command('UI MAP WORK RESET',4)) 'Work reset rejected'
+Assert ($workPanel.ShouldForwardStatus('[INFO] TEST_WORK enabled=1 phase=2 task=1 station=12',5)) 'Work status hidden'
+'VOFA_WORK_QUERY_AND_APPROACH_PRESETS_OK'

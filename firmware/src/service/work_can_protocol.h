@@ -52,4 +52,37 @@ static inline uint8_t work_can_decode(const uint8_t data[8], WorkCanPacket* pack
     return 1u;
 }
 
+/* Version 2 is chassis-led station work. region carries station 1..12.
+ * Commands travel on 0x611, replies on 0x610. Version 1 remains distinct. */
+#define STATION_CAN_VERSION 2u
+#define STATION_RESULT_CANCELLED 11u
+typedef enum {
+    STATION_SYNC = 1, STATION_READY, STATION_START, STATION_WORKING,
+    STATION_DONE, STATION_RELEASE, STATION_RELEASED, STATION_ABORT,
+    STATION_FAULT, STATION_ABORTING, STATION_HELLO, STATION_APPROACH,
+    STATION_SLOW, STATION_WAIT, STATION_TRACKING
+} StationCanState;
+
+static inline uint8_t station_can_is_reply(uint8_t state) {
+    return state == STATION_READY || state == STATION_WORKING ||
+        state == STATION_DONE || state == STATION_RELEASED ||
+        state == STATION_FAULT || state == STATION_ABORTING || state == STATION_HELLO || state == STATION_SLOW ||
+        state == STATION_WAIT || state == STATION_TRACKING;
+}
+static inline void station_can_encode(uint8_t data[8], WorkCanPacket packet) {
+    work_can_encode(data, packet);
+    data[0] = STATION_CAN_VERSION;
+}
+static inline uint8_t station_can_decode(const uint8_t data[8], WorkCanPacket* packet) {
+    if(data[0] != STATION_CAN_VERSION || data[1] < STATION_SYNC ||
+       data[1] > STATION_TRACKING || data[6] > 12u || data[7] > STATION_RESULT_CANCELLED)
+        return 0u;
+    packet->state = data[1];
+    packet->task = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |
+        ((uint32_t)data[4] << 16) | ((uint32_t)data[5] << 24);
+    packet->region = data[6];
+    packet->result = data[7];
+    return 1u;
+}
+
 #endif

@@ -1,6 +1,7 @@
 #requires -PSEdition Desktop
 param(
-    [string]$VofaDir = 'D:\Vofa +\x64',
+    [string]$VofaDir = 'E:\vofa+\x64',
+    [string]$Port = 'COM12',
     [ValidateSet('Static','OneMeter','Motion')][string]$Mode = 'Static'
 )
 $ErrorActionPreference = 'Stop'
@@ -12,7 +13,7 @@ New-Item -ItemType Directory -Path $logDir -Force | Out-Null
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',
     ('"' + [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../straight-console.ps1')) + '"'),
-    '-Port','COM19','-WavePort','1347','-CommandPort','1348','-UiOnly','-ExitWithVofa')
+    '-Port',$Port,'-WavePort','1347','-CommandPort','1348','-UiOnly','-ExitWithVofa')
 if ($Mode -ne 'Static') { $arguments += '-AllowMotion' }
 # User-launched VOFA is interactive; the serial bridge stays hidden and never auto-starts a test.
 $null = Start-Process -FilePath (Join-Path $VofaDir 'vofa+.exe') -WorkingDirectory $VofaDir -PassThru

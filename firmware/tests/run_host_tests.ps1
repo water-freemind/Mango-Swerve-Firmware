@@ -323,6 +323,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Drive source test failed.' }
     (Join-Path $firmwareRoot 'src/service/manual_ramp.c') `
     (Join-Path $firmwareRoot 'src/service/straight_test.c') `
     (Join-Path $firmwareRoot 'src/service/drive_source.c') `
+    (Join-Path $firmwareRoot 'src/service/station_work.c') `
     (Join-Path $firmwareRoot 'src/service/chassis_yaw_hold.c') `
     (Join-Path $firmwareRoot 'src/infra/pid.c') '-lm' '-o' $diagnosticExe
 if ($LASTEXITCODE -ne 0) { throw 'Straight diagnostics compilation failed.' }
@@ -363,3 +364,9 @@ try {
     & py -3 -B tools/autonomy_report.py ramp tools/fixtures/ramp-synthetic.csv --output firmware/build/autonomy-prep/reports/ramp-synthetic.json
     if ($LASTEXITCODE -ne 0) { throw 'Synthetic ramp report failed.' }
 } finally { Pop-Location }
+
+# Run the co-located F407 endpoint against the H723 sources, without devices.
+foreach ($script in @('verify_work_can.py','verify_vision_motor.py','verify_oled.py')) {
+    & py -3 -X utf8 (Join-Path $repoRoot ('firmware-elbow/tests/' + $script))
+    if ($LASTEXITCODE -ne 0) { throw "Elbow integration regression failed: $script" }
+}

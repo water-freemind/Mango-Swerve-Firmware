@@ -333,6 +333,39 @@ static void check_manual_logging_budget(void) {
     printf("MANUAL_LOG_BUDGET_OK iterations=5000 line_cost_ms=6 max_batch_ms=%lu real_51ms_gap_stops\n",
         (unsigned long)max_block_ms);
 }
+static void check_map_logging_budget(void) {
+    uint32_t now=200000u;
+    uint32_t maximum=0;
+    unsigned iteration;
+    initialized=true;
+    tx_fault=rx_fault=false;
+    fake_can_healthy=fake_online=fake_calibrated=fake_drive_gate=true;
+    fake_laser_ready=true;
+    fake_swc=1500u;
+    fake_swd=2000u;
+    fake_vrb=1500u;
+    fake_ry=fake_rx=fake_lx=1500u;
+    fake_wheel_speed=0;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_HOST};
+    straight_init(&test,now);
+    full_map_init(&full_map,now);
+    assert(field_pose_register(&full_map.localization,(AutoPose){.2f,.2f,1.570796327f},fake_yaw,now));
+    full_map.phase=MAP_PAUSED;
+    full_map.user_hold=true;
+    last_step=last_imu=last_log=last_plan_log=last_map_log=now;
+    fake_log_cost_ms=6u;
+    for(iteration=0;iteration<1000u;iteration++) {
+        loop_at(now);
+        if(g_test_tick_ms-now>maximum) maximum=g_test_tick_ms-now;
+        assert(full_map.phase==MAP_PAUSED && full_map.user_hold);
+        now=g_test_tick_ms+2u;
+    }
+    fake_log_cost_ms=0;
+    assert(maximum<50u);
+    full_map_init(&full_map,now);
+    printf("MAP_LOG_BUDGET_OK iterations=1000 line_cost_ms=6 maximum_ms=%lu\n",(unsigned long)maximum);
+}
+
 static void check_map_laser_filter(void) {
     fake_filtered_laser_ready=true;
     fake_filtered_laser=(LaserSnapshot){.accepted_mm={179,162,6129,1087},
@@ -619,6 +652,7 @@ int main(void) {
     check_map_adapter();
     check_manual_logging_budget();
     check_map_laser_filter();
+    check_map_logging_budget();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");
