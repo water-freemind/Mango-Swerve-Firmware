@@ -9,6 +9,7 @@ typedef struct {
     uint32_t pose_max_age_ms;
     float finish_yaw_tolerance; /* Optional endpoint-only acceptance; zero uses yaw_tolerance. */
     float finish_cross_tolerance; /* Optional endpoint-only lateral acceptance. */
+    float overshoot_recovery; /* Metres past the endpoint allowed for a stopped, low-speed return; zero keeps strict faulting. */
     bool smooth_correction; /* Subtract correction deadbands before applying proportional gains. */
 } AutoMotionConfig;
 typedef struct { AutoVec2 start, end; float heading; } AutoSegment;
@@ -21,6 +22,9 @@ typedef struct {
     AutoPoseSample pose; AutoTwist measured;
     bool healthy, aligned, stationary, stop_requested, hard_stop;
     bool hold_along; /* Keep lateral/yaw correction active while braking along the line. */
+    bool endpoint_observation_unsettled; /* Continue control until a fresh estimator innovation converges. */
+    float along_speed_limit; /* Optional path-axis cap; zero uses config.vmax without suppressing cross correction. */
+    uint8_t blocked_directions; /* Missing orthogonal clearance: left/right/rear/front, bits0..3. */
     uint32_t now_ms;
 } AutoMotionInput;
 typedef struct {
@@ -32,7 +36,7 @@ typedef struct {
     AutoMotionConfig config; AutoSegment segment; AutoMotionOutput out;
     AutoVec2 tangent, normal, velocity_map;
     float length, settled_s; uint32_t last_ms, prepare_ms;
-    bool initialized, started, reversing;
+    bool initialized, started, reversing, launching;
 } AutoMotion;
 bool auto_motion_begin(AutoMotion* motion,const AutoMotionConfig* config,AutoSegment segment,uint32_t now_ms);
 void auto_motion_cancel(AutoMotion* motion);

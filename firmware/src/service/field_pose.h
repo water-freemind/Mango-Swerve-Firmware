@@ -12,6 +12,7 @@ typedef struct {
     uint32_t checkpoint_surface[4];
     uint8_t checkpoint_mask;
     float uncorrected_m[2]; /* Axis travel since last independent map correction. */
+    float innovation_m[2]; /* Independent residual still pending after the bounded fusion correction. */
     uint32_t last_ms, used_stamp[4];
     uint32_t constrained_ms[2]; /* Last accepted independent X/Y correction, or registered prior. */
     uint8_t seen_mask, used_mask, rejected_mask, constrained_axes;

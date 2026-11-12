@@ -3,6 +3,9 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
+#undef assert
+#define assert(x) do { if(!(x)) { fprintf(stderr,"CHECK_FAILED %s:%d: %s\n",__FILE__,__LINE__,#x); exit(1); } } while(0)
 
 static LaserSnapshot measured(uint32_t stamp) {
     LaserSnapshot l = {.accepted_mm={3800,450,3000,6000}, .frame_fresh=true,
@@ -12,7 +15,92 @@ static LaserSnapshot measured(uint32_t stamp) {
 static LaserPredictionOutput step(LaserPrediction* s, LaserSnapshot* l, uint32_t t, float vx) {
     return laser_prediction_step(s,l,t,vx,0,0,true);
 }
+static LaserMotionOutput motion_sample(LaserMotionFilter* s,uint32_t now,float speed,uint16_t front) {
+    LaserSnapshot l=measured(now);l.accepted_mm[3]=front;
+    return laser_motion_filter_step(s,&l,now,speed,0,0,.60f,true);
+}
+static void motion_consistency_tests(void) {
+    LaserMotionFilter s={0};LaserMotionOutput o=motion_sample(&s,0,.7f,6000);
+    assert(o.checked.valid_mask==15u && !o.predicted_mask);
+    for(unsigned now=10;now<=100;now+=10)
+        o=motion_sample(&s,now,.7f,(uint16_t)(6000-now*7/10));
+    assert(!(o.rejected_mask&8u) && o.checked.accepted_mm[3]==5930u);
+    for(unsigned now=110;now<200;now+=10)
+        o=motion_sample(&s,now,.7f,(uint16_t)(6000-now*7/10));
+    o=motion_sample(&s,200,.7f,2767);
+    assert((o.rejected_mask&8u) && (o.predicted_mask&8u));
+    assert(!(o.checked.valid_mask&8u) && !(o.checked.updated_mask&8u));
+    assert(!(o.checked.median_valid_mask&8u));
+    assert(o.estimated_mm[3]>5700u && o.estimated_mm[3]<5867u);
+    const uint32_t anchor=s.channel[3].anchor.stamp;
+    assert(anchor==190u);
+    o=motion_sample(&s,210,.7f,5853);
+    assert(!(o.rejected_mask&8u) && (o.checked.valid_mask&8u));
+
+    /* Three coherent new source samples can acquire a new surface; replayed
+     * copies of a median cannot create evidence or renew the trusted anchor. */
+    s=(LaserMotionFilter){0};motion_sample(&s,0,.1f,6000);
+    LaserSnapshot l=measured(100);l.accepted_mm[3]=2700;
+    for(unsigned now=10;now<=100;now+=10) {
+        if(now<100) {l=measured(0);l.sample_age_ms[3]=now;}
+        else {l=measured(100);l.accepted_mm[3]=2700;}
+        o=laser_motion_filter_step(&s,&l,now,.1f,0,0,.6f,true);
+    }
+    for(unsigned now=110;now<200;now+=10) {
+        l.sample_age_ms[3]=now-100;
+        o=laser_motion_filter_step(&s,&l,now,.1f,0,0,.6f,true);
+        assert(s.channel[3].confirmations==1u && s.channel[3].anchor.stamp==0u);
+    }
+    o=motion_sample(&s,200,.1f,2690);assert(!(o.confirmed_mask&8u));
+    for(unsigned now=210;now<300;now+=10) {
+        l=measured(200);l.accepted_mm[3]=2690;l.sample_age_ms[3]=now-200;
+        o=laser_motion_filter_step(&s,&l,now,.1f,0,0,.6f,true);
+    }
+    o=motion_sample(&s,300,.1f,2680);
+    assert((o.confirmed_mask&8u) && (o.checked.valid_mask&8u) && !(o.predicted_mask&8u));
+    assert(s.channel[3].anchor.stamp==300u);
+
+    s=(LaserMotionFilter){0};motion_sample(&s,0,.7f,6000);
+    for(unsigned now=10;now<=400;now+=10) o=motion_sample(&s,now,.7f,2767);
+    /* Deliberately moving candidate samples acquire a stable new target after
+     * three independent producer updates; the separate test below supplies no
+     * independent updates, so its prediction must really expire. */
+    s=(LaserMotionFilter){0};motion_sample(&s,0,.7f,6000);
+    l=measured(100);l.accepted_mm[3]=2767;
+    for(unsigned now=10;now<=400;now+=10) {
+        if(now<100) {l=measured(0);l.sample_age_ms[3]=now;}
+        else {l=measured(100);l.accepted_mm[3]=2767;l.sample_age_ms[3]=now-100;}
+        o=laser_motion_filter_step(&s,&l,now,.7f,0,0,.6f,true);
+    }
+    assert(!(o.predicted_mask&8u) && !(o.checked.valid_mask&8u));
+    assert(s.channel[3].anchor.stamp==0u);
+
+    s=(LaserMotionFilter){0};motion_sample(&s,0,.7f,6000);
+    o=motion_sample(&s,10,.7f,100);
+    assert((o.urgent_mask&8u) && (o.checked.valid_mask&8u) && o.checked.accepted_mm[3]==100u);
+    assert(!(o.predicted_mask&8u) && s.channel[3].anchor.mm==6000);
+    o=motion_sample(&s,20,.7f,5986);assert(!(o.rejected_mask&8u));
+    s=(LaserMotionFilter){0};motion_sample(&s,0,1.8f,6000);
+    for(unsigned now=10;now<100;now+=10) o=motion_sample(&s,now,1.8f,(uint16_t)(6000-now*18/10));
+    o=motion_sample(&s,100,1.8f,3500);
+    assert((o.rejected_mask&8u) && (o.predicted_mask&8u));
+    l=measured(110);l.frame_fresh=false;
+    assert(laser_motion_filter_step(&s,&l,110,1.8f,0,0,.6f,true).predicted_mask==0);
+    s=(LaserMotionFilter){0};l=measured(1000);l.sample_age_ms[3]=250;
+    laser_motion_filter_step(&s,&l,1000,1,0,0,.6f,true);
+    l.valid_mask=l.updated_mask=7u;l.sample_age_ms[3]=260;
+    assert(!(laser_motion_filter_step(&s,&l,1010,1,0,0,.6f,true).predicted_mask&8u));
+    /* 250ms source age already consumes 250mm; it is not a new path budget. */
+    s=(LaserMotionFilter){0};motion_sample(&s,0,.5f,6000);
+    for(unsigned now=10;now<=700;now+=10) o=motion_sample(&s,now,.5f,6000);
+    assert(s.channel[3].frozen && s.channel[3].anchor.stamp<100u);
+    assert(!(o.checked.valid_mask&8u) && !(o.predicted_mask&8u));
+    /* Fresh CAN stamps with frozen millimetres must expire instead of
+     * repeatedly becoming a new trusted anchor at 0.5m/s. */
+    puts("LASER_MOTION_CONSISTENCY_OK high_speed_07_18 fresh_jump_rejected independent_reacquisition expiry urgent_raw_stop");
+}
 int main(void) {
+    motion_consistency_tests();
     LaserPrediction s={0}; LaserSnapshot l=measured(1000);
     assert(step(&s,&l,1000,-0.2f).mask==0);
     l.updated_mask=11;
