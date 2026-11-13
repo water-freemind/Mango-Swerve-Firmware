@@ -1,4 +1,4 @@
-#requires -PSEdition Desktop
+﻿#requires -PSEdition Desktop
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -Raw (Join-Path $PSScriptRoot '../straight-console.ps1')
 $code = [regex]::Match($source, "(?s)-TypeDefinition @'\r?\n(.*?)\r?\n'@")
@@ -24,8 +24,13 @@ try {
     if ([MangoStraightConsole]::ForwardWave($sender, $port, $laserWave.Replace('65127','NaN'))) { throw 'Nonfinite laser wave accepted' }
     $status = '[INFO] TEST_STATUS phase=0 healthy=0 stopped=1 cmd=0.000000 result=IDLE'
     if (![MangoStraightConsole]::ForwardStatus($sender, $port, ([char]27 + '[94m' + $status + [char]27 + "[0m`r"))) { throw 'Status log rejected' }
-    $actual = [System.Text.Encoding]::ASCII.GetString($receiver.Receive([ref]$peer))
-    if ($actual -cne ($status + "`n")) { throw 'Status log content changed' }
+    $actual = [System.Text.Encoding]::UTF8.GetString($receiver.Receive([ref]$peer))
+    if ($actual -cne ([MangoStraightConsole]::ChineseStatus($status) + "`n")) { throw 'Status log content changed' }
+    $originRejected='[INFO] TEST_MAP_ACK ok=0 phase=IDLE token=0 segment=0 reason=ORIGIN_OUTSIDE_ENTRY_ZONE cmd=ORIGIN'
+    if (![MangoStraightConsole]::ForwardStatus($sender,$port,$originRejected)) { throw 'Origin rejection missing' }
+    $strictUtf8=[System.Text.UTF8Encoding]::new($false,$true)
+    $actual=$strictUtf8.GetString($receiver.Receive([ref]$peer))
+    if (!$actual.Contains('起点不在入口区域') -or !$actual.Contains('ORIGIN_OUTSIDE_ENTRY_ZONE') -or $actual.Contains('?')) { throw 'Chinese UTF8 rejection corrupted' }
     foreach ($tag in @('HEALTH','CONTROL','RAMP','REMOTE','IMU','IMU_RAW','IMU_BIAS','MOTOR','CAN','LASER','LASER_VALID','WALL','PAUSE','PAUSE_RANGE','FAULT','FAULT_RANGE','TIMING','DRIFT','PLAN','RANGE','BRAKE','WORK','WORK_EVENT','MAP_STATUS','MAP_EVENT','MAP_ACK')) {
         $detail = '[INFO] TEST_' + $tag + ' t_ms=1234 value=1'
         if (![MangoStraightConsole]::ForwardStatus($sender, $port, $detail)) { throw "Detail rejected $tag" }

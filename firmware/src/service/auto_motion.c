@@ -5,7 +5,14 @@
 static bool positive(float x) { return isfinite(x) && x>0; }
 static float clamp(float x,float limit) { return fmaxf(-limit,fminf(limit,x)); }
 static bool finite_twist(AutoTwist t) { return isfinite(t.vx)&&isfinite(t.vy)&&isfinite(t.wz); }
-static void zero(AutoMotion* m) { m->velocity_map=(AutoVec2){0}; m->out.command=m->out.steering_hint=(AutoTwist){0}; m->settled_s=0; }
+static AutoVec2 allowed_translation(AutoVec2 body,uint8_t blocked) {
+    if((blocked&1u) && body.y>0) body.y=0;
+    if((blocked&2u) && body.y<0) body.y=0;
+    if((blocked&4u) && body.x<0) body.x=0;
+    if((blocked&8u) && body.x>0) body.x=0;
+    return body;
+}
+static void zero(AutoMotion* m) { m->velocity_map=(AutoVec2){0}; m->out.command=m->out.steering_hint=(AutoTwist){0}; m->settled_s=0;m->launching=false; }
 static void fault(AutoMotion* m,AutoMotionError e) { zero(m); m->out.phase=AUTO_MOTION_FAULT; m->out.error=e; }
 bool auto_motion_begin(AutoMotion* m,const AutoMotionConfig* c,AutoSegment s,uint32_t now) {
     if(!m) return false;
@@ -17,6 +24,8 @@ bool auto_motion_begin(AutoMotion* m,const AutoMotionConfig* c,AutoSegment s,uin
        !isfinite(c->stop_latency_s)||c->stop_latency_s<0||c->stop_latency_s>2||
        !isfinite(c->finish_yaw_tolerance)||c->finish_yaw_tolerance<0||
        !isfinite(c->finish_cross_tolerance)||c->finish_cross_tolerance<0||
+       !isfinite(c->overshoot_recovery)||c->overshoot_recovery<0||
+       (c->overshoot_recovery>0 && c->overshoot_recovery<c->position_tolerance)||
        (c->finish_cross_tolerance>0 && (c->finish_cross_tolerance<c->cross_tolerance||c->finish_cross_tolerance>=c->cross_abort))||
        (c->finish_yaw_tolerance>0 && (c->finish_yaw_tolerance<c->yaw_tolerance||c->finish_yaw_tolerance>=c->yaw_abort))||
        c->cross_abort<=c->cross_tolerance||c->yaw_abort<=c->yaw_tolerance||
@@ -40,7 +49,7 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(!m->initialized || m->out.phase==AUTO_MOTION_FAULT || m->out.phase==AUTO_MOTION_DONE) return m->out;
     if(in.hard_stop || !in.healthy) { fault(m,AUTO_MOTION_STOPPED_BY_SAFETY); return m->out; }
     uint32_t ms=(uint32_t)(in.now_ms-m->last_ms);
-    if(ms>50u || !finite_twist(in.measured) || !isfinite(in.pose.pose.x)||
+    if(ms>50u || !finite_twist(in.measured) || !isfinite(in.along_speed_limit) || in.along_speed_limit<0 || !isfinite(in.pose.pose.x)||
        !isfinite(in.pose.pose.y)||!isfinite(in.pose.pose.yaw)) { fault(m,AUTO_MOTION_BAD_INPUT); return m->out; }
     if(!in.pose.valid || (uint32_t)(in.now_ms-in.pose.stamp_ms)>m->config.pose_max_age_ms) {
         fault(m,AUTO_MOTION_STALE_POSE); return m->out;
@@ -56,7 +65,9 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         fault(m,AUTO_MOTION_DEVIATION); return m->out;
     }
     float remaining=m->length-m->out.progress;
-    if(remaining < -m->config.position_tolerance) { fault(m,AUTO_MOTION_OVERSHOOT); return m->out; }
+    const float overshoot_limit=m->config.overshoot_recovery>0?
+        m->config.overshoot_recovery:m->config.position_tolerance;
+    if(remaining < -overshoot_limit) { fault(m,AUTO_MOTION_OVERSHOOT); return m->out; }
     m->last_ms=in.now_ms;
     if(!ms) return m->out;
     float dt=ms*.001f;
@@ -65,13 +76,15 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         if(!in.stationary || !measured_zero) { zero(m); m->out.phase=AUTO_MOTION_ALIGN; return m->out; }
         m->started=true;
     }
-    const float brake_distance=fmaxf(0,remaining-.5f*m->config.position_tolerance);
+    const float brake_distance=fmaxf(0,fabsf(remaining)-.5f*m->config.position_tolerance);
     const float delay_speed=m->config.decel*m->config.stop_latency_s;
     /* Solve d = v*T + v*v/(2*a) for the target speed. Subtracting the
      * current speed's delay distance made the target oscillate near a stop. */
-    float along=fminf(m->config.vmax,
+    const float along_max=in.along_speed_limit>0?fminf(in.along_speed_limit,m->config.vmax):m->config.vmax;
+    float along=fminf(along_max,
         sqrtf(delay_speed*delay_speed+2*m->config.decel*brake_distance)-delay_speed);
-    along=fminf(along,2*fmaxf(0,remaining)); /* low-gain endpoint approach */
+    along=fminf(along,2*fabsf(remaining)); /* low-gain endpoint approach */
+    if(remaining<0) along=-fminf(along,.05f);
     if(fabsf(remaining)<=m->config.position_tolerance) along=0;
     if(in.hold_along) along=0;
     float cross_error=m->out.cross_error,heading_error=m->out.heading_error;
@@ -92,6 +105,13 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(position_reached) lateral=0;
     if(position_reached && fabsf(m->out.heading_error)<=finish_yaw) wz=0;
     AutoVec2 target={along*m->tangent.x+lateral*m->normal.x,along*m->tangent.y+lateral*m->normal.y};
+    /* A missing side ray suppresses motion into that side without throwing
+     * away an independently observed primary path. Measured unsafe closing
+     * motion is still handled by the caller's stop guard. */
+    if(in.blocked_directions) {
+        const AutoVec2 body=allowed_translation(auto_rotate(target,-in.pose.pose.yaw),in.blocked_directions);
+        target=auto_rotate(body,in.pose.pose.yaw);
+    }
     float target_norm=hypotf(target.x,target.y);
     if(target_norm>m->config.vmax) { target.x*=m->config.vmax/target_norm; target.y*=m->config.vmax/target_norm; }
     if(in.stop_requested) { target=(AutoVec2){0}; wz=0; }
@@ -107,12 +127,16 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     const bool prepared_valid=m->config.smooth_correction && m->out.phase==AUTO_MOTION_ALIGN &&
         (prepared_translation || prepared.wz!=0);
     const bool compatible=prepared_translation==(target.x!=0 || target.y!=0) &&
-        requested_body.x*prepared.vx+requested_body.y*prepared.vy>=0 && wz*prepared.wz>=0;
+        requested_body.x*prepared.vx+requested_body.y*prepared.vy>=0 && wz*prepared.wz>=0 &&
+        (in.aligned ||
+         (allowed_translation((AutoVec2){prepared.vx,prepared.vy},in.blocked_directions).x==prepared.vx &&
+          allowed_translation((AutoVec2){prepared.vx,prepared.vy},in.blocked_directions).y==prepared.vy));
     if((!in.aligned || (prepared_valid && !compatible)) && !zero_target) {
         AutoTwist hint=requested_hint;
-        /* Hold a feasible direction long enough for the wheel servos to catch
-         * up. Reversals immediately replace it and require a new zero-drive cycle. */
-        if(prepared_valid && compatible && in.now_ms-m->prepare_ms<250u) hint=prepared;
+        /* Compatible zero-drive preparation is feedback-latched. A timer must
+         * not chase a moving cross reference before the servos catch up.
+         * Reversals and newly blocked directions replace the hint immediately. */
+        if(prepared_valid && compatible) hint=prepared;
         else m->prepare_ms=in.now_ms;
         zero(m); m->out.phase=AUTO_MOTION_ALIGN;
         m->out.steering_hint=hint;
@@ -124,8 +148,14 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(prepared_valid && !zero_target) {
         const float norm=hypotf(prepared.vx,prepared.vy);
         const float scale=norm>m->config.vmax?m->config.vmax/norm:1;
-        target=auto_rotate((AutoVec2){prepared.vx*scale,prepared.vy*scale},in.pose.pose.yaw);
-        wz=prepared.wz*scale;
+        target=auto_rotate(allowed_translation((AutoVec2){prepared.vx*scale,prepared.vy*scale},in.blocked_directions),in.pose.pose.yaw);
+        /* A latched hint never grants the older speed or endpoint demand. */
+        const float pa=target.x*m->tangent.x+target.y*m->tangent.y;
+        const float pc=target.x*m->normal.x+target.y*m->normal.y;
+        const float ca=pa*along<0?0:clamp(pa,fabsf(along));
+        const float cc=pc*lateral<0?0:clamp(pc,fabsf(lateral));
+        target.x=ca*m->tangent.x+cc*m->normal.x;target.y=ca*m->tangent.y+cc*m->normal.y;
+        wz=prepared.wz*wz<0?0:copysignf(fminf(fabsf(prepared.wz*scale),fabsf(wz)),wz);
     }
     m->out.steering_hint=(AutoTwist){0};
     m->out.phase=in.stop_requested?AUTO_MOTION_HOLD:AUTO_MOTION_RUN;
@@ -134,14 +164,23 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     float scale=dv>limit ? limit/dv:1;
     const float dw=wz-m->out.command.wz;
     const float angular_limit=m->config.angular_accel*dt;
-    if(fabsf(dw)>angular_limit) scale=fminf(scale,angular_limit/fabsf(dw));
-    /* A shared progress fraction preserves the prepared wheel directions on
-     * launch, while satisfying both linear and angular acceleration limits. */
+    float angular_scale=fabsf(dw)>angular_limit?angular_limit/fabsf(dw):1;
+    /* Share the entire launch ramp to preserve the prepared wheel directions.
+     * Sharing only its first tick changes the translation/yaw ratio on tick2
+     * when a tiny edge approach accompanies a larger yaw correction.
+     * Once moving, yaw feedback must not weaken the translational braking
+     * ramp, nor may a speed change freeze the independent angular ramp. */
+    if(prepared_valid || (hypotf(m->velocity_map.x,m->velocity_map.y)<.00001f &&
+                         fabsf(m->out.command.wz)<.00001f)) m->launching=true;
+    if(m->launching) {
+        scale=angular_scale=fminf(scale,angular_scale);
+        if(scale>=1) m->launching=false;
+    }
     m->velocity_map.x+=dvx*scale; m->velocity_map.y+=dvy*scale;
     AutoVec2 body=auto_rotate(m->velocity_map,-in.pose.pose.yaw);
-    m->out.command=(AutoTwist){body.x,body.y,m->out.command.wz+dw*scale};
+    m->out.command=(AutoTwist){body.x,body.y,m->out.command.wz+dw*angular_scale};
     if(!finite_twist(m->out.command)) { fault(m,AUTO_MOTION_BAD_INPUT); return m->out; }
-    bool reached=position_reached && fabsf(m->out.heading_error)<=finish_yaw;
+    bool reached=position_reached && fabsf(m->out.heading_error)<=finish_yaw && !in.endpoint_observation_unsettled;
     bool command_zero=hypotf(body.x,body.y)<.00001f && fabsf(m->out.command.wz)<.00001f;
     if(m->reversing && command_zero && in.stationary && measured_zero) m->reversing=false;
     if(!in.stop_requested && !in.hold_along && reached && command_zero && in.stationary && measured_zero) m->settled_s+=dt;

@@ -90,7 +90,16 @@ bool field_pose_step_route(FieldPose* s,AutoTwist v,float yaw,bool healthy,const
            fabsf((float)l->accepted_mm[ch]-s->checkpoint_mm[ch])<=5.0f) {
             const AutoVec2 old=s->checkpoint_position[ch];
             const float travel=plane.normal.x*(s->wheel_position.x-old.x)+plane.normal.y*(s->wheel_position.y-old.y);
-            if(fabsf(travel)>.03f) {s->rejected_mask|=bit;continue;}
+            const float normal_speed=fabsf(plane.normal.x*velocity.x+plane.normal.y*velocity.y);
+            const float tangent_speed=fabsf(-plane.normal.y*velocity.x+plane.normal.x*velocity.y);
+            /* While travelling along a nearby wall, a small normal correction
+             * can balance unmeasured tyre slip and leave a genuinely constant
+             * wall range. That alone is not a frozen-sensor observation. Pure
+             * approach/sideways motion and dominant closing retain the original
+             * 30mm check, along with independent timestamp expiry. */
+            const bool wall_following=expected<.6f && tangent_speed>.03f &&
+                tangent_speed>2*normal_speed && normal_speed<.05f;
+            if(fabsf(travel)>.03f && !wall_following) {s->rejected_mask|=bit;continue;}
         } else {
             s->checkpoint_mask|=bit;s->checkpoint_surface[ch]=plane.surface_id;
             s->checkpoint_mm[ch]=l->accepted_mm[ch];s->checkpoint_position[ch]=s->wheel_position;
@@ -104,14 +113,26 @@ bool field_pose_step_route(FieldPose* s,AutoTwist v,float yaw,bool healthy,const
         const float residual=corrected-expected;
         if(corrected<=0||fabsf(residual)>.15f) {s->rejected_mask|=bit;continue;}
         const float correction=-residual*incidence;
-        dx+=plane.normal.x*correction;dy+=plane.normal.y*correction;
-        wx+=fabsf(plane.normal.x);wy+=fabsf(plane.normal.y);
+        /* The nearby fence must not be averaged equally with a much longer
+         * opposite ray whose angular footprint/reflecting surface is less
+         * certain. A single ray keeps the same bounded correction gain. */
+        const float weight=1.0f/(.15f+corrected);
+        dx+=weight*plane.normal.x*correction;dy+=weight*plane.normal.y*correction;
+        wx+=weight*fabsf(plane.normal.x);wy+=weight*fabsf(plane.normal.y);
         s->used_mask|=bit;
     }
     /* Parallel observations do not double the gain. No invented constraint along
      * a wall; all rejected samples leave a pure wheel/IMU prediction. */
-    if(wx>0) {prior.x+=fmaxf(-.005f,fminf(.005f,.15f*dx/wx));s->constrained_axes|=1;s->uncorrected_m[0]=0;s->constrained_ms[0]=now;}
-    if(wy>0) {prior.y+=fmaxf(-.005f,fminf(.005f,.15f*dy/wy));s->constrained_axes|=2;s->uncorrected_m[1]=0;s->constrained_ms[1]=now;}
+    if(wx>0) {
+        const float residual=dx/wx,correction=fmaxf(-.005f,fminf(.005f,.15f*residual));
+        prior.x+=correction;s->innovation_m[0]=residual-correction;
+        s->constrained_axes|=1;s->uncorrected_m[0]=0;s->constrained_ms[0]=now;
+    }
+    if(wy>0) {
+        const float residual=dy/wy,correction=fmaxf(-.005f,fminf(.005f,.15f*residual));
+        prior.y+=correction;s->innovation_m[1]=residual-correction;
+        s->constrained_axes|=2;s->uncorrected_m[1]=0;s->constrained_ms[1]=now;
+    }
     s->pose=(AutoPoseSample){prior,now,true};return true;
 }
 bool field_pose_step(FieldPose* s,AutoTwist v,float yaw,bool healthy,const LaserSnapshot* l,uint32_t now) {

@@ -177,7 +177,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 31) 'Expected 31 full-map and work commands'
+Assert ($items.Count -eq 33) 'Expected 33 full-map mode and work commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -341,6 +341,11 @@ Assert ($mapPanel.Command('UI MAP ORIGIN',11)) 'Map origin rejected'
 Assert (!$mapPanel.Command('UI MAP ARM NEXT',11)) 'Removed segmented command accepted'
 Assert ($mapPanel.Command('UI MAP SPEED 0.60',11)) 'Map fast preset rejected'
 Assert (!$mapPanel.Command('UI MAP SPEED 0.10',11)) 'Old map speed accepted'
+Assert ($mapPanel.Command('UI MAP MODE NAV',11)) 'Navigation mode rejected'
+Assert ($tx[-1] -eq 'MAP MODE NAV') 'Navigation selection changed in bridge'
+Assert ($mapPanel.Command('UI MAP MODE WORK',11)) 'Work mode rejected'
+Assert ($tx[-1] -eq 'MAP MODE WORK') 'Work selection changed in bridge'
+Assert (!$mapPanel.Command('UI MAP MODE OTHER',11)) 'Unknown map mode accepted'
 Assert ($mapPanel.Command('UI MAP ARM ALL',12)) 'Map ARM rejected'
 Assert (!$mapPanel.Command('UI MAP GO',13)) 'Map GO before ACK accepted'
 $mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=91 segment=0 reason=ARMED cmd=ARM NEXT',14)
@@ -349,6 +354,7 @@ $mapPanel.Observe('[INFO] TEST_MAP_ACK ok=1 phase=ARMED token=92 segment=0 reaso
 Assert ($mapPanel.Command('UI MAP GO',17)) 'Matching map GO rejected'
 Assert ($tx[-1] -eq 'MAP GO 92') 'Wrong map token'
 $mapPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=RUNNING token=92',20)
+Assert (!$mapPanel.Command('UI MAP MODE NAV',21)) 'Mode changed during a running map'
 Assert (!$mapPanel.Command('UI ARM WALL 4',21)) 'Straight session interfered with full map'
 Assert ($mapPanel.Command('UI MAP PAUSE',22)) 'Map pause rejected'
 Assert ($mapPanel.Command('UI STOP',23)) 'Global stop rejected during map'
@@ -364,7 +370,7 @@ Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_AISLE active=1 frozen=0'
 Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE hold=1',30)) 'Tree log ignored map toggle'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE_EVENT hold=1',30)) 'Tree event hidden'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_CONTROL_FAULT process_code=8',30)) 'Control fault hidden'
-'VOFA_PANEL_TEST_OK (31 commands, map handshake and isolation, acceleration/speeds, TRACE, UDP)'
+'VOFA_PANEL_TEST_OK (33 commands, map modes and handshake, acceleration/speeds, TRACE, UDP)'
 
 $workPanel = [VofaTestSession]::new($true,$send,$report)
 $workPanel.Observe($idle + ' control=HOST',0)

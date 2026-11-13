@@ -48,11 +48,12 @@ foreach ($mode in @('Static', 'Test-OPEN-AREA', '1m-OPEN-AREA')) {
     $startMode = 'Static'
     if ($mode -ne 'Static') { $startMode = 'Motion' }
     $launcher = '@echo off' + "`r`n" +
+        'chcp 65001 >nul' + "`r`n" +
         'title Mango VOFA ' + $mode + "`r`n" +
         'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $starter +
         '" -VofaDir "' + $VofaDir + '" -Mode ' + $startMode + "`r`n" +
         'if errorlevel 1 pause' + "`r`n"
-    [IO.File]::WriteAllText((Join-Path $VofaDir ('Mango-VOFA-' + $mode + '.cmd')), $launcher, [Text.Encoding]::ASCII)
+    [IO.File]::WriteAllText((Join-Path $VofaDir ('Mango-VOFA-' + $mode + '.cmd')), $launcher, [Text.UTF8Encoding]::new($false))
 }
 if ((Get-FileHash $source).Hash -ne (Get-FileHash $destination).Hash) { throw 'Installed JSON differs from source.' }
 Write-Host "VOFA_PANEL_INSTALLED $destination"

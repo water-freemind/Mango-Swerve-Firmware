@@ -32,6 +32,7 @@ static float fake_yaw;
 static char last_line[1024];
 static FILE* trace_test_log;
 static uint32_t fake_log_cost_ms;
+static unsigned map_report_counts[4];
 static bool fake_filtered_laser_ready;
 static LaserSnapshot fake_filtered_laser;
 FDCAN_HandleTypeDef hfdcan1, hfdcan2, hfdcan3;
@@ -50,6 +51,15 @@ ASSEMBLY_STUB(assemble_can3)
 ASSEMBLY_STUB(assemble_chassis)
 ASSEMBLY_STUB(assemble_remote)
 bool work_link_init(void) { return true; }
+static unsigned station_action_commands;
+Can3BusStatus can3_bus_register_endpoint(uint16_t id, Can3EndpointCallback callback, void* user) {
+    (void)id; (void)callback; (void)user; return CAN3_BUS_OK;
+}
+Can3BusStatus can3_bus_send(uint16_t id, const uint8_t* data, uint8_t len) {
+    assert(id==WORK_CAN_REPLY_ID && len==8u);
+    if(data[1]==STATION_APPROACH || data[1]==STATION_START) ++station_action_commands;
+    return CAN3_BUS_OK;
+}
 void remote_init(void) {}
 bool uart_receive_it(UART_HandleTypeDef* h, uint8_t* p, uint16_t n) {
     (void)h; (void)p; (void)n; return true;
@@ -136,6 +146,9 @@ LogStatus log_info(const char* fmt, ...) {
     va_start(args, fmt);
     const int n = vsnprintf(last_line, sizeof(last_line), fmt, args);
     va_end(args);
+    static const char* const map_reports[]={"TEST_MAP_STATUS ","TEST_MAP_TREE ","TEST_MAP_POSE ","TEST_MAP_AISLE "};
+    for(unsigned i=0;i<4u;++i) if(!strncmp(last_line,map_reports[i],strlen(map_reports[i])))
+        ++map_report_counts[i];
     if(trace_test_log && !strncmp(last_line,"TEST_TRACE",10)) fprintf(trace_test_log,"[INFO] %s\n",last_line);
     if(n < 0 || (unsigned)n + 18u >= LOG_BUFFER_SIZE) {
         fprintf(stderr, "Log exceeds production buffer (%d) %s\n", n, last_line);
@@ -353,7 +366,8 @@ static void check_map_logging_budget(void) {
     full_map.phase=MAP_PAUSED;
     full_map.user_hold=true;
     last_step=last_imu=last_log=last_plan_log=last_map_log=now;
-    fake_log_cost_ms=6u;
+    memset(map_report_counts,0,sizeof(map_report_counts));
+    fake_log_cost_ms=8u;
     for(iteration=0;iteration<1000u;iteration++) {
         loop_at(now);
         if(g_test_tick_ms-now>maximum) maximum=g_test_tick_ms-now;
@@ -362,8 +376,13 @@ static void check_map_logging_budget(void) {
     }
     fake_log_cost_ms=0;
     assert(maximum<50u);
+    for(unsigned i=0;i<4u;++i) {
+        assert(map_report_counts[i]>0u);
+        for(unsigned j=0;j<4u;++j)
+            assert(abs((int)map_report_counts[i]-(int)map_report_counts[j])<=1);
+    }
     full_map_init(&full_map,now);
-    printf("MAP_LOG_BUDGET_OK iterations=1000 line_cost_ms=6 maximum_ms=%lu\n",(unsigned long)maximum);
+    printf("MAP_LOG_BUDGET_OK iterations=1000 line_cost_ms=8 maximum_ms=%lu\n",(unsigned long)maximum);
 }
 
 static void check_map_laser_filter(void) {
@@ -475,7 +494,71 @@ static void check_map_adapter(void) {
     assert(full_map.phase==MAP_FAULT);
     puts("FULL_MAP_ADAPTER_TEST_OK register_while_SWD_off_prepare_without_drive_owner_isolation_RC_stop");
 }
+static void check_map_mode_selection(void) {
+    uint32_t now=90000u;
+    initialized=true;tx_fault=rx_fault=false;
+    fake_online=fake_calibrated=fake_can_healthy=fake_laser_ready=true;
+    fake_swc=1500u;fake_swd=1000u;fake_vrb=2000u;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;fake_yaw=.2f;fake_front_mm=5059;
+    fake_drive_gate=true;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_HOST};
+    straight_init(&test,now);full_map_init(&full_map,now);
+    assert(station_work_init());station_action_commands=0;
+    map_work_enabled=WORK_STATION_ENABLED!=0;
+    last_step=last_imu=last_log=last_plan_log=now;last_velocity=(DriveVelocity){0};
+    loop_at(now+=10);
+    StraightInput in=input(now);
+    if(WORK_STATION_ENABLED) {
+        receive_command("MAP ORIGIN\n",now,in);
+        fake_swd=2000u;loop_at(now+=10);in=input(now);
+        receive_command("MAP ARM ALL\n",now,in);
+        assert(full_map.phase==MAP_READY && !strcmp(full_map.reason,"WORK_PEER_NOT_READY"));
+    }
+    receive_command("MAP MODE NAV\n",now,in);
+    assert(!map_work_enabled && !strcmp(full_map.reason,"MODE_NAV_SELECTED"));
+    if(WORK_STATION_ENABLED) assert(!full_map.localization.registered);
+    receive_command("MAP ORIGIN\n",now,in);
+    assert(full_map.phase==MAP_READY);
+    fake_swd=2000u;loop_at(now+=10);in=input(now);
+    receive_command("MAP ARM ALL\n",now,in);
+    assert(full_map.phase==MAP_ARMED);
+    receive_command("MAP MODE WORK\n",now,in);
+    assert(!map_work_enabled && full_map.phase==MAP_ARMED);
+    assert(!strcmp(full_map.reason,"MODE_NEEDS_IDLE_STOPPED"));
+    receive_command("MAP GO 1\n",now,in);
+    for(unsigned sample=0u;sample<100u;++sample) {
+        g_station_work.phase=sample%2u?STATION_LINK_FAULT:STATION_LINK_SYNC;
+        g_station_work.online=false;
+        loop_at(now+=10);
+        assert(!map_input(now,input(now)).work_enabled);
+        assert(full_map.phase==MAP_RUNNING);
+    }
+    assert(last_velocity.vx>0 && !station_action_commands && !g_station_work.task);
+    receive_command("MAP MODE WORK\n",now,input(now));
+    assert(!map_work_enabled && full_map.phase==MAP_RUNNING);
+    receive_command("MAP STOP\n",now,input(now));
+    fake_wheel_speed=.1f;
+    receive_command("MAP MODE WORK\n",now,input(now));
+    assert(!strcmp(full_map.reason,"MODE_NEEDS_IDLE_STOPPED"));
+    fake_wheel_speed=0;
+    g_station_work.hold=true;
+    receive_command("MAP MODE WORK\n",now,input(now));
+    assert(!strcmp(full_map.reason,WORK_STATION_ENABLED?"MODE_WORK_ACTIVE":"MODE_WORK_UNAVAILABLE"));
+    g_station_work.hold=false;
+    receive_command("MAP MODE WORK\n",now,input(now));
+    assert(map_work_enabled==(WORK_STATION_ENABLED!=0));
+    assert(!strcmp(full_map.reason,WORK_STATION_ENABLED?"MODE_WORK_SELECTED":"MODE_WORK_UNAVAILABLE"));
+    if(WORK_STATION_ENABLED) {
+        assert(!full_map.localization.registered);
+        receive_command("MAP ORIGIN\n",now,input(now));
+        receive_command("MAP ARM ALL\n",now,input(now));
+        assert(!strcmp(full_map.reason,"WORK_PEER_NOT_READY") && full_map.phase==MAP_READY);
+    }
+    map_work_enabled=false;
+    puts("MAP_NAV_MODE_UART_TEST_OK offline_peer_does_not_block_navigation_mode_change_gates_work_mode_checks_peer");
+}
 int main(void) {
+    map_work_enabled=false;
     test.phase = ST_IDLE;
     test.target_m = 4.0f;
     test.body_edge_mm = 110u;
@@ -653,6 +736,7 @@ int main(void) {
     check_manual_logging_budget();
     check_map_laser_filter();
     check_map_logging_budget();
+    check_map_mode_selection();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");

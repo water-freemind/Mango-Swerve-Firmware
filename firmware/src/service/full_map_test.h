@@ -17,6 +17,32 @@ typedef struct {
     float checkpoint_wheel_y;
 } MapAisleCorrection;
 typedef struct {
+    bool active;
+    uint8_t confirmations,channel,axis;
+    uint32_t frame,stamp_ms,sample_ms,last_step_ms;
+    float error_m;
+} MapWallCorrection;
+
+typedef struct {
+    float error_m;
+    uint32_t last_ms;
+    uint32_t wall_sample_ms;
+    uint8_t axis;
+    bool initialized,wall_reference;
+} MapCrossFeedback;
+
+typedef struct {
+    bool approaching, north_confirmed, left_observed;
+    uint8_t confirmations;
+    uint32_t sample_ms, first_ms, left_sample_ms;
+} MapEntryGuidance;
+
+typedef struct {
+    uint32_t lost_ms;
+    float lost_path;
+    bool active;
+} MapFarRayHandover;
+typedef struct {
     uint32_t now; AutoTwist wheel; float imu_yaw;
     bool healthy, odom_ok, stationary, aligned;
     LaserSnapshot laser;
@@ -31,12 +57,22 @@ typedef struct {
 typedef struct {
     FullMapPhase phase; FieldPose localization; AutoRoute route; AutoMotion motion;
     LaserPrediction prediction;
+    LaserMotionFilter laser_motion;
     MapAisleCorrection aisle_correction;
+    MapWallCorrection wall_correction;
+    MapCrossFeedback cross_feedback;
+    MapEntryGuidance entry;
+    MapFarRayHandover far_handover[2]; /* Left/right only; bounded extra handover, no invented samples. */
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;
+    uint8_t range_near_mask, range_brake_mask, range_stale_mask;
+    float range_budget_m[4]; /* Last evaluated stop thresholds, indexed like LaserSnapshot. */
+    uint16_t range_control_mm[4];
+    uint8_t laser_rejected_mask;
+    uint8_t odom_range_mask; /* Map clearance with bounded odometry; never a real laser-valid bit. */
     uint16_t origin_front_mm;
-    float speed, approach_speed; bool all, stable, initialized, user_hold;
+    float speed, approach_speed, along_speed_limit; bool all, stable, initialized, user_hold;
     const char* reason;
     AutoMotionError motion_error;
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */

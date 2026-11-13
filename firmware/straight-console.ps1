@@ -1,4 +1,4 @@
-#requires -PSEdition Desktop
+﻿#requires -PSEdition Desktop
 #requires -Version 5.1
 param(
     [Parameter(Mandatory = $true)][string]$Port,
@@ -30,6 +30,95 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Collections.Generic;
 public static class MangoStraightConsole {
+    private static string Field(string line,string name) {
+        Match m=Regex.Match(line,@"(?:^|\s)"+Regex.Escape(name)+@"=([^\s]+)");
+        return m.Success?m.Groups[1].Value:"?";
+    }
+    public static string ChineseStatus(string raw) {
+        string line=Regex.Replace(raw,@"\x1b\[[0-9;]*m","").TrimEnd('\r');
+        var reasons=new Dictionary<string,string> {
+            {"ORIGIN_OUTSIDE_ENTRY_ZONE","起点不在入口区域；请回到入口并让前向激光对准远端围栏（约4.56至5.36米）"},
+            {"ORIGIN_FRONT_NOT_READY","前向激光尚未就绪或数据过期，请检查前方测距"},
+            {"ORIGIN_NEEDS_STOPPED_FEEDBACK","请先停车，等待底盘确认停稳后再登记起点"},
+            {"ORIGIN_FRONT_ANCHORED","入口起点登记成功"},
+            {"ARM_NOT_READY","尚未满足准备条件；请先登记起点，检查SWC、SWD及停稳状态"},
+            {"ARMED","全图已准备，请点击开始"},{"RUNNING","任务运行中"},
+            {"WORK_PEER_NOT_READY","疏果端尚未就绪；单独跑图请选择NAV模式"},
+            {"RANGE_PAUSE","测距保护暂停，正在等待有效数据和停稳恢复"},
+            {"RANGE_PAUSE_TIMEOUT","测距保护未能在时限内恢复，任务已停止"},
+            {"POSE_OBSERVATION_PAUSE","定位观测不足，暂停等待有效观测"},
+            {"ENTRY_NORTH_PAUSE","即将到G7，等待远端围栏定位确认"},
+            {"RESUMED","保护条件恢复，继续行驶"},{"ROUTE_COMPLETE","全图路线已完成"},
+            {"MAP_ENVELOPE","估计车体超出地图通行包络，任务已停止"},
+            {"MOTION_FAULT","运动控制检测到偏差或过点异常，任务已停止"},
+            {"MODE_NAV_SELECTED","已选择单独跑图模式"},{"MODE_WORK_SELECTED","已选择联合疏果模式"},
+            {"MODE_NEEDS_IDLE_STOPPED","请先结束当前任务并停稳，再切换模式"},
+            {"SPEED_SET","行驶速度已设置"},{"APPROACH_SPEED_SET","接近速度已设置"},
+            {"NEED_ORIGIN","请回入口对准后登记起点"},
+            {"CONTROL_MODE_CHANGED","控制来源已切换，原任务结束"},
+            {"RC_OFFLINE","遥控未在线，请检查遥控器和接收机"},
+            {"RC_SWITCH","遥控开关未放行；准备完成后检查SWC中位和SWD运行位"},
+            {"HOST_NOT_SELECTED","当前未选择上位机控制，SWC应在中位1500"},
+            {"NONE","正常"},{"IDLE","空闲"},
+            {"CLICK_MAP_ARM_FIRST_OR_NOT_READY","请先点击准备全图并等待准备成功，再点击开始"},
+            {"MAP_ARM_ACK","车端拒绝准备，请查看上一条全图拒绝原因"},
+            {"FIRMWARE_FULL_MAP_REQUIRED_OR_STALE","未收到新鲜全图状态，请检查底盘串口桥接"},
+            {"UART_OFFLINE","底盘串口未连接，正在重试"},
+            {"NO_VALID_STATUS_5S","连续5秒没有有效底盘状态，正在重连串口"},
+            {"SELECT_SWC_1500_HOST","请选择上位机来源：SWC中位1500"}
+        };
+        string reason=Field(line,"reason"),description;
+        if(line.Contains("TEST_MAP_ACK ") && reason!="?") {
+            int command=line.IndexOf("cmd=",StringComparison.Ordinal);
+            string cmd=command>=0?line.Substring(command+4):"?";
+            if(!reasons.TryGetValue(reason,out description)) description=reason;
+            return "[全图] "+(Field(line,"ok")=="1"?"成功":"拒绝")+"："+cmd+"；"+description+" ["+reason+"]";
+        }
+        if(line.Contains("TEST_MAP_EVENT ") && reason!="?") {
+            if(!reasons.TryGetValue(reason,out description)) description=reason;
+            return "[全图事件] 段="+Field(line,"segment")+"；"+description+" ["+reason+"]";
+        }
+        if(line.Contains("TEST_MAP_STATUS ") && Field(line,"phase")!="?") {
+            var phase=new Dictionary<string,string>{{"IDLE","空闲"},{"READY","已登记起点"},{"ARMED","已准备"},{"RUNNING","运行中"},{"PAUSED","暂停"},{"DONE","完成"},{"FAULT","停止"}};
+            string state;if(!phase.TryGetValue(Field(line,"phase"),out state)) state=Field(line,"phase");
+            if(!reasons.TryGetValue(reason,out description)) description=reason;
+            return "[全图状态] "+state+"；模式="+Field(line,"mode")+"；段="+Field(line,"segment")+
+                "；位置="+Field(line,"x")+","+Field(line,"y")+"；速度档="+Field(line,"speed")+
+                "；接近档="+Field(line,"approach")+"；"+description;
+        }
+        if(line.Contains("TEST_STATUS ") && Field(line,"stopped")!="?") {
+            string blocked=Field(line,"blocked");
+            if(!reasons.TryGetValue(blocked,out description)) description=blocked;
+            return "[底盘状态] 来源="+Field(line,"control")+"；停稳="+(Field(line,"stopped")=="1"?"是":"否")+
+                "；许可="+(Field(line,"healthy")=="1"?"正常":"未满足")+"；"+description;
+        }
+        if(line.Contains("TEST_HEALTH ") && Field(line,"first")!="?") {
+            string first=Field(line,"first");if(!reasons.TryGetValue(first,out description)) description=first;
+            return "[健康检查] "+description+"；阻塞位="+Field(line,"blocked")+
+                "；IMU="+Field(line,"imu_ok")+"；串口故障="+Field(line,"uart_fault");
+        }
+        if(line.Contains("TEST_REMOTE ") && Field(line,"online")!="?")
+            return "[遥控] "+(Field(line,"online")=="1"?"在线":"离线")+"；SWC="+Field(line,"SWC")+
+                "；SWD="+Field(line,"SWD")+"；VRB="+Field(line,"VRB")+"；摇杆回中="+Field(line,"centered");
+        if(line.Contains("TEST_MAP_POSE ") && Field(line,"motion_phase")!="?")
+            return "[运动指令] 前后="+Field(line,"vx")+"；横向="+Field(line,"vy")+"；旋转="+Field(line,"wz")+
+                "；阶段="+Field(line,"motion_phase")+"；预测位="+Field(line,"predicted");
+        if(line.Contains("TEST_MAP_AISLE ") && Field(line,"active")!="?")
+            return "[纠偏] 前后配对="+Field(line,"active")+"；误差毫米="+Field(line,"error_mm")+
+                "；轮向到位="+Field(line,"align")+"；速度上限="+Field(line,"limit")+
+                (Field(line,"wall_mm")!="?"?"；边墙误差毫米="+Field(line,"wall_mm"):"");
+        if(line.Contains("TEST_MAP_GUARD ") && Field(line,"near")!="?")
+            return "[保护诊断] 近距位="+Field(line,"near")+"；制动位="+Field(line,"brake")+"；过期位="+Field(line,"stale")+
+                "；四向保护毫米="+Field(line,"budget_mm")+(Field(line,"reject")!="?"?"；突变拒绝位="+Field(line,"reject"):"");
+        if(line.Contains("TEST_PANEL ")) {
+            string rejected=Field(line,"rejected");
+            if(reasons.TryGetValue(rejected,out description)) return "[面板] "+description+" ["+rejected+"]";
+            if(line.Contains("uart_online=0")) return "[串口] 数据中断，正在自动重连；原因="+reason;
+            if(line.Contains("uart_open=1")) return "[串口] 已打开，等待底盘有效状态";
+            if(line.Contains("log_category=WAVE")) return "[波形] "+(Field(line,"enabled")=="1"?"已开启":"已关闭");
+        }
+        return line;
+    }
     public static bool ForwardWave(UdpClient udp, int port, string line) {
         if (port == 0 || !line.StartsWith("FW:", StringComparison.Ordinal)) return false;
         string[] fields = line.Substring(3).Trim().Split(',');
@@ -50,7 +139,7 @@ public static class MangoStraightConsole {
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
         if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT)\b") ||
             plain.IndexOf(':') >= 0) return false;
-        byte[] bytes = Encoding.ASCII.GetBytes(plain + "\n");
+        byte[] bytes = Encoding.UTF8.GetBytes(ChineseStatus(plain) + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
         return true;
     }
@@ -67,7 +156,10 @@ public static class MangoStraightConsole {
         using (SerialPort serial = new SerialPort(port, baud, Parity.None, 8, StopBits.One))
         using (UdpClient wave = commandPort == 0 ? new UdpClient() :
             new UdpClient(new IPEndPoint(IPAddress.Loopback, commandPort)))
-        using (StreamWriter log = new StreamWriter(logPath, false, Encoding.UTF8)) {
+        using (StreamWriter log = new StreamWriter(logPath, false, Encoding.UTF8))
+        using (StreamWriter chineseLog = new StreamWriter(Path.Combine(Path.GetDirectoryName(logPath),
+            Path.GetFileName(logPath).Replace("straight-console-","vofa-zh-")),false,new UTF8Encoding(true))) {
+            Console.OutputEncoding = new UTF8Encoding(false);
             // Windows reports ICMP port-unreachable as a socket reset when
             // VOFA disconnects. Keep the UDP listener alive for its reconnect.
             wave.Client.IOControl((IOControlCode)unchecked((int)0x9800000C), new byte[4], null);
@@ -76,6 +168,7 @@ public static class MangoStraightConsole {
             serial.WriteTimeout = 100; serial.ReadTimeout = 100;
             serial.NewLine = "\n";
             log.AutoFlush = true;
+            chineseLog.AutoFlush = true;
             uint token = 0;
             StringBuilder input = new StringBuilder();
             StringBuilder pending = new StringBuilder();
@@ -83,7 +176,8 @@ public static class MangoStraightConsole {
             long nextAppCheck = 0;
             Action<string> panelLog = delegate(string text) {
                 string message = "[INFO] TEST_PANEL " + text;
-                Console.WriteLine(message); log.WriteLine(message);
+                string translated=ChineseStatus(message);
+                Console.WriteLine(translated); log.WriteLine(message);chineseLog.WriteLine(translated);
                 try { ForwardStatus(wave, wavePort, message); } catch (SocketException) { }
             };
             long nextSerialTry = 0, lastProtocol = 0;
@@ -130,17 +224,20 @@ public static class MangoStraightConsole {
                         disconnectSerial(ex.GetType().Name);
                     }
                     if (rx.Length != 0) {
-                        Console.Write(rx); log.Write(rx); pending.Append(rx);
+                        log.Write(rx); pending.Append(rx);
                         string text = pending.ToString(); int end;
                         while ((end = text.IndexOf('\n')) >= 0) {
                             string line = text.Substring(0, end); text = text.Substring(end + 1);
+                            if(!line.StartsWith("FW:",StringComparison.Ordinal)) Console.WriteLine(ChineseStatus(line));
                             if (Regex.IsMatch(line, @"TEST_STATUS phase=\d+ token=\d+ healthy=[01] stopped=[01]"))
                                 lastProtocol = clock.ElapsedMilliseconds;
                             panel.Observe(line, clock.ElapsedMilliseconds);
                             try {
                                 if (line.StartsWith("FW:", StringComparison.Ordinal)) {
                                     if (panel.WaveEnabled) ForwardWave(wave, wavePort, line);
-                                } else if (panel.ShouldForwardStatus(line, clock.ElapsedMilliseconds)) ForwardStatus(wave, wavePort, line);
+                                } else if (panel.ShouldForwardStatus(line, clock.ElapsedMilliseconds)) {
+                                    chineseLog.WriteLine(ChineseStatus(line));ForwardStatus(wave, wavePort, line);
+                                }
                             }
                             catch (SocketException ex) { log.WriteLine("WAVE_FORWARD_ERROR " + ex.Message); }
                             Match m = Regex.Match(line, @"TEST_ACK ok=1 phase=1 token=(\d+)");
@@ -381,6 +478,11 @@ public sealed class VofaTestSession {
             }
             if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(20|30|40|50|60|70)$") ||
                 Regex.IsMatch(action, @"^APPROACH 0\.(05|10|15|20|25)$")) { tx("MAP " + action); return true; }
+            if (action == "MODE NAV" || action == "MODE WORK") {
+                if (mapArmed || mapAwaitingArm) { report("rejected=MAP_NEEDS_IDLE_STOPPED"); return false; }
+                mapArmed = mapAwaitingArm = false;
+                tx("MAP " + action); return true;
+            }
             if (action == "ARM ALL") {
                 if (!healthy || mapAwaitingArm) return false;
                 mapAwaitingArm = true; mapArmTime = now; mapArmSelection = action; tx("MAP " + action); return true;

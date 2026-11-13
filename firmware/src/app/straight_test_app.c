@@ -30,7 +30,9 @@
 
 static StraightTest test;
 static FullMapTest full_map;
+static bool map_work_enabled = WORK_STATION_ENABLED != 0;
 static uint32_t last_map_log;
+static uint8_t map_log_slot;
 static LaserPrediction laser_prediction;
 static LaserPredictionOutput predicted_laser;
 static uint8_t prediction_logged_mask;
@@ -374,7 +376,7 @@ static FullMapInput map_input(uint32_t now,StraightInput in) {
             m.laser.updated_mask=(uint8_t)((m.laser.updated_mask&~bit)|(m.laser.median_updated_mask&bit));
         }
     }
-    if(WORK_STATION_ENABLED) {
+    if(WORK_STATION_ENABLED && map_work_enabled) {
         m.work_enabled=true;
         m.work_online=g_station_work.online && g_station_work.phase!=STATION_LINK_SYNC;
         m.work_ready=station_work_ready();
@@ -416,19 +418,41 @@ static void commands(uint32_t now, StraightInput in) {
                     else if(WORK_STATION_ENABLED && !full_map_active(&full_map) && rc_online &&
                             rc_state.rc_data.channel[REMOTE_CH_SWD]<=1250u && in.stationary)
                         ok=station_work_reset(true);
-                    log_info("TEST_WORK enabled=%u ok=%u phase=%u online=%u task=%lu station=%u slow=%u wait=%u hold=%u returned=%u result=%u rx=%lu tx=%lu rejected=%lu",
-                        (unsigned)WORK_STATION_ENABLED,(unsigned)ok,(unsigned)g_station_work.phase,
+                    log_info("TEST_WORK enabled=%u ok=%u phase=%u online=%u task=%lu station=%u slow=%u wait=%u hold=%u returned=%u result=%u rx=%lu tx=%lu rejected=%lu mode=%s available=%u",
+                        (unsigned)(WORK_STATION_ENABLED && map_work_enabled),(unsigned)ok,(unsigned)g_station_work.phase,
                         (unsigned)g_station_work.online,(unsigned long)g_station_work.task,g_station_work.station,
                         (unsigned)g_station_work.slow_requested,(unsigned)g_station_work.stop_requested,
                         (unsigned)g_station_work.hold,(unsigned)g_station_work.returned,g_station_work.result,
                         (unsigned long)g_station_work.rx_count,(unsigned long)g_station_work.tx_count,
-                        (unsigned long)g_station_work.rejected_count);
+                        (unsigned long)g_station_work.rejected_count,map_work_enabled?"WORK":"NAV",
+                        (unsigned)WORK_STATION_ENABLED);
                     line_len=0u;continue;
                 }
                 const bool read_or_stop=!strcmp(line,"MAP STATUS")||!strcmp(line,"MAP STOP");
                 const bool straight_busy=test.phase==ST_ARMED||test.phase==ST_RUNNING||test.phase==ST_STOPPING;
                 const bool allowed=read_or_stop || (control_source.mode==DRIVE_SOURCE_HOST && !straight_busy);
-                if(allowed)
+                if(allowed && (!strcmp(line,"MAP MODE NAV") || !strcmp(line,"MAP MODE WORK"))) {
+                    const bool requested_work=!strcmp(line,"MAP MODE WORK");
+                    if(full_map_active(&full_map) || !in.stationary)
+                        full_map.reason="MODE_NEEDS_IDLE_STOPPED";
+                    else if(requested_work && !WORK_STATION_ENABLED)
+                        full_map.reason="MODE_WORK_UNAVAILABLE";
+                    else if(g_station_work.hold || g_station_work.phase==STATION_LINK_APPROACH ||
+                            g_station_work.phase==STATION_LINK_WORKING || g_station_work.phase==STATION_LINK_RELEASE)
+                        full_map.reason="MODE_WORK_ACTIVE";
+                    else {
+                        if(requested_work!=map_work_enabled) {
+                            full_map_stop(&full_map,"MODE_CHANGED",true);
+                            full_map.phase=MAP_IDLE;
+                            if(WORK_STATION_ENABLED) (void)station_work_reset(true);
+                        }
+                        map_work_enabled=requested_work;
+                        full_map.reason=requested_work?"MODE_WORK_SELECTED":"MODE_NAV_SELECTED";
+                        log_info("TEST_MAP_MODE mode=%s origin=%u",requested_work?"WORK":"NAV",
+                            (unsigned)full_map.localization.registered);
+                        ok=true;
+                    }
+                } else if(allowed)
                     ok=full_map_command(&full_map,line,map_input(now,in));
                 log_info("TEST_MAP_ACK ok=%u phase=%s token=%lu segment=%u reason=%s cmd=%s",
                     (unsigned)ok,full_map_phase_name(full_map.phase),(unsigned long)full_map.token,
@@ -719,6 +743,7 @@ static void log_plan(StraightInput in) {
 }
 void straight_test_app_init(void) {
     initialized = false;
+    map_work_enabled = WORK_STATION_ENABLED != 0;
     chassis_trace_init(&trace);
     trace_recording=true;trace_dumping=trace_was_active=false;
     trace_stop_reason="BOOT";
@@ -763,6 +788,7 @@ void straight_test_app_init(void) {
 void straight_test_app_loop(void) {
     const uint32_t now = HAL_GetTick();
     if(!initialized) return;
+    bool map_transition_logged=false;
     can_poll_rx(CHASSIS_STEER_CAN);
     can_poll_rx(CHASSIS_DRIVE_CAN);
     can_poll_rx(&hfdcan3);
@@ -801,30 +827,44 @@ void straight_test_app_loop(void) {
             const uint16_t trees_done_before=full_map.trees_done;
             const FullMapInput map_state=map_input(now,in);
             full_map_step(&full_map,map_state);
-            if(WORK_STATION_ENABLED && full_map.phase==MAP_RUNNING && full_map.target_tree) {
+            if(WORK_STATION_ENABLED && map_work_enabled && full_map.phase==MAP_RUNNING && full_map.target_tree) {
                 if(g_station_work.station!=full_map.target_tree && station_work_ready())
                     (void)station_work_begin(full_map.target_tree,now);
                 if(full_map.tree_hold_stable && now-full_map.tree_hold_ms>=200u)
                     (void)station_work_start(now,in.stationary);
             }
-            if(before!=full_map.phase) log_info("TEST_MAP_EVENT t_ms=%lu phase=%s segment=%u reason=%s",
-                (unsigned long)now,full_map_phase_name(full_map.phase),full_map.segment,full_map.reason);
+            if(before!=full_map.phase) {
+                map_transition_logged=true;
+                log_info("TEST_MAP_EVENT t_ms=%lu phase=%s segment=%u reason=%s",
+                    (unsigned long)now,full_map_phase_name(full_map.phase),full_map.segment,full_map.reason);
+            }
             if(before!=full_map.phase && (full_map.phase==MAP_PAUSED || full_map.phase==MAP_FAULT)) {
-                log_info("TEST_MAP_INPUT t_ms=%lu blockers=0x%lx dt_ms=%lu online=%u centered=%u SWA=%u SWC=%u SWD=%u VRA=%u RX=%u RY=%u LX=%u",
+                log_info("TEST_MAP_INPUT t_ms=%lu blockers=0x%lx dt_ms=%lu online=%u centered=%u SWA=%u SWC=%u SWD=%u VRA=%u RX=%u RY=%u LX=%u left_age_ms=%lu left_fix_age_ms=%lu unobserved_y_mm=%.0f",
                     (unsigned long)now,(unsigned long)blockers,(unsigned long)control_dt_ms,(unsigned)rc_online,
                     (unsigned)drive_source_centered(&rc_state),rc_state.rc_data.channel[REMOTE_CH_SWA],
                     rc_state.rc_data.channel[REMOTE_CH_SWC],rc_state.rc_data.channel[REMOTE_CH_SWD],
                     rc_state.rc_data.channel[REMOTE_CH_VRA],rc_state.rc_data.channel[REMOTE_CH_RIGHT_X],
-                    rc_state.rc_data.channel[REMOTE_CH_RIGHT_Y],rc_state.rc_data.channel[REMOTE_CH_LEFT_X]);
+                    rc_state.rc_data.channel[REMOTE_CH_RIGHT_Y],rc_state.rc_data.channel[REMOTE_CH_LEFT_X],
+                    (unsigned long)map_state.laser.sample_age_ms[AUTO_LEFT],
+                    (unsigned long)(full_map.entry.left_observed?now-full_map.entry.left_sample_ms:UINT32_MAX),
+                    (double)full_map.localization.uncorrected_m[1]*1000);
                 log_info("TEST_MAP_RANGE t_ms=%lu valid=0x%x predicted=0x%x required=0x%x mm=%u,%u,%u,%u wheel=%.3f,%.3f",
                     (unsigned long)now,map_state.laser.valid_mask,full_map.predicted_mask,full_map.required_mask,
                     map_state.laser.accepted_mm[0],map_state.laser.accepted_mm[1],
                     map_state.laser.accepted_mm[2],map_state.laser.accepted_mm[3],(double)in.vx_mps,(double)in.vy_mps);
+                log_info("TEST_MAP_GUARD t_ms=%lu near=0x%x brake=0x%x stale=0x%x budget_mm=%.0f,%.0f,%.0f,%.0f reject=0x%x used_mm=%u,%u,%u,%u odom=0x%x",
+                    (unsigned long)now,full_map.range_near_mask,full_map.range_brake_mask,full_map.range_stale_mask,
+                    (double)full_map.range_budget_m[0]*1000,(double)full_map.range_budget_m[1]*1000,
+                    (double)full_map.range_budget_m[2]*1000,(double)full_map.range_budget_m[3]*1000,
+                    full_map.laser_rejected_mask,full_map.range_control_mm[0],full_map.range_control_mm[1],
+                    full_map.range_control_mm[2],full_map.range_control_mm[3],full_map.odom_range_mask);
             }
-            if(tree_hold_before!=full_map.tree_hold || trees_done_before!=full_map.trees_done)
+            if(tree_hold_before!=full_map.tree_hold || trees_done_before!=full_map.trees_done) {
+                map_transition_logged=true;
                 log_info("TEST_MAP_TREE_EVENT t_ms=%lu segment=%u target=%u hold=%u new_done=0x%x done=0x%x reason=%s",
                     (unsigned long)now,full_map.segment,full_map.target_tree,(unsigned)full_map.tree_hold,
                     trees_done_before^full_map.trees_done,full_map.trees_done,full_map.reason);
+            }
         }
         if(control_source.mode == DRIVE_SOURCE_HOST && !full_map_active(&full_map)) {
             const StraightPhase before = test.phase;
@@ -914,30 +954,48 @@ void straight_test_app_loop(void) {
         station_work_abort(STATION_RESULT_CANCELLED);
     log_work_event(now);
     trace_export(now,in);
+    /* Transition snapshots already consumed the blocking logger budget. All
+     * control, trace capture and station work above have run; leave periodic
+     * reports due for the next loop instead of appending another burst. */
+    if(map_transition_logged) return;
     /* Manual control shares this loop with the paced, blocking radio logger.
-     * Keep periodic autonomous snapshots out of its control-time budget. */
-    if(control_source.mode!=DRIVE_SOURCE_MANUAL && now-last_map_log>=500u) {
+     * Emit one map report per 125ms, retaining each of the four at 2Hz. */
+    if(control_source.mode!=DRIVE_SOURCE_MANUAL && now-last_map_log>=125u) {
         last_map_log=now;
+        const unsigned slot=map_log_slot;
+        map_log_slot=(uint8_t)((map_log_slot+1u)%4u);
         const AutoPose p=full_map.localization.pose.pose;
-        log_info("TEST_MAP_STATUS proto=1 phase=%s token=%lu segment=%u total=17 coverage=0x%x origin=%u x=%.3f y=%.3f yaw_deg=%.2f speed=%.2f approach=%.2f reason=%s",
-            full_map_phase_name(full_map.phase),(unsigned long)full_map.token,full_map.segment,full_map.coverage,
-            (unsigned)full_map.localization.registered,(double)p.x,(double)p.y,(double)p.yaw*57.295779513,
-            (double)full_map.speed,(double)full_map.approach_speed,full_map.reason);
-        log_info("TEST_MAP_TREE target=%u row=%u number=%u hold=%u stable=%u elapsed_ms=%lu done=0x%x dwell_ms=2000",
-            full_map.target_tree,full_map.target_tree?(full_map.target_tree-1u)/2u+1u:0u,
-            full_map.target_tree?(full_map.target_tree-1u)%2u+1u:0u,
-            (unsigned)full_map.tree_hold,(unsigned)full_map.tree_hold_stable,
-            (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done);
-        log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f wz=%.4f motion_phase=%u",
-            full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
-            full_map.required_mask,full_map.predicted_mask,(double)full_map.command.vx,(double)full_map.command.vy,
-            (unsigned)full_map.motion_error,(double)full_map.localization.uncorrected_m[0],
-            (double)full_map.localization.uncorrected_m[1],(double)full_map.command.wz,(unsigned)full_map.motion.out.phase);
-        const MapAisleCorrection ac=full_map.aisle_correction;
-        log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu centering=%u",
-            (unsigned)ac.active,(unsigned)ac.frozen,ac.confirmations,ac.front_mm,ac.rear_mm,
-            (double)ac.error_m*1000,(double)ac.correction_m*1000,
-            (unsigned long)ac.front_surface,(unsigned long)ac.rear_surface,(unsigned)ac.centering);
+        if(slot==0u) {
+            log_info("TEST_MAP_STATUS proto=1 phase=%s token=%lu segment=%u total=17 coverage=0x%x origin=%u x=%.3f y=%.3f yaw_deg=%.2f speed=%.2f approach=%.2f reason=%s mode=%s t_ms=%lu",
+                full_map_phase_name(full_map.phase),(unsigned long)full_map.token,full_map.segment,full_map.coverage,
+                (unsigned)full_map.localization.registered,(double)p.x,(double)p.y,(double)p.yaw*57.295779513,
+                (double)full_map.speed,(double)full_map.approach_speed,full_map.reason,map_work_enabled?"WORK":"NAV",(unsigned long)now);
+        } else if(slot==1u) {
+            log_info("TEST_MAP_TREE target=%u row=%u number=%u hold=%u stable=%u elapsed_ms=%lu done=0x%x dwell_ms=2000 t_ms=%lu",
+                full_map.target_tree,full_map.target_tree?(full_map.target_tree-1u)/2u+1u:0u,
+                full_map.target_tree?(full_map.target_tree-1u)%2u+1u:0u,
+                (unsigned)full_map.tree_hold,(unsigned)full_map.tree_hold_stable,
+                (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done,(unsigned long)now);
+        } else if(slot==2u) {
+            log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f wz=%.4f motion_phase=%u odom=0x%x entry=%u fb_mm=%.1f pending_x_mm=%.1f prep_age_ms=%lu t_ms=%lu",
+                full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
+                full_map.required_mask,full_map.predicted_mask,(double)full_map.command.vx,(double)full_map.command.vy,
+                (unsigned)full_map.motion_error,(double)full_map.localization.uncorrected_m[0],
+                (double)full_map.localization.uncorrected_m[1],(double)full_map.command.wz,(unsigned)full_map.motion.out.phase,
+                full_map.odom_range_mask,(unsigned)(full_map.entry.north_confirmed?2u:full_map.entry.approaching?1u:0u),
+                (double)full_map.cross_feedback.error_m*1000,(double)full_map.localization.innovation_m[0]*1000,
+                (unsigned long)(full_map.motion.out.phase==AUTO_MOTION_ALIGN?now-full_map.motion.prepare_ms:0u),
+                (unsigned long)now);
+        } else {
+            const MapAisleCorrection ac=full_map.aisle_correction;
+            log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu centering=%u align=%u limit=%.3f reject=0x%x wall_mm=%.1f along=%.3f t_ms=%lu",
+                (unsigned)ac.active,(unsigned)ac.frozen,ac.confirmations,ac.front_mm,ac.rear_mm,
+                (double)ac.error_m*1000,(double)ac.correction_m*1000,
+                (unsigned long)ac.front_surface,(unsigned long)ac.rear_surface,(unsigned)ac.centering,
+                (unsigned)chassis_drive_output_allowed(),(double)full_map.motion.config.vmax,full_map.laser_rejected_mask,
+                (double)(full_map.wall_correction.active?full_map.wall_correction.error_m*1000:0),
+                (double)full_map.along_speed_limit,(unsigned long)now);
+        }
     }
     if(now - last_log >= 100u) {
         last_log = now;

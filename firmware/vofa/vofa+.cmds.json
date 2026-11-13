@@ -4,7 +4,7 @@
   "ctx": {
     "name": "全图作业与疏果联调",
     "intro_on": true,
-    "intro": "连接UDP后先查状态、登记起点、选速度，再准备和开始。联合作业使用FullMapWork底盘固件与ELBOW_TEST_MODE=2疏果固件。操作与故障处理见联调说明。",
+    "intro": "连接UDP后先选择单独跑图或联合疏果，登记起点、选速度，再准备和开始。单独跑图允许疏果与视觉断电，联合疏果需两端就绪。操作见联调说明。",
     "hex_on": true,
     "loop_on": false,
     "loop_ms": 100,
@@ -79,6 +79,32 @@
             "subCmds": []
           },
           {
+            "name": "选择单独跑图模式",
+            "intro_on": true,
+            "intro": "底盘独立全图导航，树点停留2秒，允许疏果器和视觉模块断电。停稳且任务未准备时选择，切换后重新登记起点。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 4D 4F 44 45 20 4E 41 56 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "选择联合疏果模式",
+            "intro_on": true,
+            "intro": "全图定点停车并等待疏果完成，开始前需要疏果端与视觉就绪。停稳且任务未准备时选择，切换后重新登记起点。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 4D 4F 44 45 20 57 4F 52 4B 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
             "name": "登记起点：x=0.20、车头朝场内（前向激光标定y）",
             "intro_on": true,
             "intro": "SWC=1500、SWD=1000，车停稳并对准起点、x中心对准0.20m参考线。前向激光需命中远端围栏，用实测距离标定y；标定范围-0.80至0.00m。登记后禁止搬车。",
@@ -94,7 +120,7 @@
           {
             "name": "准备全图（不运动）",
             "intro_on": true,
-            "intro": "P连续直达G7，再蛇形返回。G1–G6按测得的12个固定X树位停车2秒；不启动疏果器。",
+            "intro": "按当前模式准备全图。单独跑图按12个树位停留2秒，联合疏果在固定树位等待机构作业完成。收到准备回执后4秒内点击开始。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
