@@ -494,6 +494,37 @@ static void check_map_adapter(void) {
     assert(full_map.phase==MAP_FAULT);
     puts("FULL_MAP_ADAPTER_TEST_OK register_while_SWD_off_prepare_without_drive_owner_isolation_RC_stop");
 }
+static void check_near_recovery_adapter(void) {
+    uint32_t now=150000u;
+    initialized=true;tx_fault=rx_fault=false;
+    fake_online=fake_calibrated=fake_can_healthy=fake_laser_ready=true;
+    fake_swc=1500u;fake_swd=2000u;fake_vrb=2000u;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;fake_yaw=0;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_HOST};
+    straight_init(&test,now);full_map_init(&full_map,now);
+    assert(field_pose_register(&full_map.localization,(AutoPose){1.5f,4.4f,1.570796327f},0,now));
+    full_map.phase=MAP_RUNNING;full_map.segment=2u;
+    full_map.run_ms=full_map.segment_ms=full_map.last_ms=now;
+    last_step=last_imu=last_log=last_plan_log=last_map_log=now;last_velocity=(DriveVelocity){0};
+    fake_filtered_laser_ready=true;
+    fake_filtered_laser=(LaserSnapshot){.accepted_mm={1459,1459,95,159},
+        .distance_mm={1459,1459,95,159},.valid_mask=15u,.updated_mask=15u,.frame_fresh=true};
+    fake_drive_gate=false;const unsigned before=prepare_calls;
+    for(unsigned i=0;i<5u;++i) {
+        fake_filtered_laser.frame_count=now+10u;loop_at(now+=10u);
+        assert(full_map.phase==MAP_PAUSED && full_map.near_recovery.active);
+        assert(last_velocity.vx==0 && last_velocity.vy==0);
+    }
+    assert(prepare_calls>before);
+    fake_drive_gate=true;fake_filtered_laser.frame_count=now+10u;loop_at(now+=10u);
+    assert(full_map.phase==MAP_PAUSED && !full_map.near_recovery.preparing);
+    assert(last_velocity.vx>.039f && last_velocity.vx<=.04f && last_velocity.vy==0 && last_velocity.wz==0);
+    fake_swd=1000u;loop_at(now+=10u);
+    assert(full_map.phase==MAP_FAULT && !full_map.near_recovery.active);
+    assert(last_velocity.vx==0 && last_velocity.vy==0);
+    fake_filtered_laser_ready=false;
+    puts("NEAR_RECOVERY_ADAPTER_OK actual_scheduler_zero_drive_prepare_feedback_gate_escape_RC_STOP");
+}
 static void check_map_mode_selection(void) {
     uint32_t now=90000u;
     initialized=true;tx_fault=rx_fault=false;
@@ -733,6 +764,7 @@ int main(void) {
     check_manual_direct_scheduler();
     check_trace_adapter();
     check_map_adapter();
+    check_near_recovery_adapter();
     check_manual_logging_budget();
     check_map_laser_filter();
     check_map_logging_budget();

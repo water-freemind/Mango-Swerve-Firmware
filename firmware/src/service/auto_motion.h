@@ -23,7 +23,10 @@ typedef struct {
     bool healthy, aligned, stationary, stop_requested, hard_stop;
     bool hold_along; /* Keep lateral/yaw correction active while braking along the line. */
     bool endpoint_observation_unsettled; /* Continue control until a fresh estimator innovation converges. */
+    float endpoint_stop_tolerance; /* Optional inner stop band; the configured tolerance remains the outer release band. */
     float along_speed_limit; /* Optional path-axis cap; zero uses config.vmax without suppressing cross correction. */
+    bool limit_cross;
+    float cross_negative_limit, cross_positive_limit; /* Speeds along segment.normal; zero is a real cap. */
     uint8_t blocked_directions; /* Missing orthogonal clearance: left/right/rear/front, bits0..3. */
     uint32_t now_ms;
 } AutoMotionInput;
@@ -31,12 +34,13 @@ typedef struct {
     AutoMotionPhase phase; AutoMotionError error;
     AutoTwist command, steering_hint; /* Hint is NOT authorization to drive. */
     float progress, cross_error, heading_error;
+    uint16_t settle_blockers; /* 1 position/cross,2 yaw,4 observation,8 command,16 wheels,32 twist,64 stop,128 centering,256 align. */
 } AutoMotionOutput;
 typedef struct {
     AutoMotionConfig config; AutoSegment segment; AutoMotionOutput out;
     AutoVec2 tangent, normal, velocity_map;
     float length, settled_s; uint32_t last_ms, prepare_ms;
-    bool initialized, started, reversing, launching;
+    bool initialized, started, reversing, launching, endpoint_latched;
 } AutoMotion;
 bool auto_motion_begin(AutoMotion* motion,const AutoMotionConfig* config,AutoSegment segment,uint32_t now_ms);
 void auto_motion_cancel(AutoMotion* motion);

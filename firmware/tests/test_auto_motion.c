@@ -295,7 +295,43 @@ static void stable_preparation_feedback_test(void) {
     o=auto_motion_step(&m,in);assert(o.command.wz==0);
     puts("STABLE_PREPARATION_FEEDBACK_OK unchanged_feasible_hint_until_alignment_new_speed_cap_and_blocked_ray_obeyed");
 }
+static void endpoint_hysteresis_and_diagnostics_test(void) {
+    AutoMotion m;AutoMotionConfig c=config();c.position_tolerance=.02f;c.settle_s=.4f;c.smooth_correction=true;
+    const AutoSegment seg={{0,0},{1,0},0};assert(auto_motion_begin(&m,&c,seg,0));
+    AutoMotionInput in=input((AutoPose){.982f,0,0},10);in.endpoint_stop_tolerance=.015f;
+    auto_motion_step(&m,in);assert(m.out.command.vx>0 && (m.out.settle_blockers&1u));
+    for(unsigned now=20;now<=300;now+=10) {
+        in=input((AutoPose){now==20u?.987f:.982f,0,0},now);
+        in.endpoint_stop_tolerance=.015f;in.endpoint_observation_unsettled=true;
+        auto_motion_step(&m,in);
+        assert(m.out.command.vx==0 && m.endpoint_latched && (m.out.settle_blockers&4u));
+        assert(m.out.phase!=AUTO_MOTION_DONE && m.settled_s==0);
+    }
+    in=input((AutoPose){.979f,0,0},310);in.endpoint_stop_tolerance=.015f;
+    auto_motion_step(&m,in);assert(!m.endpoint_latched && m.out.command.vx>0);
+    for(unsigned now=320;now<=800;now+=10) {
+        in=input((AutoPose){.987f,0,0},now);in.endpoint_stop_tolerance=.015f;auto_motion_step(&m,in);
+    }
+    assert(m.out.phase==AUTO_MOTION_DONE);
+    puts("ENDPOINT_HYSTERESIS_OK 15mm_stop_20mm_release_no_chatter_real_400ms_settle_gate_bits");
+}
+static void cross_component_braking_limit_test(void) {
+    AutoMotion m;AutoMotionConfig c=config();c.vmax=.5f;c.lateral_max=.1f;c.cross_kp=3.2f;
+    const AutoSegment seg={{0,0},{1,0},0};assert(auto_motion_begin(&m,&c,seg,0));
+    for(unsigned now=10;now<=300;now+=10) {
+        AutoMotionInput in=input((AutoPose){.5f,.03f,0},now);in.limit_cross=true;
+        in.cross_negative_limit=0;in.cross_positive_limit=.01f;auto_motion_step(&m,in);
+        assert(m.out.command.vx>0 && m.out.command.vy==0);
+    }
+    for(unsigned now=310;now<=600;now+=10) {
+        AutoMotionInput in=input((AutoPose){.5f,.03f,0},now);in.limit_cross=true;
+        in.cross_negative_limit=.01f;in.cross_positive_limit=0;auto_motion_step(&m,in);
+        assert(m.out.command.vy>=-.01001f && m.out.command.vy<=0);
+    }
+    puts("MAP_CROSS_COMPONENT_LIMIT_OK normal_component_clamped_without_stopping_along_travel");
+}
 int main(void) {
+    endpoint_hysteresis_and_diagnostics_test();cross_component_braking_limit_test();
     stable_preparation_feedback_test();
     tiny_approach_launch_test();
     along_margin_keeps_cross_authority_test();
