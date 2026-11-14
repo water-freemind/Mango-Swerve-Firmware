@@ -88,8 +88,8 @@ static void route_with_work(const char* speed, const char* approach) {
         speed, approach, completed, starts, now_ms);
 }
 int main(void) {
-    const char* speeds[] = {"0.30", "0.40", "0.50", "0.60", "0.70"};
-    const char* approaches[] = {"0.05", "0.10", "0.15", "0.20", "0.25"};
+    const char* speeds[] = {"0.50", "0.60", "0.70", "0.80", "0.90"};
+    const char* approaches[] = {"0.15", "0.20", "0.25", "0.30", "0.35"};
     unsigned index, approach;
     for(index=0; index<5; index++)
         for(approach=0; approach<5; approach++)

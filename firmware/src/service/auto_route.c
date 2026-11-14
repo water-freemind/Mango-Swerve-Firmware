@@ -80,6 +80,31 @@ bool auto_route_pose_clear(const AutoRoute* r,AutoEnvelope body,AutoPose pose,fl
     }
     return true;
 }
+bool auto_route_axis_clearance(const AutoRoute* r,AutoEnvelope body,AutoPose p,
+    unsigned axis,float* negative,float* positive) {
+    if(axis>1u||!negative||!positive||!auto_route_pose_clear(r,body,p,0)) return false;
+    const float s=r->scale;
+    const float xmin=p.x-auto_envelope_support(body,auto_rotate((AutoVec2){-1,0},-p.yaw));
+    const float xmax=p.x+auto_envelope_support(body,auto_rotate((AutoVec2){1,0},-p.yaw));
+    const float ymin=p.y-auto_envelope_support(body,auto_rotate((AutoVec2){0,-1},-p.yaw));
+    const float ymax=p.y+auto_envelope_support(body,auto_rotate((AutoVec2){0,1},-p.yaw));
+    float lo=axis==0u?xmin:ymin+s,hi=axis==0u?3*s-xmax:4.6f*s-ymax;
+    if(axis==0u && ymin<0) hi=fminf(hi,.4f*s-xmax);
+    if(axis==1u && xmax>.4f*s) lo=fminf(lo,ymin);
+    for(unsigned row=1;row<=6u;++row) {
+        const float x0=(row==4u?.6f:.4f)*s,x1=(row==4u?2.4f:2.6f)*s;
+        const float y0=(.4f+.7f*(row-1u))*s,y1=y0+.3f*s;
+        if(axis==0u && ymax>=y0 && ymin<=y1) {
+            if(xmax<=x0) hi=fminf(hi,x0-xmax);
+            if(xmin>=x1) lo=fminf(lo,xmin-x1);
+        }
+        if(axis==1u && xmax>=x0 && xmin<=x1) {
+            if(ymax<=y0) hi=fminf(hi,y0-ymax);
+            if(ymin>=y1) lo=fminf(lo,ymin-y1);
+        }
+    }
+    *negative=fmaxf(0,lo);*positive=fmaxf(0,hi);return true;
+}
 static void intersect(AutoVec2 sensor,AutoVec2 dir,AutoVec2 n,float offset,float low,float high,
                       uint32_t id,float* nearest,AutoPlane* plane) {
     float denom=n.x*dir.x+n.y*dir.y;

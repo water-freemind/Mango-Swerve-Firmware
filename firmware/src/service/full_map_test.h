@@ -27,8 +27,9 @@ typedef struct {
     float error_m;
     uint32_t last_ms;
     uint32_t wall_sample_ms;
+    uint32_t aisle_sample_ms;
     uint8_t axis;
-    bool initialized,wall_reference;
+    bool initialized,wall_reference,aisle_reference;
 } MapCrossFeedback;
 
 typedef struct {
@@ -42,6 +43,20 @@ typedef struct {
     float lost_path;
     bool active;
 } MapFarRayHandover;
+typedef struct {
+    bool active, seen, ready;
+    uint8_t tree, confirmations;
+    uint16_t blockers; /* 0x200 no fresh source,0x400 fused outside,0x800 control outside,0x1000 confirming. */
+    uint32_t last_ms, source_ms, first_ms;
+    float x;
+} MapEndpointFeedback;
+typedef struct {
+    bool active, preparing, prepared;
+    uint8_t mask, clear_frames, clear_updates;
+    uint32_t start_ms, last_ms, frame, sample_ms[4];
+    float path_m;
+    AutoTwist escape;
+} MapNearRecovery;
 typedef struct {
     uint32_t now; AutoTwist wheel; float imu_yaw;
     bool healthy, odom_ok, stationary, aligned;
@@ -63,6 +78,8 @@ typedef struct {
     MapCrossFeedback cross_feedback;
     MapEntryGuidance entry;
     MapFarRayHandover far_handover[2]; /* Left/right only; bounded extra handover, no invented samples. */
+    MapNearRecovery near_recovery;
+    MapEndpointFeedback endpoint;
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;

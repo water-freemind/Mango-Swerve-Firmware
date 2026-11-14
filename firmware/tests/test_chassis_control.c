@@ -405,6 +405,8 @@ int main(void) {
     shift_wall_gap_steering_plant_test(1,.70f);
     shift_wall_gap_steering_plant_test(-1,.70f);
     entry_wall_steering_plant_test(.5f);entry_wall_steering_plant_test(.7f);
+    entry_wall_steering_plant_test(.8f);entry_wall_steering_plant_test(.9f);
+    shift_wall_gap_steering_plant_test(1,.9f);shift_wall_gap_steering_plant_test(-1,.9f);
     full_map_steering_plant_test(-1);full_map_steering_plant_test(1);
     endpoint_motion_alignment_test();
 #endif

@@ -7,8 +7,15 @@
 
 /* User-selected laser reading threshold; do not add the sensor-to-body offset.
  * Map envelope checks independently enforce the modeled vehicle geometry. */
-#define FULL_MAP_MIN_LASER_RANGE_M .100f
+#define FULL_MAP_MIN_LASER_RANGE_MM 95u
+#define FULL_MAP_MIN_LASER_RANGE_M .095f
 #define FULL_MAP_ENTRY_APPROACH_M 1.50f
+#define NEAR_RECOVERY_TIME_MS 1500u
+#define NEAR_RECOVERY_SPEED_MPS .04f
+#define NEAR_RECOVERY_PATH_M .04f
+#define NEAR_RECOVERY_CLEAR_MM 110u
+#define NEAR_OBSERVATION_REJECT_MM 100u
+#define NEAR_RECOVERY_HARD_MM 80u
 
 const char* full_map_phase_name(FullMapPhase p) {
     static const char* const names[]={"IDLE","READY","ARMED","RUNNING","PAUSED","SEGMENT_DONE","DONE","FAULT"};
@@ -19,8 +26,8 @@ bool full_map_active(const FullMapTest* m) {
 }
 void full_map_init(FullMapTest* m,uint32_t now) {
     memset(m,0,sizeof(*m));m->initialized=auto_route_build(&m->route,1,1.570796327f);
-    m->phase=MAP_IDLE;m->reason="NEED_ORIGIN";m->speed=.30f;m->last_ms=now;
-    m->approach_speed=.10f;
+    m->phase=MAP_IDLE;m->reason="NEED_ORIGIN";m->speed=.50f;m->last_ms=now;
+    m->approach_speed=.15f;
     for(unsigned row=1;row<=6;++row) for(unsigned number=1;number<=2;++number)
         if(!full_map_set_tree_x(m,row,number,full_map_tree_x_m[row-1][number-1])) m->initialized=false;
 }
@@ -32,6 +39,8 @@ void full_map_stop(FullMapTest* m,const char* reason,bool lose_origin) {
     m->cross_feedback=(MapCrossFeedback){0};
     m->entry=(MapEntryGuidance){0};m->odom_range_mask=0;
     memset(m->far_handover,0,sizeof(m->far_handover));
+    m->near_recovery=(MapNearRecovery){0};
+    m->endpoint=(MapEndpointFeedback){0};
     m->command=m->hint=(AutoTwist){0};auto_motion_cancel(&m->motion);
     m->phase=MAP_FAULT;m->reason=reason;m->prediction=(LaserPrediction){0};
     m->laser_motion=(LaserMotionFilter){0};
@@ -39,12 +48,13 @@ void full_map_stop(FullMapTest* m,const char* reason,bool lose_origin) {
 }
 static AutoMotionConfig motion_config(float speed) {
     /* Field tuning 2026-11-12: faster ramps and earlier heading/aisle correction.
-     * The independent laser braking model uses 0.10 m/s^2. Endpoint recovery
+     * The ordinary ray model retains 0.10m/s^2; entry plans at 0.40,
+     * with a separate emergency bound. Endpoint recovery
      * first settles the outgoing motion, then returns at up to 0.05 m/s. */
-    return (AutoMotionConfig){.vmax=speed,.accel=.45f,.decel=.60f,.lateral_max=.10f,.cross_kp=3.2f,
+    return (AutoMotionConfig){.vmax=speed,.accel=.45f,.decel=.90f,.lateral_max=.10f,.cross_kp=3.2f,
         .yaw_kp=1.6f,.wz_max=.10f,.angular_accel=.30f,.position_tolerance=.02f,
         .cross_tolerance=.005f,.yaw_tolerance=.017453293f,.cross_abort=.08f,.yaw_abort=.15f,
-        .settle_s=.4f,.stop_latency_s=.35f,.pose_max_age_ms=50,
+        .settle_s=.4f,.stop_latency_s=.20f,.pose_max_age_ms=50,
         .finish_yaw_tolerance=.069813170f,.finish_cross_tolerance=.02f,.overshoot_recovery=.06f,
         .smooth_correction=true};
 }
@@ -119,6 +129,7 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
     if(m->phase==MAP_FAULT && strcmp(cmd,"MAP ORIGIN") && !setting) return false;
     if(!strcmp(cmd,"MAP PAUSE") && (m->phase==MAP_RUNNING||m->phase==MAP_PAUSED)) {
         m->tree_hold_stable=false;
+        m->near_recovery=(MapNearRecovery){0};
         m->phase=MAP_PAUSED;m->user_hold=true;m->pause_ms=in.now;
         m->command=m->hint=(AutoTwist){0};auto_motion_cancel(&m->motion);m->reason="USER_PAUSE";return true;
     }
@@ -163,7 +174,7 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
     if(!strncmp(cmd,"MAP SPEED ",10)) {
         if(full_map_active(m)||!in.stationary) return false;
         const char* p=cmd+10;
-        if(strcmp(p,"0.20")&&strcmp(p,"0.30")&&strcmp(p,"0.40")&&strcmp(p,"0.50")&&strcmp(p,"0.60")&&strcmp(p,"0.70")) return false;
+        if(strcmp(p,"0.50")&&strcmp(p,"0.60")&&strcmp(p,"0.70")&&strcmp(p,"0.80")&&strcmp(p,"0.90")) return false;
         m->speed=strtof(p,NULL);
         if(m->phase!=MAP_FAULT) m->reason="SPEED_SET";
         return true;
@@ -171,8 +182,8 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
     if(!strncmp(cmd,"MAP APPROACH ",13)) {
         const char* value=cmd+13;
         if(full_map_active(m)||!in.stationary) return false;
-        if(strcmp(value,"0.05")&&strcmp(value,"0.10")&&strcmp(value,"0.15")&&
-           strcmp(value,"0.20")&&strcmp(value,"0.25")) return false;
+        if(strcmp(value,"0.15")&&strcmp(value,"0.20")&&strcmp(value,"0.25")&&
+           strcmp(value,"0.30")&&strcmp(value,"0.35")) return false;
         m->approach_speed=strtof(value,NULL);
         if(m->phase!=MAP_FAULT) m->reason="APPROACH_SPEED_SET";
         return true;
@@ -247,13 +258,6 @@ static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
     const float dy=((rear_m-expected_rear)-(front_m-expected_front))*.5f*projection;
     const float observed_y=pose.y+dy;
     if(fabsf(observed_y-segment.line.start.y)>.08f) goto invalid;
-    if(!s->checkpoint_valid || front.surface_id!=s->front_surface || rear.surface_id!=s->rear_surface ||
-       abs((int)f-s->checkpoint_front_mm)>5 || abs((int)r-s->checkpoint_rear_mm)>5) {
-        s->checkpoint_valid=true;s->frozen=false;
-        s->checkpoint_front_mm=f;s->checkpoint_rear_mm=r;
-        s->checkpoint_wheel_y=m->localization.wheel_position.y;
-    } else if(fabsf(m->localization.wheel_position.y-s->checkpoint_wheel_y)>.03f) s->frozen=true;
-    if(s->frozen) goto invalid;
     /* Median source timestamps advance independently. Collect each direction
      * once per board frame, then consume a pair after both have advanced.
      * Freshness and geometry above still apply while waiting for its partner. */
@@ -266,6 +270,17 @@ static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
         const uint32_t advance=sample_ms[sample]-s->sample_ms[sample];
         if(s->confirmations && (!advance || advance>=0x80000000u)) return;
     }
+    /* Compare independent range sources with wheel position at their source
+     * time, not a cached median against the continuously advancing odometry. */
+    const uint32_t oldest_age=in.now-sample_ms[0]>in.now-sample_ms[1]?
+        in.now-sample_ms[0]:in.now-sample_ms[1];
+    const float source_wheel_y=m->localization.wheel_position.y-velocity.y*oldest_age*.001f;
+    if(!s->checkpoint_valid || front.surface_id!=s->front_surface || rear.surface_id!=s->rear_surface ||
+       abs((int)f-s->checkpoint_front_mm)>5 || abs((int)r-s->checkpoint_rear_mm)>5) {
+        s->checkpoint_valid=true;s->frozen=false;
+        s->checkpoint_front_mm=f;s->checkpoint_rear_mm=r;s->checkpoint_wheel_y=source_wheel_y;
+    } else if(fabsf(source_wheel_y-s->checkpoint_wheel_y)>.03f) s->frozen=true;
+    if(s->frozen) goto invalid;
     s->pending_updates=0;
     const uint32_t elapsed=l->last_rx_ms-s->stamp_ms;
     if(s->confirmations && (front.surface_id!=s->front_surface || rear.surface_id!=s->rear_surface ||
@@ -390,10 +405,17 @@ static void entry_observation(FullMapTest* m,FullMapInput in,LaserSnapshot* obse
 static float continuous_cross_feedback(FullMapTest* m,FullMapInput in,const AutoSegment* line) {
     const uint8_t axis=fabsf(line->end.y-line->start.y)>fabsf(line->end.x-line->start.x)?0u:1u;
     const AutoPose p=m->localization.pose.pose;
+    const bool wall_observed=m->wall_correction.active && m->wall_correction.axis==axis;
+    const bool pair_observed=axis==1u && m->aisle_correction.active;
     float target=axis==0?p.x-line->start.x:p.y-line->start.y;
-    if(m->wall_correction.active && m->wall_correction.axis==axis) target=m->wall_correction.error_m;
-    if(axis==1u && m->aisle_correction.active) target=m->aisle_correction.error_m;
+    if(wall_observed) target=m->wall_correction.error_m;
+    if(pair_observed) target=m->aisle_correction.error_m;
     MapCrossFeedback* s=&m->cross_feedback;
+    if(axis==1u && m->aisle_correction.frozen) {
+        /* Explicit rejection is not a missing producer interval. Cancel the
+         * held steering reference rather than driving another 300ms on it. */
+        *s=(MapCrossFeedback){.axis=axis,.last_ms=in.now,.initialized=true};return 0;
+    }
     if(!s->initialized || s->axis!=axis) {
         *s=(MapCrossFeedback){.error_m=target,.last_ms=in.now,.axis=axis,.initialized=true};
         return target;
@@ -401,7 +423,18 @@ static float continuous_cross_feedback(FullMapTest* m,FullMapInput in,const Auto
     const float dt=fminf((in.now-s->last_ms)*.001f,.05f);s->last_ms=in.now;
     const AutoVec2 velocity=auto_rotate((AutoVec2){in.wheel.vx,in.wheel.vy},p.yaw);
     s->error_m+=(axis==0?velocity.x:velocity.y)*dt;
-    if(m->wall_correction.active) {
+    if(pair_observed) {
+        /* A confirmed opposing pair supersedes a former single-wall lease.
+         * Keep its oldest real source time; cached pairs cannot renew it. */
+        s->wall_reference=false;s->aisle_reference=true;
+        const uint32_t a=m->aisle_correction.sample_ms[0],b=m->aisle_correction.sample_ms[1];
+        s->aisle_sample_ms=in.now-a>in.now-b?a:b;
+    } else if(s->aisle_reference && (uint32_t)(in.now-s->aisle_sample_ms)<=300u) {
+        /* Propagate the accepted control error through a short pair gap.
+         * A slow fused pose must not reverse correction toward the close ridge. */
+        return s->error_m;
+    } else if(wall_observed) {
+        s->aisle_reference=false;
         s->wall_reference=true;s->wall_sample_ms=m->wall_correction.sample_ms;
     } else if(s->wall_reference && (uint32_t)(in.now-s->wall_sample_ms)<=600u) {
         /* Keep the odometry-propagated control reference across reacquisition.
@@ -414,8 +447,9 @@ static float continuous_cross_feedback(FullMapTest* m,FullMapInput in,const Auto
      * direction in one tick. Odometry propagates the existing error; a bounded
      * innovation blends towards the current real wall/pair or fused fallback.
      * This is command feedback only: it renews no observation or range age. */
-    const bool observed=m->wall_correction.active || m->aisle_correction.active;
-    const float innovation=(target-s->error_m)*dt/((observed?.08f:.12f)+dt),limit=(observed?.08f:.05f)*dt;
+    const bool observed=wall_observed || pair_observed;
+    const float innovation=(target-s->error_m)*dt/((pair_observed?.06f:observed?.08f:.12f)+dt);
+    const float limit=(pair_observed?.16f:observed?.08f:.05f)*dt;
     s->error_m+=fmaxf(-limit,fminf(limit,innovation));
     return s->error_m;
 }
@@ -469,6 +503,158 @@ static void bridge_far_survey_ray(FullMapTest* m,FullMapInput raw,FullMapInput i
     range->mask|=bit;m->odom_range_mask|=bit;
     if(m->along_speed_limit==0 || m->along_speed_limit>.15f) m->along_speed_limit=.15f;
 }
+/* Near readings suspend route travel, but a bounded translation away from the
+ * obstacle may recover clearance. Never use predicted/median-only rays here.
+ * The original deadline and measured path survive jitter and changing masks. */
+static bool near_recovery_step(FullMapTest* m,FullMapInput in,LaserSnapshot raw,bool pose_limited) {
+    MapNearRecovery* r=&m->near_recovery;
+    if(!r->active && !m->range_near_mask) return false;
+    if(!r->active) {
+        *r=(MapNearRecovery){.active=true,.start_ms=in.now,.last_ms=in.now,
+            .frame=raw.frame_count,.preparing=true};
+        m->phase=MAP_PAUSED;m->pause_ms=in.now;
+        auto_motion_cancel(&m->motion);
+    }
+    r->mask|=m->range_near_mask;
+    const float dt=(float)(in.now-r->last_ms)*.001f;r->last_ms=in.now;
+    r->path_m+=hypotf(in.wheel.vx,in.wheel.vy)*dt;
+    m->tree_hold_stable=false;m->stable=false;m->recovery_frames=0;m->recovery_updates=0;
+    m->reason="NEAR_RECOVERY_WAIT";
+    if(in.now-r->start_ms>=NEAR_RECOVERY_TIME_MS) {
+        full_map_stop(m,"NEAR_RECOVERY_TIMEOUT",false);return true;
+    }
+    if(r->path_m>=NEAR_RECOVERY_PATH_M) {
+        full_map_stop(m,"NEAR_RECOVERY_TRAVEL_LIMIT",false);return true;
+    }
+    bool fresh=raw.frame_fresh,clear=true;
+    for(unsigned i=0;i<4u;++i) {
+        const uint8_t bit=(uint8_t)(1u<<i);
+        if(!(raw.valid_mask&bit) || raw.sample_age_ms[i]>200u) fresh=false;
+        if(r->mask&bit) {
+            if(raw.accepted_mm[i]<NEAR_RECOVERY_CLEAR_MM) clear=false;
+        }
+    }
+    if(fresh && clear) {
+        if(raw.frame_count!=r->frame) {
+            r->frame=raw.frame_count;
+            for(unsigned i=0;i<4u;++i) if(r->mask&(1u<<i)) {
+                const uint32_t source=in.now-raw.sample_age_ms[i];
+                const uint32_t advance=source-r->sample_ms[i];
+                if((raw.updated_mask&(1u<<i)) && advance && advance<0x80000000u) {
+                    r->clear_updates|=(uint8_t)(1u<<i);r->sample_ms[i]=source;
+                }
+            }
+            if((r->clear_updates&r->mask)==r->mask) {++r->clear_frames;r->clear_updates=0;}
+        }
+        if(r->clear_frames>=2u) {
+            *r=(MapNearRecovery){0};m->recovery_frame=raw.frame_count;
+            m->reason="NEAR_RECOVERY_CLEAR";
+            return false; /* Ordinary two-frame/200ms stopped recovery follows. */
+        }
+        r->preparing=true;r->prepared=false;return true;
+    }
+    r->clear_frames=r->clear_updates=0;
+    /* A station action, severe near return, conflicting obstacles, missing
+     * telemetry or inadequate localization permits no autonomous escape. */
+    bool allowed=fresh && !pose_limited && !in.work_active && !in.work_wait &&
+        fabsf(in.wheel.wz)<.02f && (r->mask&3u)!=3u && (r->mask&12u)!=12u;
+    for(unsigned i=0;i<4u;++i)
+        if(raw.accepted_mm[i]<=NEAR_RECOVERY_HARD_MM) allowed=false;
+    AutoTwist escape={.vx=((r->mask&(1u<<AUTO_REAR))?1.0f:0)-((r->mask&(1u<<AUTO_FRONT))?1.0f:0),
+        .vy=((r->mask&(1u<<AUTO_RIGHT))?1.0f:0)-((r->mask&(1u<<AUTO_LEFT))?1.0f:0)};
+    const float norm=hypotf(escape.vx,escape.vy);
+    if(norm==0) allowed=false;
+    else {escape.vx*=NEAR_RECOVERY_SPEED_MPS/norm;escape.vy*=NEAR_RECOVERY_SPEED_MPS/norm;}
+    const float toward[4]={escape.vy,-escape.vy,-escape.vx,escape.vx};
+    for(unsigned i=0;i<4u;++i) if(toward[i]>.0001f &&
+        raw.accepted_mm[i]*.001f<=FULL_MAP_MIN_LASER_RANGE_M+.005f+toward[i]*.5f+toward[i]*toward[i]/.2f) allowed=false;
+    const AutoPose p=m->localization.pose.pose;
+    const AutoVec2 delta=auto_rotate((AutoVec2){escape.vx,escape.vy},p.yaw);
+    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    /* Check the remaining escape corridor against the existing map envelope. */
+    float needed_m=.005f;
+    for(unsigned i=0u;i<4u;++i) if(r->mask&(1u<<i)) {
+        const float away=-toward[i]/NEAR_RECOVERY_SPEED_MPS;
+        if(away>.0001f) needed_m=fmaxf(needed_m,
+            fmaxf(0,(NEAR_RECOVERY_CLEAR_MM+5.0f-raw.accepted_mm[i])*.001f)/away);
+    }
+    const float remaining=fminf(needed_m,fmaxf(0,NEAR_RECOVERY_PATH_M-r->path_m))/NEAR_RECOVERY_SPEED_MPS;
+    for(unsigned step=0u;step<=8u;++step) {
+        AutoPose next=p;next.x+=delta.x*remaining*(float)step/8.0f;next.y+=delta.y*remaining*(float)step/8.0f;
+        if(!auto_route_pose_clear(&m->route,body,next,0)) allowed=false;
+    }
+    if(!allowed) {r->preparing=true;r->prepared=false;return true;}
+    if(fabsf(escape.vx-r->escape.vx)>.0001f || fabsf(escape.vy-r->escape.vy)>.0001f) {
+        r->preparing=true;r->prepared=false;
+    }
+    r->escape=escape;
+    if(r->preparing) {
+        if(!in.stationary) return true;
+        m->hint=escape;m->reason="NEAR_RECOVERY_ALIGN";
+        if(!r->prepared) {r->prepared=true;return true;}
+        if(!in.aligned) return true;
+        r->preparing=false;
+    }
+    m->command=m->hint=escape;m->reason="NEAR_RECOVERY_MOVE";
+    return true;
+}
+static float endpoint_feedback(FullMapTest* m,FullMapInput in,const LaserSnapshot* observation) {
+    MapEndpointFeedback* e=&m->endpoint;
+    const float fused=m->localization.pose.pose.x,target=m->motion.segment.end.x;
+    if(!m->target_tree || fabsf(fused-target)>.15f) {
+        *e=(MapEndpointFeedback){0};return fused;
+    }
+    if(!e->active || e->tree!=m->target_tree || in.now-e->last_ms>50u)
+        *e=(MapEndpointFeedback){.active=true,.tree=m->target_tree,.last_ms=in.now,.x=fused};
+    const AutoVec2 velocity=auto_rotate((AutoVec2){in.wheel.vx,in.wheel.vy},m->localization.pose.pose.yaw);
+    e->x+=velocity.x*(in.now-e->last_ms)*.001f;e->last_ms=in.now;
+    uint32_t source=0;bool new_x=false;
+    if(m->localization.constrained_ms[0]==in.now) for(unsigned ch=0;ch<2u;++ch) {
+        const uint8_t bit=(uint8_t)(1u<<ch);
+        if((m->localization.used_mask&bit) && (observation->valid_mask&bit) &&
+           (observation->updated_mask&bit) && observation->sample_age_ms[ch]<=LASER_FRAME_TIMEOUT_MS) {
+            const uint32_t stamp=in.now-observation->sample_age_ms[ch];
+            if(!new_x || (uint32_t)(stamp-source)<0x80000000u) source=stamp;
+            new_x=true;
+        }
+    }
+    if(new_x && (!e->seen || (source!=e->source_ms && (uint32_t)(source-e->source_ms)<0x80000000u))) {
+        const float elapsed=e->seen?fminf((source-e->source_ms)*.001f,.3f):.1f;
+        const float observed=fused+m->localization.innovation_m[0];
+        const float delta=(observed-e->x)*elapsed/(.10f+elapsed);
+        e->x+=fmaxf(-.012f,fminf(.012f,delta));
+        e->source_ms=source;e->seen=true;
+        if(fabsf(fused-target)<=.02f && fabsf(e->x-target)<=.02f) {
+            if(!e->confirmations) e->first_ms=source;
+            if(e->confirmations<3u) ++e->confirmations;
+            if(e->confirmations>=3u && source-e->first_ms>=180u) e->ready=true;
+        } else if(!e->ready) e->confirmations=0;
+    }
+    const bool fresh=e->seen && in.now-e->source_ms<=LASER_FRAME_TIMEOUT_MS;
+    const bool fused_clear=fabsf(fused-target)<=.02f,control_clear=fabsf(e->x-target)<=.02f;
+    if(!fresh || !fused_clear || !control_clear) {e->ready=false;e->confirmations=0;}
+    e->blockers=(uint16_t)((!fresh?0x200u:0u)|(!fused_clear?0x400u:0u)|
+        (!control_clear?0x800u:0u)|(!e->ready?0x1000u:0u));
+    return e->x;
+}
+static void map_cross_limits(const FullMapTest* m,FullMapInput in,AutoMotionInput* input) {
+    const unsigned axis=fabsf(m->motion.segment.end.y-m->motion.segment.start.y)>
+        fabsf(m->motion.segment.end.x-m->motion.segment.start.x)?0u:1u;
+    float negative,positive;
+    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    input->limit_cross=true;input->cross_negative_limit=input->cross_positive_limit=0;
+    if(!auto_route_axis_clearance(&m->route,body,m->localization.pose.pose,axis,&negative,&positive)) return;
+    /* Bound the dangerous normal component, not just the along-route speed.
+     * 0.45m/s^2 with 200ms reaction is below the commanded 0.90m/s^2 brake. */
+    const float a=.45f,delay=.20f;
+    negative=sqrtf(a*a*delay*delay+2*a*fmaxf(0,negative-.005f))-a*delay;
+    positive=sqrtf(a*a*delay*delay+2*a*fmaxf(0,positive-.005f))-a*delay;
+    if(axis==1u && m->aisle_correction.frozen) negative=positive=0;
+    const float normal=axis==0u?m->motion.normal.x:m->motion.normal.y;
+    input->cross_negative_limit=normal>=0?negative:positive;
+    input->cross_positive_limit=normal>=0?positive:negative;
+    (void)in;
+}
 void full_map_step(FullMapTest* m,FullMapInput in) {
     if(!m->initialized) full_map_init(m,in.now);
     const AutoTwist previous_command=m->command;
@@ -494,6 +680,18 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             observation.accepted_mm[i]=observation.median_mm[i];
             observation.sample_age_ms[i]=observation.median_age_ms[i];
             observation.updated_mask=(uint8_t)((observation.updated_mask&~bit)|(observation.median_updated_mask&bit));
+        }
+    }
+    /* Reject <=100mm as map-surface evidence before the 95mm guard fires.
+     * A close obstacle need not be the mapped fence/ridge. Keep it fully
+     * protective in raw_laser, but do not let it drag the pose into that map
+     * surface while a bounded escape is trying to restore clearance. */
+    for(unsigned i=0u;i<LASER_CHANNEL_COUNT;++i) {
+        const uint8_t bit=(uint8_t)(1u<<i);
+        if(((raw_laser.valid_mask&bit) && raw_laser.accepted_mm[i]<=NEAR_OBSERVATION_REJECT_MM) ||
+           (m->near_recovery.active && (m->near_recovery.mask&bit))) {
+            observation.valid_mask&=(uint8_t)~bit;
+            observation.updated_mask&=(uint8_t)~bit;
         }
     }
     if(entry_leg && m->localization.registered) entry_observation(m,in,&observation);
@@ -651,12 +849,22 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         const bool wall=field_pose_ray(m->localization.pose.pose,i,&plane,&predicted);
         const uint8_t bit=(uint8_t)(1u<<i);
         /* Visible near returns remain protective even when a map ray has no wall. */
-        if((raw_laser.valid_mask&bit)&&raw_laser.accepted_mm[i]*.001f<=FULL_MAP_MIN_LASER_RANGE_M) {
+        if((raw_laser.valid_mask&bit)&&raw_laser.accepted_mm[i]<=FULL_MAP_MIN_LASER_RANGE_MM) {
             m->range_near_mask|=bit;safe=false;
         }
         const float speed=fmaxf(toward[i],commanded[i]);
-        const float budget=FULL_MAP_MIN_LASER_RANGE_M+speed*.5f+speed*speed/.2f;
+        /* Entry has separate continuous planning and emergency envelopes.
+         * A disputed return can brake continuously before a forced pause. */
+        const bool entry_forward=entry_leg && i==AUTO_FRONT;
+        const float stop_decel=entry_forward?.90f:.10f;
+        const float stop_delay=entry_forward?.10f+fminf(.30f,raw_laser.sample_age_ms[i]*.001f):.50f;
+        const float budget=FULL_MAP_MIN_LASER_RANGE_M+speed*stop_delay+speed*speed/(2*stop_decel);
         m->range_budget_m[i]=budget;
+        const bool entry_raw=entry_forward && raw_laser.frame_fresh && (raw_laser.valid_mask&bit) &&
+            raw_laser.sample_age_ms[i]<=LASER_FRAME_TIMEOUT_MS;
+        if(entry_raw && raw_laser.accepted_mm[i]*.001f<=budget) {
+            m->range_brake_mask|=bit;safe=false;
+        }
         /* The right ray sees changing ridge ends on the entry, not a wall
          * reference. It cannot veto this leg through ordinary range checks. */
         if(entry_leg && i==AUTO_RIGHT) continue;
@@ -666,13 +874,18 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         if(ahead[i]>.2f && in.laser.frame_fresh && ((in.laser.valid_mask|range.mask)&bit)) {
             /* Brake before entering the existing emergency pause envelope.
              * Include frame age and one producer interval in the lookahead. */
-            const float delay=.70f+fminf(.30f,in.laser.sample_age_ms[i]*.001f);
-            const float available=fmaxf(0,range.mm[i]*.001f-FULL_MAP_MIN_LASER_RANGE_M-.02f);
-            /* Protection uses the conservative 0.10m/s^2 braking model.
-             * Leave 0.02m/s for feedback tracking above the requested speed. */
-            const float decel=.10f;
+            const float delay=(entry_forward?.20f:.70f)+fminf(.30f,in.laser.sample_age_ms[i]*.001f);
+            const uint16_t planning_mm=entry_raw && raw_laser.accepted_mm[i]<range.mm[i]?
+                raw_laser.accepted_mm[i]:range.mm[i];
+            const float available=fmaxf(0,planning_mm*.001f-FULL_MAP_MIN_LASER_RANGE_M-.02f);
+            /* Entry planning uses gentler braking than its emergency envelope.
+             * Entry retains 0.04m/s of tracking reserve; other rays 0.02m/s. */
+            const float decel=entry_forward?.40f:stop_decel;
             const float closing_limit=sqrtf(decel*decel*delay*delay+2*decel*available)-decel*delay;
-            range_speed=fminf(range_speed,fmaxf(0,closing_limit-.02f)/ahead[i]);
+            const float tracking_reserve=entry_forward?.04f:.02f;
+            const float cap=fmaxf(0,closing_limit-tracking_reserve)/ahead[i];
+            if(entry_raw && cap<range_speed) m->range_control_mm[i]=planning_mm;
+            range_speed=fminf(range_speed,cap);
         }
         if(!wall) continue;
         if(ahead[i]>.2f||toward[i]>.10f || (fabsf(ahead[i])>.2f && commanded[i]>.0001f)) required|=bit;
@@ -685,6 +898,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         m->recovery_frames=0;m->recovery_updates=0;m->stable=false;
     }
     m->required_mask=required;
+    if(near_recovery_step(m,in,raw_laser,pose_limited||entry_needs_north)) return;
     if(!safe) {
         m->tree_hold_stable=false;
         if(m->phase!=MAP_PAUSED) {
@@ -782,22 +996,14 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         .aligned=in.aligned && m->motion.started,.stationary=in.stationary,.now_ms=in.now};
     input.along_speed_limit=m->along_speed_limit;
     input.blocked_directions=blocked_directions;
-    input.endpoint_observation_unsettled=m->target_tree &&
-        in.now-m->localization.constrained_ms[0]<=LASER_FRAME_TIMEOUT_MS &&
-        (fabsf(m->localization.innovation_m[0])>.010f ||
-         fabsf(m->localization.pose.pose.x+m->localization.innovation_m[0]-m->motion.segment.end.x)>
-            m->motion.config.position_tolerance);
+    const float endpoint_x=endpoint_feedback(m,in,&observation);
+    input.endpoint_observation_unsettled=m->target_tree && !m->endpoint.ready;
+    input.endpoint_stop_tolerance=m->target_tree?.015f:0;
     const float cross=continuous_cross_feedback(m,in,&seg);
     if(fabsf(seg.end.y-seg.start.y)>fabsf(seg.end.x-seg.start.x)) input.pose.pose.x=seg.start.x+cross;
     else input.pose.pose.y=seg.start.y+cross;
-    if(m->target_tree && in.now-m->localization.constrained_ms[0]<=LASER_FRAME_TIMEOUT_MS &&
-       fabsf(m->localization.pose.pose.x-m->motion.segment.end.x)<=.03f) {
-        /* At a tree, control and completion must see the same pending real X
-         * observation. Bound this endpoint-only lead to 10mm; retain the slow
-         * map/envelope fusion and the unchanged 20/30mm acceptance windows. */
-        const float pending=m->localization.innovation_m[0];
-        input.pose.pose.x+=fmaxf(-.010f,fminf(.010f,pending));
-    }
+    if(m->endpoint.active) input.pose.pose.x=endpoint_x;
+    map_cross_limits(m,in,&input);
     if(m->aisle_correction.active) {
         /* Feed the confirmed, filtered pair into continuous cross correction.
          * The separately rate-limited fused pose remains the map/envelope state. */

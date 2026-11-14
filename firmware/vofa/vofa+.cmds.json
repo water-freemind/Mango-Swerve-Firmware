@@ -184,33 +184,7 @@
         "down": true,
         "subCmds": [
           {
-            "name": "档位1 0.30 m/s",
-            "intro_on": true,
-            "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 33 30 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "档位2 0.40 m/s",
-            "intro_on": true,
-            "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 34 30 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "档位3 0.50 m/s",
+            "name": "档位1 0.50 m/s（当前实测最稳)",
             "intro_on": true,
             "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
             "hex_on": true,
@@ -223,7 +197,7 @@
             "subCmds": []
           },
           {
-            "name": "档位4 0.60 m/s",
+            "name": "档位2 0.60 m/s（试验档，待优化)",
             "intro_on": true,
             "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
             "hex_on": true,
@@ -236,7 +210,7 @@
             "subCmds": []
           },
           {
-            "name": "档位5 0.70 m/s",
+            "name": "档位3 0.70 m/s（试验档，待优化)",
             "intro_on": true,
             "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
             "hex_on": true,
@@ -244,6 +218,32 @@
             "loop_ms": 100,
             "loop_count": 1,
             "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 37 30 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "档位4 0.80 m/s（试验档，待优化)",
+            "intro_on": true,
+            "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 38 30 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "档位5 0.90 m/s（试验档，待优化)",
+            "intro_on": true,
+            "intro": "停车且任务未准备时设置。默认档位1，观察SPEED_SET回执。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 53 50 45 45 44 20 30 2E 39 30 0A",
             "is_group": false,
             "down": false,
             "subCmds": []
@@ -263,35 +263,9 @@
         "down": true,
         "subCmds": [
           {
-            "name": "接近档位1 0.05 m/s",
+            "name": "接近档位1 0.15 m/s",
             "intro_on": true,
-            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.10m/s。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 41 50 50 52 4F 41 43 48 20 30 2E 30 35 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "接近档位2 0.10 m/s",
-            "intro_on": true,
-            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.10m/s。",
-            "hex_on": true,
-            "loop_on": false,
-            "loop_ms": 100,
-            "loop_count": 1,
-            "cmd_hex": "55 49 20 4D 41 50 20 41 50 50 52 4F 41 43 48 20 30 2E 31 30 0A",
-            "is_group": false,
-            "down": false,
-            "subCmds": []
-          },
-          {
-            "name": "接近档位3 0.15 m/s",
-            "intro_on": true,
-            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.10m/s。",
+            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.15m/s。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
@@ -302,9 +276,9 @@
             "subCmds": []
           },
           {
-            "name": "接近档位4 0.20 m/s",
+            "name": "接近档位2 0.20 m/s",
             "intro_on": true,
-            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.10m/s。",
+            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.15m/s。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
@@ -315,14 +289,40 @@
             "subCmds": []
           },
           {
-            "name": "接近档位5 0.25 m/s",
+            "name": "接近档位3 0.25 m/s",
             "intro_on": true,
-            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.10m/s。",
+            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.15m/s。",
             "hex_on": true,
             "loop_on": false,
             "loop_ms": 100,
             "loop_count": 1,
             "cmd_hex": "55 49 20 4D 41 50 20 41 50 50 52 4F 41 43 48 20 30 2E 32 35 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "接近档位4 0.30 m/s",
+            "intro_on": true,
+            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.15m/s。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 41 50 50 52 4F 41 43 48 20 30 2E 33 30 0A",
+            "is_group": false,
+            "down": false,
+            "subCmds": []
+          },
+          {
+            "name": "接近档位5 0.35 m/s",
+            "intro_on": true,
+            "intro": "底盘收到疏果端SLOW/WAIT后的接近速度上限。停车且任务未准备时设置，默认0.15m/s。",
+            "hex_on": true,
+            "loop_on": false,
+            "loop_ms": 100,
+            "loop_count": 1,
+            "cmd_hex": "55 49 20 4D 41 50 20 41 50 50 52 4F 41 43 48 20 30 2E 33 35 0A",
             "is_group": false,
             "down": false,
             "subCmds": []

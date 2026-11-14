@@ -13,6 +13,9 @@ bool auto_route_set_entry_y(AutoRoute* route,float entry_y);
 bool auto_route_clear(const AutoRoute* route,AutoEnvelope body,float margin);
 /* Conservative live AABB of the yawed footprint, including start/gate. */
 bool auto_route_pose_clear(const AutoRoute* route,AutoEnvelope body,AutoPose pose,float margin);
+/* Translation clearance along a world axis for the current yawed footprint. */
+bool auto_route_axis_clearance(const AutoRoute* route,AutoEnvelope body,AutoPose pose,
+    unsigned axis,float* negative,float* positive);
 bool auto_route_valid(const AutoRoute* route);
 /* First front-facing intersection with known field fence/ridge faces. False at openings. */
 bool auto_route_ray(const AutoRoute* route,AutoPose pose,AutoLaserMount mount,float max_range,

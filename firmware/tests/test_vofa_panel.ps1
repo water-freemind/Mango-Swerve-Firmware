@@ -1,4 +1,4 @@
-#requires -PSEdition Desktop
+﻿#requires -PSEdition Desktop
 $ErrorActionPreference = 'Stop'
 $source = Get-Content -Raw (Join-Path $PSScriptRoot '../straight-console.ps1')
 $code = [regex]::Match($source, "(?s)-TypeDefinition @'\r?\n(.*?)\r?\n'@")
@@ -256,7 +256,7 @@ $panelFile = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot '../vofa/v
 $buttons = ($panelFile.ctx.subCmds | Where-Object name -like '02 *').subCmds
 $speedButtons = @($buttons | Where-Object cmd_hex -like '55 49 20 4D 41 50 20 53 50 45 45 44 *')
 Assert ($speedButtons.Count -eq 5) 'Five speed buttons expected'
-$expectedPresets = @('0.30','0.40','0.50','0.60','0.70')
+$expectedPresets = @('0.50','0.60','0.70','0.80','0.90')
 for ($i = 0; $i -lt 5; ++$i) {
     $decoded = [Text.Encoding]::ASCII.GetString([byte[]]($speedButtons[$i].cmd_hex.Split(' ') | ForEach-Object {[Convert]::ToByte($_,16)}))
     Assert ($decoded -eq "UI MAP SPEED $($expectedPresets[$i])`n") 'Speed button bytes do not match label'
@@ -375,11 +375,11 @@ Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_CONTROL_FAULT process_cod
 $workPanel = [VofaTestSession]::new($true,$send,$report)
 $workPanel.Observe($idle + ' control=HOST',0)
 $workPanel.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=READY token=0 segment=0',1)
-foreach ($preset in @('0.05','0.10','0.15','0.20','0.25')) {
+foreach ($preset in @('0.15','0.20','0.25','0.30','0.35')) {
     Assert ($workPanel.Command("UI MAP APPROACH $preset",2)) 'Approach preset rejected'
     Assert ($tx[-1] -eq "MAP APPROACH $preset") 'Approach command changed in bridge'
 }
-Assert (!$workPanel.Command('UI MAP APPROACH 0.30',2)) 'Unsupported approach speed accepted'
+Assert (!$workPanel.Command('UI MAP APPROACH 0.10',2)) 'Unsupported approach speed accepted'
 Assert ($workPanel.Command('UI MAP WORK STATUS',3)) 'Work status query rejected'
 Assert ($tx[-1] -eq 'MAP WORK STATUS') 'Work query changed in bridge'
 Assert ($workPanel.Command('UI MAP WORK RESET',4)) 'Work reset rejected'

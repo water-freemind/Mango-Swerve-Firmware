@@ -780,7 +780,7 @@ void straight_test_app_init(void) {
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
     log_info("TEST_READY manual_control=direct ramp=0");
-    log_info("TEST_READY full_map_proto=1 field=NOMINAL_3x4.6 start_x=0.20 start_y=FRONT_ANCHORED[-0.80,0.00] yaw_deg=90 default_speed=0.30 trees=12 tree_dwell_ms=2000 tools=%s auto_start=0",
+    log_info("TEST_READY full_map_proto=1 field=NOMINAL_3x4.6 start_x=0.20 start_y=FRONT_ANCHORED[-0.80,0.00] yaw_deg=90 default_speed=0.50 trees=12 tree_dwell_ms=2000 tools=%s auto_start=0",
         WORK_STATION_ENABLED?"STATION_V2":"DISABLED");
     log_info("TEST_READY laser_filter=MEDIAN3 window_gap_ms=200 near_bypass_mm=1100 laser_recovery_ms=5000 brake_delay_ms=500");
     log_info("TEST_READY manual_jerk linear=0.80 angular=1.60 target_lateral_budget=0.30 transient_budget_not_guaranteed=1");
@@ -894,14 +894,17 @@ void straight_test_app_loop(void) {
         const bool map_running=control_source.mode==DRIVE_SOURCE_HOST && full_map.phase==MAP_RUNNING;
         const bool map_paused=control_source.mode==DRIVE_SOURCE_HOST &&
             (full_map.phase==MAP_ARMED||full_map.phase==MAP_PAUSED);
+        const bool map_recovering=control_source.mode==DRIVE_SOURCE_HOST && full_map.phase==MAP_PAUSED &&
+            full_map.near_recovery.active && hypotf(full_map.hint.vx,full_map.hint.vy)>.0001f;
         const bool host_active = !map_running && !map_paused && control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING &&
             test.leg != ST_LEG_WAIT && !test.guard_mask && !test.laser_paused;
         const bool host_paused = control_source.mode == DRIVE_SOURCE_HOST && test.phase == ST_RUNNING && !host_active;
         if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) apply_manual(now, in);
-        else if(map_running) {
+        else if(map_running || map_recovering) {
             chassis_yaw_hold_disable();
             const AutoTwist v=full_map.command,h=full_map.hint;
-            const bool prepare=full_map.motion.out.phase==AUTO_MOTION_ALIGN;
+            const bool prepare=full_map.near_recovery.active ? full_map.near_recovery.preparing :
+                full_map.motion.out.phase==AUTO_MOTION_ALIGN;
             const ChassisErrorCode status=prepare ? chassis_prepare_velocity(h.vx,h.vy,h.wz):chassis.set_velocity(v.vx,v.vy,v.wz);
             const ChassisErrorCode process_status=status==chassis.OK?chassis.process():chassis.OK;
             if(status!=chassis.OK||process_status!=chassis.OK) {
@@ -924,7 +927,7 @@ void straight_test_app_loop(void) {
         }
         /* WAIT and guard pauses stop outputs while retaining GO's heading. */
         if(!(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed) &&
-           !host_active && !map_running) {
+           !host_active && !map_running && !map_recovering) {
             manual_velocity = (DriveVelocity){0};
             stop_outputs();
         }
@@ -977,14 +980,15 @@ void straight_test_app_loop(void) {
                 (unsigned)full_map.tree_hold,(unsigned)full_map.tree_hold_stable,
                 (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done,(unsigned long)now);
         } else if(slot==2u) {
-            log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f wz=%.4f motion_phase=%u odom=0x%x entry=%u fb_mm=%.1f pending_x_mm=%.1f prep_age_ms=%lu t_ms=%lu",
+            log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f wz=%.4f motion_phase=%u odom=0x%x entry=%u fb_mm=%.1f pending_x_mm=%.1f g=%x st=%u t_ms=%lu",
                 full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
                 full_map.required_mask,full_map.predicted_mask,(double)full_map.command.vx,(double)full_map.command.vy,
                 (unsigned)full_map.motion_error,(double)full_map.localization.uncorrected_m[0],
                 (double)full_map.localization.uncorrected_m[1],(double)full_map.command.wz,(unsigned)full_map.motion.out.phase,
                 full_map.odom_range_mask,(unsigned)(full_map.entry.north_confirmed?2u:full_map.entry.approaching?1u:0u),
                 (double)full_map.cross_feedback.error_m*1000,(double)full_map.localization.innovation_m[0]*1000,
-                (unsigned long)(full_map.motion.out.phase==AUTO_MOTION_ALIGN?now-full_map.motion.prepare_ms:0u),
+                (unsigned)(full_map.motion.out.settle_blockers|full_map.endpoint.blockers),
+                (unsigned)(full_map.motion.settled_s*1000),
                 (unsigned long)now);
         } else {
             const MapAisleCorrection ac=full_map.aisle_correction;

@@ -49,7 +49,11 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(!m->initialized || m->out.phase==AUTO_MOTION_FAULT || m->out.phase==AUTO_MOTION_DONE) return m->out;
     if(in.hard_stop || !in.healthy) { fault(m,AUTO_MOTION_STOPPED_BY_SAFETY); return m->out; }
     uint32_t ms=(uint32_t)(in.now_ms-m->last_ms);
-    if(ms>50u || !finite_twist(in.measured) || !isfinite(in.along_speed_limit) || in.along_speed_limit<0 || !isfinite(in.pose.pose.x)||
+    if(ms>50u || !finite_twist(in.measured) || !isfinite(in.along_speed_limit) || in.along_speed_limit<0 ||
+       (in.limit_cross && (!isfinite(in.cross_negative_limit)||!isfinite(in.cross_positive_limit)||
+        in.cross_negative_limit<0||in.cross_positive_limit<0)) ||
+       !isfinite(in.endpoint_stop_tolerance)||in.endpoint_stop_tolerance<0||
+       in.endpoint_stop_tolerance>m->config.position_tolerance || !isfinite(in.pose.pose.x)||
        !isfinite(in.pose.pose.y)||!isfinite(in.pose.pose.yaw)) { fault(m,AUTO_MOTION_BAD_INPUT); return m->out; }
     if(!in.pose.valid || (uint32_t)(in.now_ms-in.pose.stamp_ms)>m->config.pose_max_age_ms) {
         fault(m,AUTO_MOTION_STALE_POSE); return m->out;
@@ -65,6 +69,16 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         fault(m,AUTO_MOTION_DEVIATION); return m->out;
     }
     float remaining=m->length-m->out.progress;
+    const float finish_yaw=m->config.finish_yaw_tolerance>0?m->config.finish_yaw_tolerance:m->config.yaw_tolerance;
+    const float finish_cross=m->config.finish_cross_tolerance>0?m->config.finish_cross_tolerance:m->config.cross_tolerance;
+    float stop_tolerance=m->config.position_tolerance;
+    if(in.endpoint_stop_tolerance>0) {
+        if(fabsf(remaining)>m->config.position_tolerance || fabsf(m->out.cross_error)>finish_cross ||
+           fabsf(m->out.heading_error)>finish_yaw) m->endpoint_latched=false;
+        if(fabsf(remaining)<=in.endpoint_stop_tolerance && fabsf(m->out.cross_error)<=finish_cross &&
+           fabsf(m->out.heading_error)<=finish_yaw) m->endpoint_latched=true;
+        if(!m->endpoint_latched) stop_tolerance=in.endpoint_stop_tolerance;
+    }
     const float overshoot_limit=m->config.overshoot_recovery>0?
         m->config.overshoot_recovery:m->config.position_tolerance;
     if(remaining < -overshoot_limit) { fault(m,AUTO_MOTION_OVERSHOOT); return m->out; }
@@ -73,7 +87,10 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     float dt=ms*.001f;
     bool measured_zero=hypotf(in.measured.vx,in.measured.vy)<.01f && fabsf(in.measured.wz)<.02f;
     if(!m->started) {
-        if(!in.stationary || !measured_zero) { zero(m); m->out.phase=AUTO_MOTION_ALIGN; return m->out; }
+        if(!in.stationary || !measured_zero) {
+            zero(m); m->out.phase=AUTO_MOTION_ALIGN;
+            m->out.settle_blockers=(uint16_t)(256u|(!in.stationary?16u:0u)|(!measured_zero?32u:0u));return m->out;
+        }
         m->started=true;
     }
     const float brake_distance=fmaxf(0,fabsf(remaining)-.5f*m->config.position_tolerance);
@@ -85,7 +102,7 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         sqrtf(delay_speed*delay_speed+2*m->config.decel*brake_distance)-delay_speed);
     along=fminf(along,2*fabsf(remaining)); /* low-gain endpoint approach */
     if(remaining<0) along=-fminf(along,.05f);
-    if(fabsf(remaining)<=m->config.position_tolerance) along=0;
+    if(fabsf(remaining)<=stop_tolerance) along=0;
     if(in.hold_along) along=0;
     float cross_error=m->out.cross_error,heading_error=m->out.heading_error;
     if(m->config.smooth_correction) {
@@ -93,14 +110,13 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         heading_error=copysignf(fmaxf(0,fabsf(heading_error)-m->config.yaw_tolerance),heading_error);
     }
     float lateral=clamp(-m->config.cross_kp*cross_error,m->config.lateral_max);
+    if(in.limit_cross) lateral=fmaxf(-in.cross_negative_limit,fminf(in.cross_positive_limit,lateral));
     if(fabsf(m->out.cross_error)<=m->config.cross_tolerance) lateral=0;
     float wz=clamp(m->config.yaw_kp*heading_error,m->config.wz_max);
     if(fabsf(m->out.heading_error)<=m->config.yaw_tolerance) wz=0;
-    const float finish_yaw=m->config.finish_yaw_tolerance>0?m->config.finish_yaw_tolerance:m->config.yaw_tolerance;
-    const float finish_cross=m->config.finish_cross_tolerance>0?m->config.finish_cross_tolerance:m->config.cross_tolerance;
     /* A centering hold must keep correcting to cross_tolerance even inside
      * the wider endpoint acceptance window. Completion waits for release. */
-    const bool position_reached=!in.hold_along && fabsf(remaining)<=m->config.position_tolerance &&
+    const bool position_reached=!in.hold_along && fabsf(remaining)<=stop_tolerance &&
         fabsf(m->out.cross_error)<=finish_cross;
     if(position_reached) lateral=0;
     if(position_reached && fabsf(m->out.heading_error)<=finish_yaw) wz=0;
@@ -139,6 +155,7 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         if(prepared_valid && compatible) hint=prepared;
         else m->prepare_ms=in.now_ms;
         zero(m); m->out.phase=AUTO_MOTION_ALIGN;
+        m->out.settle_blockers=256u;
         m->out.steering_hint=hint;
         return m->out; /* never accumulate a command behind closed wheel gate */
     }
@@ -182,6 +199,10 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(!finite_twist(m->out.command)) { fault(m,AUTO_MOTION_BAD_INPUT); return m->out; }
     bool reached=position_reached && fabsf(m->out.heading_error)<=finish_yaw && !in.endpoint_observation_unsettled;
     bool command_zero=hypotf(body.x,body.y)<.00001f && fabsf(m->out.command.wz)<.00001f;
+    m->out.settle_blockers=(uint16_t)((!position_reached?1u:0u)|
+        (fabsf(m->out.heading_error)>finish_yaw?2u:0u)|(in.endpoint_observation_unsettled?4u:0u)|
+        (!command_zero?8u:0u)|(!in.stationary?16u:0u)|(!measured_zero?32u:0u)|
+        (in.stop_requested?64u:0u)|(in.hold_along?128u:0u));
     if(m->reversing && command_zero && in.stationary && measured_zero) m->reversing=false;
     if(!in.stop_requested && !in.hold_along && reached && command_zero && in.stationary && measured_zero) m->settled_s+=dt;
     else m->settled_s=0;

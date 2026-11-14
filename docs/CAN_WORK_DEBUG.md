@@ -1,5 +1,9 @@
 # 全图与疏果联合调试
 
+> 当前源码回退为058B8D5A，本机车端仍为此前烧录的411A0C6B，二者暂不一致；本次未操作车端。源码与重建镜像一致性、备份和已知问题见[源码回退与PR交付](work/full-map/20261113-source-rollback-pr.md)。旧C9FAA/0.50仍保留作实测对照。
+
+> 2026-11-13：95mm近距恢复、新五档和入口减速版C9FAA8A4…319C9C已烧录并校验，UDP与配套按钮已恢复。默认WORK、0.50/0.15，实车全图待验收。相对90EFF差异见[烧录记录](work/full-map/20261113-near-recovery-flash.md)，模型方法及历史数据见[本轮复审](work/full-map/20261113-near-recovery-review.md)。
+
 <a id="navigation-only-mode"></a>
 ## 单独跑图与联合疏果模式
 

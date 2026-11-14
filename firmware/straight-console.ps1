@@ -45,6 +45,12 @@ public static class MangoStraightConsole {
             {"ARMED","全图已准备，请点击开始"},{"RUNNING","任务运行中"},
             {"WORK_PEER_NOT_READY","疏果端尚未就绪；单独跑图请选择NAV模式"},
             {"RANGE_PAUSE","测距保护暂停，正在等待有效数据和停稳恢复"},
+            {"NEAR_RECOVERY_WAIT","近距恢复：保持停止，等待安全退让条件"},
+            {"NEAR_RECOVERY_ALIGN","近距恢复：零驱动对齐退让方向"},
+            {"NEAR_RECOVERY_MOVE","近距恢复：限速远离障碍"},
+            {"NEAR_RECOVERY_CLEAR","近距解除，等待停稳与独立测距确认"},
+            {"NEAR_RECOVERY_TIMEOUT","近距纠偏超时，任务已停止"},
+            {"NEAR_RECOVERY_TRAVEL_LIMIT","近距退让已达位移上限，任务已停止"},
             {"RANGE_PAUSE_TIMEOUT","测距保护未能在时限内恢复，任务已停止"},
             {"POSE_OBSERVATION_PAUSE","定位观测不足，暂停等待有效观测"},
             {"ENTRY_NORTH_PAUSE","即将到G7，等待远端围栏定位确认"},
@@ -476,8 +482,8 @@ public sealed class VofaTestSession {
             if (mapPhase == "RUNNING" || mapPhase == "PAUSED" || mapPhase == "ARMED" || !stopped) {
                 report("rejected=MAP_NEEDS_IDLE_STOPPED"); return false;
             }
-            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(20|30|40|50|60|70)$") ||
-                Regex.IsMatch(action, @"^APPROACH 0\.(05|10|15|20|25)$")) { tx("MAP " + action); return true; }
+            if (action == "ORIGIN" || Regex.IsMatch(action, @"^SPEED 0\.(50|60|70|80|90)$") ||
+                Regex.IsMatch(action, @"^APPROACH 0\.(15|20|25|30|35)$")) { tx("MAP " + action); return true; }
             if (action == "MODE NAV" || action == "MODE WORK") {
                 if (mapArmed || mapAwaitingArm) { report("rejected=MAP_NEEDS_IDLE_STOPPED"); return false; }
                 mapArmed = mapAwaitingArm = false;
