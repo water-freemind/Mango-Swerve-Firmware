@@ -63,8 +63,19 @@ typedef struct {
     LaserSnapshot laser;
     bool work_enabled, work_online, work_ready, work_done, work_failed;
     bool work_slow, work_wait, work_active;
-    uint8_t work_station;
+    uint8_t work_station, work_result;
+    bool work_align, work_alignment_fresh, work_centered;
+    int8_t work_align_direction;
+    uint32_t work_align_frame;
 } FullMapInput;
+
+typedef struct {
+    bool active, ready;
+    uint8_t station, steps;
+    int8_t direction;
+    uint32_t started_ms, frame;
+    float nominal_x, target_x;
+} MapTreeAlignment;
 typedef struct {
     float x;
     bool configured;
@@ -80,6 +91,7 @@ typedef struct {
     MapFarRayHandover far_handover[2]; /* Left/right only; bounded extra handover, no invented samples. */
     MapNearRecovery near_recovery;
     MapEndpointFeedback endpoint;
+    MapTreeAlignment tree_alignment;
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;

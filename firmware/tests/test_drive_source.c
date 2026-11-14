@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 static RemoteState remote(void) {
     RemoteState r = {.online = true, .manual_request = true, .manual_source = REMOTE_MANUAL_SOURCE_CHASSIS};
@@ -17,6 +18,7 @@ int main(void) {
     RemoteState r = remote();
     assert(drive_source_update(&s, &r, true, true));
     assert(s.mode == DRIVE_SOURCE_MANUAL && !s.manual_armed); /* Boot with SWD on cannot drive. */
+    assert(!strcmp(drive_source_manual_wait_reason(&s,&r,true,true),"SWD_REARM"));
     r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
     drive_source_update(&s, &r, true, true);
     assert(s.release_seen && !s.manual_armed);
@@ -31,6 +33,7 @@ int main(void) {
         assert(s.release_seen && !s.manual_armed);
         drive_source_update(&s, &r, true, true);
         assert(s.release_seen && !s.manual_armed);
+        assert(!strcmp(drive_source_manual_wait_reason(&s,&r,true,true),"VRB_RELEASED"));
         r.rc_data.channel[REMOTE_CH_VRB] = 1250u;
         drive_source_update(&s, &r, true, false);
         assert(!s.manual_armed);
@@ -122,7 +125,18 @@ int main(void) {
     r.rc_data.channel[REMOTE_CH_SWC] = 1500u;
     assert(drive_source_update(&s, &r, true, true) && s.mode == DRIVE_SOURCE_HOST);
     r.rc_data.channel[REMOTE_CH_SWC] = 2000u;
-    assert(drive_source_update(&s, &r, true, true) && !s.manual_armed);
+    assert(drive_source_update(&s, &r, true, true) && s.manual_armed);
+    /* An explicit online mode change acknowledges takeover after STOP. */
+    drive_source_stop_manual(&s);
+    r.rc_data.channel[REMOTE_CH_SWC]=1500u;
+    drive_source_update(&s,&r,true,false);
+    r.rc_data.channel[REMOTE_CH_SWC]=2000u;
+    r.rc_data.channel[REMOTE_CH_RIGHT_Y]=2000u;
+    drive_source_update(&s,&r,true,false);
+    assert(s.release_seen && !s.manual_armed);
+    r.rc_data.channel[REMOTE_CH_RIGHT_Y]=1500u;
+    drive_source_update(&s,&r,true,true);
+    assert(s.manual_armed);
     r.rc_data.channel[REMOTE_CH_SWD] = 1000u; r.manual_request = false;
     drive_source_update(&s, &r, true, true);
     r.rc_data.channel[REMOTE_CH_SWD] = 2000u; r.manual_request = true;

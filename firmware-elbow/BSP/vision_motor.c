@@ -26,6 +26,17 @@ static volatile uint32_t last_frame;
 /* 收到区域指令后锁定本次电机，完成打击和返回后再处理下一轮。 */
 volatile uint8_t Vision_MotorRegion;
 volatile uint8_t Vision_MotorPhase;
+volatile uint8_t Vision_MotorResult;
+volatile uint8_t Vision_HomeConfirmed;
+volatile uint8_t Vision_FaultMotor, Vision_FaultPhase;
+volatile int32_t Vision_FaultProgress, Vision_FaultTarget;
+static volatile uint8_t position_target_reached;
+volatile int32_t Vision_MotorProgress, Vision_ExtendTarget, Vision_RetractTarget;
+static const int32_t full_stroke[4] = {ELBOW_STROKE_A_COUNTS, ELBOW_STROKE_B_COUNTS,
+    ELBOW_STROKE_C_COUNTS, ELBOW_STROKE_D_COUNTS};
+static int32_t motor_home[4], last_position;
+static uint32_t last_motion_ms;
+static uint32_t motor_pwm = VISION_MOTOR_PWM;
 /* 数组下标是视觉区域，数组值是电机编号。0无目标，1区=B，2区=D，3区=C，4区=A。 */
 static const uint8_t region_to_motor[5] = {0, 2, 4, 3, 1};
 static uint32_t phase_started;
@@ -61,7 +72,7 @@ static void Region1_Motor_Control(uint8_t striking)
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_2, GPIO_PIN_RESET); // 返回，PC2 输出低。
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_3, GPIO_PIN_SET);   // 返回，PC3 输出高。
     }
-    TIM1->CCR2 = VISION_MOTOR_PWM; // 给 B 电机输出设定的占空比。
+    TIM1->CCR2 = motor_pwm;
 }
 
 /* 第2区 → DOUT / D电机
@@ -80,7 +91,7 @@ static void Region2_Motor_Control(uint8_t striking)
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_3, GPIO_PIN_SET);   // 返回，PD3 输出高。
         HAL_GPIO_WritePin(GPIOD, GPIO_PIN_5, GPIO_PIN_RESET); // 返回，PD5 输出低。
     }
-    TIM1->CCR4 = VISION_MOTOR_PWM; // 给 D 电机输出设定的占空比。
+    TIM1->CCR4 = motor_pwm;
 }
 
 /* 第3区 → COUT / C电机
@@ -99,7 +110,7 @@ static void Region3_Motor_Control(uint8_t striking)
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_4, GPIO_PIN_SET);   // 返回，PC4 输出高。
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_5, GPIO_PIN_RESET); // 返回，PC5 输出低。
     }
-    TIM1->CCR3 = VISION_MOTOR_PWM; // 给 C 电机输出设定的占空比。
+    TIM1->CCR3 = motor_pwm;
 }
 
 /* 第4区 → AOUT / A电机
@@ -118,7 +129,7 @@ static void Region4_Motor_Control(uint8_t striking)
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0, GPIO_PIN_RESET); // 返回，PC0 输出低。
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);   // 返回，PC1 输出高。
     }
-    TIM1->CCR1 = VISION_MOTOR_PWM; // 给 A 电机输出设定的占空比。
+    TIM1->CCR1 = motor_pwm;
 }
 
 /* motor_id 是电机编号，1=A、2=B、3=C、4=D。
@@ -139,6 +150,15 @@ static void Motor_Run(uint8_t motor_id, uint8_t striking)
 
 void Vision_Motor_Init(void)
 {
+    uint8_t motor;
+    for (motor = 0; motor < 4; motor++) motor_home[motor] = Encoder_Position[motor];
+    motor_pwm = VISION_MOTOR_PWM;
+    Vision_MotorResult = 0;
+    Vision_HomeConfirmed = 0;
+    Vision_FaultMotor = Vision_FaultPhase = 0;
+    Vision_FaultProgress = Vision_FaultTarget = 0;
+    position_target_reached = 0;
+    Vision_MotorProgress = Vision_ExtendTarget = Vision_RetractTarget = 0;
     used = received = pending_region = 0;
     pending_dx = Vision_TreeDX = 9999;
     Vision_Region = Vision_Online = 0;
@@ -203,7 +223,78 @@ void Vision_Motor_Receive(const uint8_t *data, uint16_t size)
 
 void Vision_Motor_RxError(void)
 {
-    used = received = 0;
+    /* 丢弃出错的半帧，上一条完整合法帧按原时间戳超时。
+     * 单次串口错误不撤销在线状态，也不延长合法帧的有效期。 */
+    used = 0;
+}
+
+/* 模式2按手动标定行程闭环。到软限位即停止，反馈异常立即撤销输出。 */
+static uint8_t position_step(uint32_t now)
+{
+    uint8_t index = Vision_MotorRegion - 1U;
+    int32_t position = Encoder_Position[index];
+    int32_t delta = (int32_t)((uint32_t)position - (uint32_t)motor_home[index]);
+    int32_t stroke = full_stroke[index];
+    int32_t magnitude = stroke < 0 ? -stroke : stroke;
+    int32_t progress = stroke < 0 ? -delta : delta;
+    int32_t movement = (int32_t)((uint32_t)position - (uint32_t)last_position);
+    int32_t remaining = Vision_MotorPhase == 1 ? Vision_ExtendTarget - progress :
+        progress - Vision_RetractTarget;
+    uint32_t pwm;
+    Vision_MotorProgress = progress;
+    if (movement >= 2 || movement <= -2)
+    {
+        last_position = position;
+        last_motion_ms = now;
+    }
+    if (progress < -8) Vision_MotorResult = STATION_RESULT_ENCODER_DIRECTION;
+    if (progress > magnitude * 95 / 100 ||
+        (Vision_MotorPhase == 3 && progress < magnitude * 5 / 100))
+        Vision_MotorResult = STATION_RESULT_ENCODER_LIMIT;
+    if (remaining <= 0 && !Vision_MotorResult) return 1;
+    if (!Vision_MotorResult && (uint32_t)(now - phase_started) >= ELBOW_POSITION_TIMEOUT_MS)
+        Vision_MotorResult = STATION_RESULT_ENCODER_TIMEOUT;
+    if (!Vision_MotorResult && (uint32_t)(now - last_motion_ms) >= ELBOW_POSITION_STALL_MS)
+        Vision_MotorResult = STATION_RESULT_ENCODER_STALL;
+    if (Vision_MotorResult)
+    {
+        Vision_FaultMotor = Vision_MotorRegion;
+        Vision_FaultPhase = Vision_MotorPhase;
+        Vision_FaultProgress = progress;
+        Vision_FaultTarget = Vision_MotorPhase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
+        Motor_Stop();
+        Vision_HomeConfirmed = 0;
+        Vision_MotorRegion = Vision_MotorPhase = 0;
+        return 0;
+    }
+    pwm = Vision_MotorPhase == 1 ? ELBOW_POSITION_PWM : ELBOW_POSITION_RETURN_PWM;
+    if (remaining <= magnitude * (int32_t)ELBOW_POSITION_SLOW_ZONE_PERCENT / 100)
+        pwm = ELBOW_POSITION_SLOW_PWM;
+    if (pwm != motor_pwm)
+    {
+        motor_pwm = pwm;
+        Motor_Run(Vision_MotorRegion, Vision_MotorPhase == 1);
+    }
+    return 0;
+}
+
+/* TIM5 updates the encoders every 10 ms. Cut PWM at the target even while
+ * the main loop is transferring an OLED page. Both callers serialize here. */
+void Vision_Motor_EncoderTick(void)
+{
+    uint32_t key;
+    if (ELBOW_TEST_MODE != 2) return;
+    key = __get_PRIMASK();
+    __disable_irq();
+    if ((Vision_MotorPhase == 1 || Vision_MotorPhase == 3) && !position_target_reached)
+    {
+        if (position_step(HAL_GetTick()))
+        {
+            position_target_reached = 1;
+            Motor_Stop();
+        }
+    }
+    __set_PRIMASK(key);
 }
 
 void Vision_Motor_Task(void)
@@ -222,10 +313,11 @@ void Vision_Motor_Task(void)
     timestamp = last_frame;
     frame_count = Vision_FrameCount;
     now = HAL_GetTick();
+    Vision_Motor_EncoderTick();
     __set_PRIMASK(primask);
     if (!valid || (uint32_t)(now - timestamp) >= VISION_TIMEOUT_MS)
     {
-        /* 超过 500 ms 无合法视觉帧，对外显示离线并清除当前目标/树位置。 */
+        /* 连续无合法帧达到超时阈值，对外显示离线并清除当前目标/树位置。 */
         region = 0;
         dx = 9999;
         valid = 0;
@@ -235,7 +327,13 @@ void Vision_Motor_Task(void)
     Vision_TreeDX = dx;
     Vision_Online = valid;
 
-    Work_Control_Task(now, frame_count); /* 先检查是否允许开始新的肘击。 */
+    if (ELBOW_TEST_MODE == 3)
+    {
+        Motor_Stop();
+        Vision_MotorRegion = Vision_MotorPhase = 0;
+    }
+    else
+        Work_Control_Task(now, frame_count); /* 先检查是否允许开始新的肘击。 */
     now = HAL_GetTick();
 
     /* 使用时间差推进动作，主循环无需停下来等待 600 ms。
@@ -248,7 +346,7 @@ void Vision_Motor_Task(void)
         break;
     case 1:
         /* 打击达到设定时间，先关 PWM，再进入换向停顿。 */
-        if ((uint32_t)(now - phase_started) >= VISION_CW_MS)
+        if (ELBOW_TEST_MODE == 2 ? position_target_reached : (uint32_t)(now - phase_started) >= VISION_CW_MS)
         {
             Motor_Stop();
             phase_started = now;
@@ -258,8 +356,12 @@ void Vision_Motor_Task(void)
     case 2: /* 换向前停止 PWM，等待设定的间隔，再开始返回。 */
         if ((uint32_t)(now - phase_started) >= VISION_REVERSE_PAUSE_MS)
         {
+            position_target_reached = 0;
+            if (ELBOW_TEST_MODE == 2) motor_pwm = ELBOW_POSITION_RETURN_PWM;
             Motor_Run(Vision_MotorRegion, 0);
             phase_started = now;
+            last_motion_ms = now;
+            last_position = Encoder_Position[Vision_MotorRegion - 1U];
             Vision_MotorPhase = 3;
         }
         break;
@@ -267,7 +369,7 @@ void Vision_Motor_Task(void)
         /* 返回达到设定时间，关 PWM 并记录返回计时结束时刻。
          * 这里依据时间推定返回结束，机构没有回位开关确认。
          */
-        if ((uint32_t)(now - phase_started) >= VISION_CCW_MS)
+        if (ELBOW_TEST_MODE == 2 ? position_target_reached : (uint32_t)(now - phase_started) >= VISION_CCW_MS)
         {
             Motor_Stop();
             Vision_MotorRegion = 0;
@@ -293,11 +395,45 @@ void Vision_Motor_Task(void)
  */
 uint8_t Vision_Motor_Start(uint8_t region)
 {
-    if (Vision_MotorPhase || region < 1 || region > 4) return 0;
+    if (ELBOW_TEST_MODE == 3 || Vision_MotorPhase || region < 1 || region > 4) return 0;
+    if (ELBOW_TEST_MODE == 2 && !Vision_HomeConfirmed) return 0;
     Vision_MotorRegion = region_to_motor[region];
+    position_target_reached = 0;
+    Vision_MotorResult = 0;
+    if (ELBOW_TEST_MODE == 2)
+    {
+        int32_t stroke = full_stroke[Vision_MotorRegion - 1U];
+        int32_t magnitude = stroke < 0 ? -stroke : stroke;
+        int32_t delta = (int32_t)((uint32_t)Encoder_Position[Vision_MotorRegion - 1U] -
+            (uint32_t)motor_home[Vision_MotorRegion - 1U]);
+        int32_t progress = stroke < 0 ? -delta : delta;
+        Vision_ExtendTarget = magnitude * (100U - ELBOW_STROKE_MARGIN_PERCENT) / 100U;
+        Vision_RetractTarget = magnitude * ELBOW_STROKE_MARGIN_PERCENT / 100U;
+        if(progress < -8 || progress > Vision_ExtendTarget) {
+            Vision_MotorResult=progress < -8 ? STATION_RESULT_ENCODER_DIRECTION : STATION_RESULT_ENCODER_LIMIT;
+            Vision_FaultMotor=Vision_MotorRegion;Vision_FaultPhase=1;
+            Vision_FaultProgress=progress;Vision_FaultTarget=Vision_ExtendTarget;
+            Vision_HomeConfirmed=0;Vision_MotorRegion=0;
+            return 0;
+        }
+        motor_pwm = ELBOW_POSITION_PWM;
+        last_position = Encoder_Position[Vision_MotorRegion - 1U];
+        last_motion_ms = HAL_GetTick();
+    }
+    else motor_pwm = VISION_MOTOR_PWM;
     phase_started = HAL_GetTick();
     Motor_Run(Vision_MotorRegion, 1);
     Vision_MotorPhase = 1;
+    return 1;
+}
+
+uint8_t Vision_Motor_ConfirmHome(void)
+{
+    uint8_t motor;
+    if (Vision_MotorPhase) return 0;
+    for (motor = 0; motor < 4; motor++) motor_home[motor] = Encoder_Position[motor];
+    Vision_HomeConfirmed = 1;
+    Vision_MotorResult = 0;
     return 1;
 }
 

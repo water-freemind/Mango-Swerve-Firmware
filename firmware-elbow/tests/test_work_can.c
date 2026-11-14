@@ -12,6 +12,7 @@
 #include <string.h>
 
 FakeTimer timer;
+volatile int32_t Encoder_Position[4];
 GPIO_TypeDef portc, portd;
 CAN_HandleTypeDef hcan2;
 FDCAN_HandleTypeDef hfdcan1, hfdcan2, hfdcan3;
@@ -19,6 +20,7 @@ FDCAN_GlobalTypeDef g_fake_can_regs[3];
 static uint32_t now_ms, last_camera, last_tx_time;
 static unsigned pins_c, pins_d, starts, last_phase;
 static int raw_rpm, wheel_enabled, drop_requests, drop_replies, drop_go;
+static int freeze_encoder;
 static Can3EndpointCallback request_callback;
 static STM32HalCanRxCallback wheel_callback;
 static uint8_t reply_queue[32][8];
@@ -105,13 +107,25 @@ static void emit_wheels(void) {
         wheel_callback(&hfdcan2, &header, data, NULL);
     }
 }
+static void advance_encoders(unsigned period) {
+    if (freeze_encoder || ELBOW_TEST_MODE != 2 || !Vision_MotorRegion ||
+        (Vision_MotorPhase != 1 && Vision_MotorPhase != 3)) return;
+    const int signs[4] = {1, 1, -1, -1};
+    const unsigned pwm[4] = {timer.CCR1, timer.CCR2, timer.CCR3, timer.CCR4};
+    unsigned index = Vision_MotorRegion - 1u;
+    int increment = (int)(pwm[index] * period / 5u) * signs[index];
+    if (Vision_MotorPhase == 3) increment = -increment;
+    Encoder_Position[index] = (int32_t)((uint32_t)Encoder_Position[index] + (uint32_t)increment);
+}
 static void run(unsigned duration, unsigned region, int dx, int camera) {
     unsigned t;
     char report[40];
     for(t = 0; t < duration; t += 10) {
+        advance_encoders(10u);
         now_ms += 10;
         if(camera && (uint32_t)(now_ms - last_camera) >= 50) {
-            int len = snprintf(report, sizeof(report), "$VIS,%u,%d\r\n", region, dx);
+            int len = snprintf(report, sizeof(report), "$VIS,%u,%d\r\n", region,
+                dx == 9999 ? 9999 : dx + WORK_DX_CENTER);
             Vision_Motor_Receive((const uint8_t*)report, (uint16_t)len);
             last_camera = now_ms;
         }
@@ -134,6 +148,7 @@ static void reset_at(uint32_t tick) {
     raw_rpm = drop_requests = drop_replies = drop_go = 0;
     wheel_enabled = 1;
     memset(&timer, 0, sizeof(timer));
+    memset((void *)Encoder_Position, 0, sizeof(Encoder_Position));
     assert(work_link_init());
     Vision_Motor_Init();
     CAN_Test_Init();
@@ -219,7 +234,7 @@ static void test_faults(void) {
     reset_at(0); approach();
     run(200, 1, 20, 1);
     assert(Vision_WorkState == VISION_WORK_CHECK);
-    run(2500, 0, 9999, 0);
+    run(VISION_TIMEOUT_MS + WORK_VISION_WAIT_MS + 100U, 0, 9999, 0);
     assert(Vision_WorkState == VISION_WORK_FAULT && g_work_link.hold);
     reset_at(0); start_action();
     CAN_Test_Init(); Vision_Motor_Init();
@@ -319,9 +334,11 @@ static void run_standalone(uint32_t duration, uint8_t region, int dx, int camera
     uint32_t start = now_ms;
     while ((uint32_t)(now_ms - start) < duration) {
         char frame[32];
+        advance_encoders(10u);
         now_ms += 10;
         if (camera && (uint32_t)(now_ms - last_camera) >= 100) {
-            int size = snprintf(frame, sizeof(frame), "$VIS,%u,%d\r\n", region, dx);
+            int size = snprintf(frame, sizeof(frame), "$VIS,%u,%d\r\n", region,
+                dx == 9999 ? 9999 : dx + WORK_DX_CENTER);
             Vision_Motor_Receive((const uint8_t*)frame, (uint16_t)size);
             last_camera = now_ms;
         }
@@ -338,6 +355,7 @@ static void test_standalone(void) {
     last_camera = now_ms - 100;
     starts = last_phase = queue_read = queue_write = 0;
     memset(&timer, 0, sizeof(timer));
+    memset((void *)Encoder_Position, 0, sizeof(Encoder_Position));
     Vision_Motor_Init();
     CAN_Test_Init();
     assert(Vision_WorkState == VISION_WORK_TEST);
@@ -361,7 +379,7 @@ static void test_standalone(void) {
     run_standalone(3000, 1, 9999, 1);
     run_standalone(350, 2, 1200, 1);
     assert(starts == 3 && Vision_MotorRegion == 4); /* Different region, any dx. */
-    run_standalone(2000, 2, 1200, 0);
+    run_standalone(VISION_TIMEOUT_MS + 100U, 2, 1200, 0);
     assert(Vision_MotorPhase == 0 && !Vision_Online);
     run_standalone(700, 0, 9999, 1);
     run_standalone(350, 3, 0, 1);
@@ -378,9 +396,11 @@ static void run_station_period(unsigned duration, unsigned region, int dx, int c
     unsigned elapsed;
     for(elapsed = 0; elapsed < duration; elapsed += period) {
         char report[40];
+        advance_encoders(period);
         now_ms += period;
         if(camera && (uint32_t)(now_ms - last_camera) >= 50u) {
-            int size = snprintf(report, sizeof(report), "$VIS,%u,%d\r\n", region, dx);
+            int size = snprintf(report, sizeof(report), "$VIS,%u,%d\r\n", region,
+                dx == 9999 ? 9999 : dx + WORK_DX_CENTER);
             Vision_Motor_Receive((const uint8_t*)report, (uint16_t)size);
             last_camera = now_ms;
         }
@@ -402,16 +422,19 @@ static void run_station(unsigned duration, unsigned region, int dx, int camera,
     run_station_period(duration, region, dx, camera, healthy, stationary, 10u);
 }
 static void reset_station(uint32_t tick) {
+    freeze_encoder = 0;
     now_ms = tick;
     last_camera = tick - 100u;
     queue_read = queue_write = starts = last_phase = 0u;
     pins_c = pins_d = drop_requests = drop_replies = drop_go = 0;
     memset(&timer, 0, sizeof(timer));
+    memset((void *)Encoder_Position, 0, sizeof(Encoder_Position));
     Vision_Motor_Init();
     CAN_Test_Init();
     assert(work_link_init());
     assert(station_work_init());
-    run_station(150, 0, 9999, 1, 1, 1);
+    assert(station_work_confirm_home(true));
+    run_station(300, 0, 9999, 1, 1, 1);
     assert(station_work_ready());
 }
 static void request_station(unsigned station, unsigned region) {
@@ -422,7 +445,9 @@ static void request_station(unsigned station, unsigned region) {
     assert(g_station_work.stop_requested && Vision_MotorPhase == 0);
     assert(!station_work_start(now_ms, false));
     run_station(150, region, 20, 1, 1, 1);
-    assert(Vision_MotorPhase == 0);
+    assert(station_work_align(now_ms, true));
+    run_station(450, region, 0, 1, 1, 1);
+    assert(g_station_work.aligned && Vision_MotorPhase == 0);
     assert(station_work_start(now_ms, true));
 }
 static void test_station_inflight_ready(void) {
@@ -457,6 +482,47 @@ static void test_station_inflight_ready(void) {
            g_station_work.result == WORK_RESULT_LINK);
     puts("STATION_INFLIGHT_READY_OK idle_reply_no_refresh acknowledged_reset_and_timeout_faults");
 }
+static void test_alignment_hysteresis_and_encoder_fault(void) {
+    reset_station(0);
+    assert(station_work_confirm_home(true));
+    Can3Frame old_ready = {.id=WORK_CAN_REQUEST_ID,.len=8,.rx_ms=now_ms};
+    WorkCanPacket ready_packet = {0,STATION_READY,0,WORK_RESULT_OK};
+    station_can_encode(old_ready.data,ready_packet);
+    assert(request_callback(&old_ready,NULL));
+    station_work_process(now_ms,true,true);
+    assert(g_station_work.home_pending && g_station_work.phase==STATION_LINK_SYNC);
+    run_station(400,0,0,1,1,1);
+    assert(station_work_ready());
+    assert(station_work_begin(1, now_ms));
+    run_station(100, 1, 80, 1, 1, 1);
+    assert(station_work_align(now_ms, true));
+    run_station(500, 1, 50, 1, 1, 1);
+    assert(g_station_work.align_direction == 1 && !g_station_work.aligned);
+    run_station(500, 1, 50, 0, 1, 1);
+    assert(Vision_Online && g_station_work.online && !station_work_alignment_fresh(now_ms));
+    assert(!station_work_start(now_ms, true));
+    run_station(500, 1, 0, 1, 1, 1);
+    assert(g_station_work.aligned && !g_station_work.align_direction);
+    run_station(500, 1, 20, 1, 1, 1);
+    assert(g_station_work.aligned && !g_station_work.align_direction);
+    run_station(100, 1, 26, 1, 1, 1);
+    assert(!g_station_work.aligned && g_station_work.align_direction == 1);
+    run_station(100, 1, -26, 1, 1, 1);
+    assert(g_station_work.align_direction == -1);
+    assert(!station_work_confirm_home(true));
+    reset_station(0);
+    request_station(1, 1);
+    freeze_encoder = 1;
+    run_station(1000, 1, 0, 1, 1, 1);
+    assert(Vision_MotorResult && !Vision_HomeConfirmed && !Vision_MotorPhase);
+    assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.hold && !g_station_work.returned);
+    assert(!station_work_reset(true));
+    assert(station_work_confirm_home(true));
+    run_station(400, 0, 0, 1, 1, 1);
+    assert(station_work_ready() && Vision_HomeConfirmed && !g_station_work.hold);
+    puts("ALIGNMENT_ENCODER_FAULT_OK 15_25px_hysteresis_fresh_source_required_stall_hold_manual_home_recovery");
+}
+
 static void test_station_sequence(void) {
     unsigned station;
     reset_station(UINT32_MAX - 300u);
@@ -467,7 +533,7 @@ static void test_station_sequence(void) {
         run_station(600, region, 20, 1, 1, 1);
         assert(starts == before + 1u && g_station_work.hold);
         drop_go = 2;
-        run_station(3000, 0, 9999, 1, 1, 1);
+        run_station(3000, 0, 0, 1, 1, 1);
         assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
         assert(g_station_work.station == station && Vision_MotorPhase == 0);
         run_station(400, region, 20, 1, 1, 1);
@@ -495,7 +561,7 @@ static void test_station_faults(void) {
     assert(station_work_ready());
     request_station(2, 2);
     run_station(600, 2, 20, 1, 1, 1);
-    run_station(600, 2, 20, 0, 1, 1);
+    run_station(VISION_TIMEOUT_MS + 100U, 2, 20, 0, 1, 1);
     assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.hold);
     reset_station(0);
     request_station(3, 3);
@@ -558,7 +624,7 @@ static void test_station_laser_without_camera(void) {
     uint16_t distance;
     unsigned channel, iteration;
     reset_station(UINT32_MAX - 300u);
-    run_station(600, 0, 9999, 0, 1, 1);
+    run_station(VISION_TIMEOUT_MS + 100U, 0, 9999, 0, 1, 1);
     assert(!Vision_Online && !station_work_ready());
     assert(!station_work_begin(1, now_ms));
     laser_header = (CAN_RxHeaderTypeDef){0};
@@ -590,10 +656,42 @@ static void test_station_laser_without_camera(void) {
     puts("STATION_CAMERA_OFF_LASER_REFRESH_TIMEOUT_RECOVERY_NO_FALSE_READY_OK");
 }
 
+static void test_station_transient_camera_off(void) {
+    for(unsigned wrap = 0; wrap < 2u; ++wrap) {
+        reset_station(wrap ? UINT32_MAX - 600u : 0u);
+        uint32_t frames = Vision_FrameCount;
+        run_station(1000, 0, 9999, 0, 1, 0);
+        assert(Vision_Online && station_work_ready() && !g_station_work.hold);
+        assert(Vision_FrameCount == frames);
+        assert(station_work_begin(1, now_ms));
+        Vision_Motor_RxError();
+        run_station(400, 1, 20, 0, 1, 0);
+        assert(Vision_Online && g_station_work.phase == STATION_LINK_APPROACH);
+        assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
+        assert(!g_station_work.hold && starts == 0);
+        run_station(400, 1, 20, 1, 1, 0);
+        assert(g_station_work.stop_requested && starts == 0);
+        run_station(150, 1, 20, 1, 1, 1);
+        assert(station_work_align(now_ms, true));
+        run_station(450, 1, 0, 1, 1, 1);
+        assert(station_work_start(now_ms, true));
+        run_station(450, 1, 20, 1, 1, 1);
+        assert(starts == 1);
+        frames = Vision_FrameCount;
+        run_station(1000, 2, 20, 0, 1, 1);
+        assert(Vision_Online && g_station_work.phase == STATION_LINK_WORKING);
+        assert(g_station_work.hold && starts == 1 && Vision_FrameCount == frames);
+        run_station(1800, 0, 0, 1, 1, 1);
+        assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
+        assert(starts == 1);
+    }
+    puts("STATION_SHORT_CAMERA_OFF_FILTER_OK driving_new_task_action_no_wait_no_stale_action_wrap");
+}
+
 static void test_station_empty_and_limits(void) {
     reset_station(0);
     request_station(1, 0);
-    run_station(1500, 0, 9999, 1, 1, 1);
+    run_station(1500, 0, 0, 1, 1, 1);
     assert(g_station_work.phase == STATION_LINK_DONE && starts == 0);
     reset_station(0);
     request_station(2, 1);
@@ -606,17 +704,14 @@ static void test_station_empty_and_limits(void) {
 static void test_station_four_regions_scheduled(void) {
     unsigned completed = 0u, started;
     reset_station(0);
-    assert(station_work_begin(1, now_ms));
-    /* Production page transfer is ~19ms; allow another 6ms of loop work. */
-    run_station_period(400, 1, 20, 1, 1, 1, 25u);
-    assert(g_station_work.stop_requested && station_work_start(now_ms, true));
+    request_station(1, 1);
     started = now_ms;
-    while ((uint32_t)(now_ms - started) < 10000u &&
+    while ((uint32_t)(now_ms - started) < 20000u &&
            g_station_work.phase != STATION_LINK_DONE &&
            g_station_work.phase != STATION_LINK_FAULT) {
         if (!Vision_MotorPhase && starts > completed) completed = starts;
         run_station_period(25, completed < 4u ? completed + 1u : 0u,
-            completed < 4u ? 20 : 9999, 1, 1, 1, 25u);
+            0, 1, 1, 1, 25u);
     }
     assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
     assert(starts == 4u && Vision_MotorPhase == 0);
@@ -624,15 +719,59 @@ static void test_station_four_regions_scheduled(void) {
         starts, (unsigned long)(now_ms - started));
 }
 
+static void test_encoder_diagnostic_mailbox(void) {
+    Can3Frame frame = {.len=8};
+    WorkCanPacket packet = {0, STATION_READY, 0, 0};
+    reset_station(0);
+    const uint32_t rx_count=g_station_work.rx_count;
+    frame.rx_ms=now_ms;
+    station_can_encode(frame.data,packet);
+    assert(request_callback(&frame,NULL));
+    packet=(WorkCanPacket){(uint32_t)(uint16_t)-20 | ((uint32_t)3479 << 16),
+        STATION_ENCODER_DIAG,2u | (1u << 3),STATION_RESULT_ENCODER_DIRECTION};
+    station_can_encode(frame.data,packet);
+    assert(request_callback(&frame,NULL));
+    station_work_process(now_ms,true,true);
+    assert(g_station_work.rx_count==rx_count+1u);
+    assert(g_station_work.encoder_motor==2u && g_station_work.encoder_phase==1u);
+    assert(g_station_work.encoder_progress==-20 && g_station_work.encoder_target==3479);
+    assert(g_station_work.encoder_result==STATION_RESULT_ENCODER_DIRECTION);
+    for(unsigned i=0;i<6u;i++) {
+        now_ms+=100u;frame.rx_ms=now_ms;
+        assert(request_callback(&frame,NULL));
+        station_work_process(now_ms,true,true);
+    }
+    assert(!g_station_work.online && g_station_work.rx_count==rx_count+1u);
+    assert(g_station_work.encoder_rx_count==7u);
+    const uint32_t diagnostic_count=g_station_work.encoder_rx_count;
+    now_ms+=WORK_CAN_TIMEOUT_MS;
+    assert(request_callback(&frame,NULL));
+    station_work_process(now_ms,true,true);
+    assert(g_station_work.encoder_rx_count==diagnostic_count);
+    puts("ENCODER_DIAGNOSTIC_OK signed_snapshot_independent_mailbox_no_business_watchdog_refresh_stale_rejected");
+}
+
 int main(void) {
     setbuf(stdout, NULL);
+    if (ELBOW_TEST_MODE == 3) {
+        Vision_Motor_Init();
+        CAN_Test_Init();
+        run_standalone(1500, 1, -35, 1);
+        assert(!Vision_MotorPhase && !CAN_Test_TxCount);
+        assert(!timer.CCR1 && !timer.CCR2 && !timer.CCR3 && !timer.CCR4);
+        puts("MANUAL_ENCODER_MODE_CAN_OK no_work_requests_or_motor_outputs");
+        return 0;
+    }
     if (ELBOW_TEST_MODE == 2) {
+        test_encoder_diagnostic_mailbox();
         test_station_inflight_ready();
+        test_alignment_hysteresis_and_encoder_fault();
         test_station_sequence();
         test_station_faults();
         test_station_replay_and_release_gate();
         test_station_empty_and_limits();
         test_station_laser_without_camera();
+        test_station_transient_camera_off();
         test_station_four_regions_scheduled();
     } else if (ELBOW_TEST_MODE == 1) {
         test_standalone();

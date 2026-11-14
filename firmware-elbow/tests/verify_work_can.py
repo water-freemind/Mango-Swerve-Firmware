@@ -32,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix="work_can_", dir=root / "tests") as dire
         root / "BSP/work_control.c", root / "BSP/can_test.c",
         chassis / "src/service/work_link.c", chassis / "src/service/station_work.c",
     ]
-    for mode in (0, 1, 2):
+    for mode in (0, 1, 2, 3):
         subprocess.run([
             compiler, "-DELBOW_TEST_MODE=" + str(mode),
             *(["-DAPP_RUN_MODE=6", "-DWORK_STATION_ENABLED=1"] if mode == 2 else []), "-std=c11", "-Wall", "-Wextra", "-Werror", "-DTEST_CAN_HAL",
