@@ -17,6 +17,8 @@ static WorkCanPacket request, reply; /* request 是待发送请求，reply 是�
  */
 static uint8_t ready, have_reply, dirty, tx_pending;
 static uint32_t last_tx, last_rx, mailbox, pending_since;
+static uint32_t last_encoder_tx;
+static uint8_t last_encoder_result;
 static uint16_t laser_mm[4]; /* 左、右、后、前的原始毫米值，主循环收帧后更新。 */
 static uint32_t laser_rx_ms;
 static uint8_t laser_received;
@@ -28,6 +30,41 @@ static void record_error(uint8_t state)
     CAN_Test_ErrorCount++;
     CAN_Test_LastHalError = HAL_CAN_GetError(&hcan2);
 }
+static void send_encoder_diagnostic(uint32_t now)
+{
+    CAN_TxHeaderTypeDef header = {0};
+    WorkCanPacket packet;
+    uint8_t data[8], motor, phase, result;
+    int32_t progress, target;
+    uint32_t key, encoder_mailbox;
+    if (ELBOW_TEST_MODE != 2 || HAL_CAN_GetTxMailboxesFreeLevel(&hcan2) < 2U) return;
+    key = __get_PRIMASK();
+    __disable_irq();
+    result = Vision_MotorResult;
+    motor = result ? Vision_FaultMotor : Vision_MotorRegion;
+    phase = result ? Vision_FaultPhase : Vision_MotorPhase;
+    progress = result ? Vision_FaultProgress : Vision_MotorProgress;
+    target = result ? Vision_FaultTarget : phase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
+    __set_PRIMASK(key);
+    if (!motor || (phase != 1 && phase != 3) ||
+        ((uint32_t)(now - last_encoder_tx) < WORK_CAN_PERIOD_MS && result == last_encoder_result)) return;
+    if (progress > 32767) progress = 32767;
+    if (progress < -32768) progress = -32768;
+    packet.task = (uint32_t)(uint16_t)progress | ((uint32_t)(uint16_t)target << 16);
+    packet.state = STATION_ENCODER_DIAG;
+    packet.region = (uint8_t)(motor | (phase << 3));
+    packet.result = result;
+    station_can_encode(data, packet);
+    header.StdId = WORK_CAN_REQUEST_ID;
+    header.IDE = CAN_ID_STD; header.RTR = CAN_RTR_DATA; header.DLC = 8;
+    header.TransmitGlobalTime = DISABLE;
+    if (HAL_CAN_AddTxMessage(&hcan2, &header, data, &encoder_mailbox) == HAL_OK)
+    {
+        last_encoder_tx = now;
+        last_encoder_result = result;
+        CAN_Test_TxCount++;
+    }
+}
 
 void CAN_Test_Init(void)
 {
@@ -35,6 +72,7 @@ void CAN_Test_Init(void)
     ready = have_reply = tx_pending = 0;
     dirty = 1;
     last_tx = last_rx = 0;
+    last_encoder_tx = 0; last_encoder_result = 0;
     CAN_Test_TxCount = CAN_Test_RxCount = CAN_Test_ErrorCount = 0;
     CAN_Test_LastHalError = 0;
     CAN_Test_State = 0;
@@ -156,7 +194,7 @@ void CAN_Test_Task(void)
         {
             if (!station_can_decode(data, &packet) || station_can_is_reply(packet.state))
                 continue;
-            if (packet.state == STATION_SYNC)
+            if (packet.state == STATION_SYNC || packet.state == STATION_HOME)
             {
                 if (packet.task || packet.region) continue;
             }
@@ -211,7 +249,8 @@ void CAN_Test_Task(void)
      * 邮箱未空时返回主循环，不在这里阻塞等待。
      */
     /* 独立测试保留激光/状态接收，收帧后返回，不向底盘发布作业请求。 */
-    if (ELBOW_TEST_MODE != 1)
+    send_encoder_diagnostic(now);
+    if (ELBOW_TEST_MODE == 0 || ELBOW_TEST_MODE == 2)
     {
         if (tx_pending || (!dirty && (uint32_t)(now - last_tx) < WORK_CAN_PERIOD_MS)) return;
         if (!HAL_CAN_GetTxMailboxesFreeLevel(&hcan2)) return;

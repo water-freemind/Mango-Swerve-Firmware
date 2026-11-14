@@ -43,7 +43,25 @@ public static class MangoStraightConsole {
             {"ORIGIN_FRONT_ANCHORED","入口起点登记成功"},
             {"ARM_NOT_READY","尚未满足准备条件；请先登记起点，检查SWC、SWD及停稳状态"},
             {"ARMED","全图已准备，请点击开始"},{"RUNNING","任务运行中"},
-            {"WORK_PEER_NOT_READY","疏果端尚未就绪；单独跑图请选择NAV模式"},
+            {"WORK_PEER_NOT_READY","疏果端未就绪，请先确认四路手动收回零位，再检查视觉在线"},
+            {"WORK_ATTEMPTS_EXHAUSTED","当前树同一区域已作业两次，复检仍有目标，保持停车"},
+            {"WORK_TREE_TIMEOUT","当前树作业超时，保持停车"},
+            {"WORK_VISION_OFFLINE","疏果视觉连续离线，保持停车"},
+            {"WORK_ALIGNMENT_LOST","疏果复检发现树位偏离对中区间，保持停车"},
+            {"WORK_CAN_TIMEOUT","疏果端CAN通信超时，保持停车"},
+            {"WORK_ENCODER_OR_FEEDBACK","肘击编码器或底盘停稳反馈异常，保持停车"},
+            {"WORK_STOP_FEEDBACK","底盘作业停稳反馈异常，保持停车"},
+            {"WORK_ENCODER_DIRECTION","肘击编码器方向异常，检查故障通道与行程读数"},
+            {"WORK_ENCODER_LIMIT","肘击编码器超出安全行程，保持停车"},
+            {"WORK_ENCODER_STALL","肘击动作期间编码器连续300毫秒无进展，保持停车"},
+            {"WORK_ENCODER_TIMEOUT","肘击动作超过6秒，保持停车"},
+            {"WORK_PEER_FAULT","疏果端故障，请查看作业结果码"},
+            {"VRB_RELEASED","VRB尚未压到使能位置，请保持VRB≤1250"},
+            {"SWD_REARM","请松杆回中，将SWD拨到1000再拨回2000"},
+            {"STICKS_NOT_CENTERED","请先松杆回中，再手动接管"},
+            {"WHEELS_MOVING","正在等待车辆停稳后手动接管"},
+            {"REMOTE_PERMIT","请检查SWA=1000、SWD=2000、VRA>1200"},
+            {"HARDWARE","底盘电机或IMU反馈尚未就绪"},
             {"RANGE_PAUSE","测距保护暂停，正在等待有效数据和停稳恢复"},
             {"NEAR_RECOVERY_WAIT","近距恢复：保持停止，等待安全退让条件"},
             {"NEAR_RECOVERY_ALIGN","近距恢复：零驱动对齐退让方向"},
@@ -63,7 +81,7 @@ public static class MangoStraightConsole {
             {"NEED_ORIGIN","请回入口对准后登记起点"},
             {"CONTROL_MODE_CHANGED","控制来源已切换，原任务结束"},
             {"RC_OFFLINE","遥控未在线，请检查遥控器和接收机"},
-            {"RC_SWITCH","遥控开关未放行；准备完成后检查SWC中位和SWD运行位"},
+            {"RC_SWITCH","遥控开关未放行，请检查SWC=1500、SWD=2000并保持摇杆回中"},
             {"HOST_NOT_SELECTED","当前未选择上位机控制，SWC应在中位1500"},
             {"NONE","正常"},{"IDLE","空闲"},
             {"CLICK_MAP_ARM_FIRST_OR_NOT_READY","请先点击准备全图并等待准备成功，再点击开始"},
@@ -109,6 +127,12 @@ public static class MangoStraightConsole {
         if(line.Contains("TEST_MAP_POSE ") && Field(line,"motion_phase")!="?")
             return "[运动指令] 前后="+Field(line,"vx")+"；横向="+Field(line,"vy")+"；旋转="+Field(line,"wz")+
                 "；阶段="+Field(line,"motion_phase")+"；预测位="+Field(line,"predicted");
+        if(line.Contains("TEST_CONTROL ") && Field(line,"source")=="MANUAL") {
+            if(Field(line,"manual_armed")=="1") return "[遥控] 手动已使能";
+            string wait=Field(line,"manual_wait");
+            if(reasons.TryGetValue(wait,out description)) return "[遥控] "+description+" ["+wait+"]";
+            return "[遥控] 手动待使能，VRB="+Field(line,"vrb_ok")+"，SWD确认="+Field(line,"release_seen");
+        }
         if(line.Contains("TEST_MAP_AISLE ") && Field(line,"active")!="?")
             return "[纠偏] 前后配对="+Field(line,"active")+"；误差毫米="+Field(line,"error_mm")+
                 "；轮向到位="+Field(line,"align")+"；速度上限="+Field(line,"limit")+
@@ -382,7 +406,7 @@ public sealed class VofaTestSession {
             mapArmed = mapAck.Groups[1].Value == "1" && mapAck.Groups[2].Value == "ARMED" &&
                 now - mapArmTime <= 1000 && UInt32.TryParse(mapAck.Groups[3].Value, out mapToken);
             mapArmTime = now;
-            report(mapArmed ? "map_arm_ready=1 next=UI_MAP_GO expires_ms=4000" : "rejected=MAP_ARM_ACK");
+            report(mapArmed ? "map_arm_ready=1 next=UI_MAP_GO expires_ms=30000" : "rejected=MAP_ARM_ACK");
         }
         Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
         if (planStatus.Success) {
@@ -463,6 +487,10 @@ public sealed class VofaTestSession {
         if (command == "UI STOP") { tx("STOP"); Clear(); mapArmed = mapAwaitingArm = false; report("stop_requested=1"); return true; }
         if (command.StartsWith("UI MAP ", StringComparison.Ordinal)) {
             string action = command.Substring(7);
+            if (action == "ELBOW HOME") {
+                if (!stopped || now - lastStatus > 500) { report("rejected=ORIGIN_NEEDS_STOPPED_FEEDBACK"); return false; }
+                tx("MAP ELBOW HOME"); return true;
+            }
             if (action == "STATUS" || action == "STOP" || action == "WORK STATUS" || action == "WORK RESET") {
                 tx("MAP " + action); if (action == "STOP") mapArmed = mapAwaitingArm = false;
                 if (action == "WORK RESET") mapArmed = mapAwaitingArm = false;
@@ -475,7 +503,7 @@ public sealed class VofaTestSession {
                 report("rejected=MAP_NEEDS_HOST_AND_NO_STRAIGHT_SESSION"); return false;
             }
             if (action == "GO") {
-                if (!mapArmed || now - mapArmTime > 4000 || !healthy || !stopped) { report("rejected=CLICK_MAP_ARM_FIRST_OR_NOT_READY"); return false; }
+                if (!mapArmed || now - mapArmTime > 30000 || !healthy || !stopped) { report("rejected=CLICK_MAP_ARM_FIRST_OR_NOT_READY"); return false; }
                 tx("MAP GO " + mapToken.ToString(CultureInfo.InvariantCulture)); mapArmed = false; return true;
             }
             if (action == "RESUME") { tx("MAP RESUME"); return true; }
@@ -490,7 +518,15 @@ public sealed class VofaTestSession {
                 tx("MAP " + action); return true;
             }
             if (action == "ARM ALL") {
-                if (!healthy || mapAwaitingArm) return false;
+                if (!healthy) {
+                    string status;
+                    cache.TryGetValue("TEST_STATUS", out status);
+                    Match blocked = Regex.Match(status ?? "", @"\bblocked=([^\s]+)");
+                    string reason = blocked.Success && blocked.Groups[1].Value != "NONE" ? blocked.Groups[1].Value : "ARM_NOT_READY";
+                    report("rejected=" + reason + " action=MAP_ARM_ALL");
+                    return false;
+                }
+                if (mapAwaitingArm) { report("rejected=MAP_ARM_ACK_PENDING"); return false; }
                 mapAwaitingArm = true; mapArmTime = now; mapArmSelection = action; tx("MAP " + action); return true;
             }
             report("rejected=UNKNOWN_MAP_COMMAND"); return false;

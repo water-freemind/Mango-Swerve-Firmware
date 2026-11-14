@@ -8,6 +8,9 @@ $messages = [Collections.Generic.List[string]]::new()
 $send = [Action[string]]{ param($s) $tx.Add($s) }
 $report = [Action[string]]{ param($s) $messages.Add($s) }
 function Assert($ok, $why) { if (!$ok) { throw $why } }
+Assert (([MangoStraightConsole]::ChineseStatus('[INFO] TEST_CONTROL source=MANUAL manual_armed=0 manual_wait=VRB_RELEASED')).Contains('VRB≤1250')) 'Manual VRB wait reason missing'
+Assert (([MangoStraightConsole]::ChineseStatus('[INFO] TEST_CONTROL source=MANUAL manual_armed=1')).Contains('手动已使能')) 'Manual enable feedback missing'
+Assert (([MangoStraightConsole]::ChineseStatus('[INFO] TEST_MAP_ACK ok=0 reason=WORK_ATTEMPTS_EXHAUSTED cmd=ARM ALL')).Contains('复检仍有目标')) 'Work attempts fault reason missing'
 $idle = '[INFO] TEST_STATUS phase=0 token=0 healthy=1 stopped=1 target_m=1.00 cmd=0.000'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 0)
@@ -177,7 +180,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 33) 'Expected 33 full-map mode and work commands'
+Assert ($items.Count -eq 34) 'Expected 34 full-map mode and work commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -191,7 +194,7 @@ foreach ($item in $items) {
     $accepted = $static.Command($command, 3010)
     if ($command.Trim() -notmatch '^UI (ARM|GO|EDGE|SPEED|ACCEL|MAP)\b') { Assert $accepted ('JSON command unsupported - ' + $command) }
 }
-Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^MAP (STATUS|STOP|WORK STATUS|WORK RESET)$' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
+Assert (@($tx | Where-Object { $_ -ne 'PING' -and $_ -ne 'STOP' -and $_ -notmatch '^MAP (STATUS|STOP|WORK STATUS|WORK RESET|ELBOW HOME)$' -and $_ -notmatch '^TRACE (START|STOP|CLEAR|DUMP)$' }).Count -eq 0) 'Static panel sent a motion command'
 $messages.Clear()
 Assert ($static.Command('UI SNAPSHOT REMOTE', 4000)) 'Stale snapshot command rejected as unknown'
 Assert ($messages[-1].Contains('UART_STATUS_STALE')) 'Stale UART data was presented as a current snapshot'
@@ -370,7 +373,7 @@ Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_AISLE active=1 frozen=0'
 Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE hold=1',30)) 'Tree log ignored map toggle'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE_EVENT hold=1',30)) 'Tree event hidden'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_CONTROL_FAULT process_code=8',30)) 'Control fault hidden'
-'VOFA_PANEL_TEST_OK (33 commands, map modes and handshake, acceleration/speeds, TRACE, UDP)'
+'VOFA_PANEL_TEST_OK (34 commands, map modes and handshake, acceleration/speeds, TRACE, UDP)'
 
 $workPanel = [VofaTestSession]::new($true,$send,$report)
 $workPanel.Observe($idle + ' control=HOST',0)
@@ -385,3 +388,13 @@ Assert ($tx[-1] -eq 'MAP WORK STATUS') 'Work query changed in bridge'
 Assert ($workPanel.Command('UI MAP WORK RESET',4)) 'Work reset rejected'
 Assert ($workPanel.ShouldForwardStatus('[INFO] TEST_WORK enabled=1 phase=2 task=1 station=12',5)) 'Work status hidden'
 'VOFA_WORK_QUERY_AND_APPROACH_PRESETS_OK'
+
+$notReadyMap = [VofaTestSession]::new($true,$send,$report)
+$notReadyMap.Observe('[INFO] TEST_STATUS phase=0 token=0 healthy=0 stopped=1 target_m=1.00 control=HOST blocked=RC_SWITCH',0)
+$notReadyMap.Observe('[INFO] TEST_MAP_STATUS proto=1 phase=READY token=0',0)
+$tx.Clear()
+Assert (!$notReadyMap.Command('UI MAP ARM ALL',1)) 'Unsafe map preparation accepted'
+Assert ($messages[-1].Contains('rejected=RC_SWITCH')) 'Missing concrete preparation rejection'
+Assert ($tx.Count -eq 0) 'Rejected preparation reached the board'
+Assert ($notReadyMap.Command('UI MAP ELBOW HOME',2)) 'Stopped manual-home confirmation rejected'
+Assert ($tx[-1] -eq 'MAP ELBOW HOME') 'Home confirmation command changed'

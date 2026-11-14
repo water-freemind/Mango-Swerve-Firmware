@@ -26,10 +26,26 @@ void drive_source_stop_manual(DriveSource* s) {
 bool drive_source_manual_vrb_ok(const RemoteState* r) {
     return r->rc_data.channel[REMOTE_CH_VRB] <= DRIVE_MANUAL_VRB_MAX;
 }
+const char* drive_source_manual_wait_reason(const DriveSource* s, const RemoteState* r,
+                                          bool healthy, bool stationary) {
+    if(!r->online) return "RC_OFFLINE";
+    if(s->mode != DRIVE_SOURCE_MANUAL) return "SELECT_MANUAL";
+    if(!r->manual_request || r->rc_data.channel[REMOTE_CH_VRA] <= REMOTE_VR_LOW_THRESHOLD)
+        return "REMOTE_PERMIT";
+    if(!healthy) return "HARDWARE";
+    if(!drive_source_manual_vrb_ok(r)) return "VRB_RELEASED";
+    if(!s->release_seen) return "SWD_REARM";
+    if(s->manual_armed) return "NONE";
+    if(!drive_source_centered(r)) return "STICKS_NOT_CENTERED";
+    if(!stationary) return "WHEELS_MOVING";
+    return "NONE";
+}
 bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, bool stationary) {
     const DriveSourceMode mode = drive_source_requested(r);
     const bool changed = s->mode != mode;
     const bool was_armed = s->manual_armed;
+    const bool was_online=s->online_seen;
+    s->online_seen=r->online;
     if(was_armed) s->recovery_pending = true;
     if(changed) {
         s->mode = mode;
@@ -64,6 +80,7 @@ bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, boo
         s->manual_armed = false;
         return changed;
     }
+    if(changed && was_online) s->release_seen=true;
     if(!s->manual_armed && s->release_seen && stationary && drive_source_centered(r)) s->manual_armed = true;
     if(s->manual_armed) s->recovery_pending = false;
     return changed;

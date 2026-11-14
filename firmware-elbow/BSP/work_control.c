@@ -31,6 +31,7 @@ static uint32_t state_since, tree_since, stable_since, empty_since, frame_floor;
 static uint32_t check_since, check_delay, moving_since, missing_since, last_frame;
 static uint8_t test_latched_region; /* 独立测试中已动作的区域，避免同一目标连续打击。 */
 static uint8_t station_number;
+static uint8_t alignment_centered, alignment_reply;
 
 /* 切换作业阶段，同时清除不能跨阶段累计的无目标/离树计数。 */
 static void change_state(uint8_t state, uint32_t now)
@@ -82,6 +83,8 @@ void Work_Control_Init(void)
     check_since = check_delay = moving_since = missing_since = last_frame = 0;
     test_latched_region = 0;
     station_number = 0;
+    alignment_centered = 0;
+    alignment_reply = STATION_TRACKING;
     memset(attempts, 0, sizeof(attempts));
 }
 
@@ -140,7 +143,8 @@ static void process_check(uint32_t now, uint32_t frame_count,
         return;
     }
     missing_timing = 0;
-    if (offset < -WORK_STOP_DX || offset > WORK_STOP_DX)
+    if (offset < -(ELBOW_TEST_MODE == 2 ? STATION_VISION_RESTART_PX : WORK_STOP_DX) ||
+        offset > (ELBOW_TEST_MODE == 2 ? STATION_VISION_RESTART_PX : WORK_STOP_DX))
     {
         /* 停稳后偏移仍超过 ±30 像素，保持故障停车，避免错位肘击。 */
         fail(WORK_RESULT_POSITION, now);
@@ -407,12 +411,23 @@ static void process_station(uint32_t now, uint32_t frame_count)
     last_frame = frame_count;
     if (paired && !have_command && Vision_WorkState != VISION_WORK_FAULT)
         fail(WORK_RESULT_LINK, now);
+    if (have_command && command.state == STATION_HOME && !command.task && !command.region)
+    {
+        if (!Vision_MotorPhase && (!Vision_WorkTask || Vision_WorkState == VISION_WORK_LEAVING ||
+            Vision_WorkState == VISION_WORK_FAULT) &&
+            Vision_Motor_ConfirmHome())
+        {
+            Work_Control_Init();
+            Work_CAN_SetRequest(STATION_HOME_READY, 0, 0, WORK_RESULT_OK);
+            return;
+        }
+    }
     if (have_command && command.state == STATION_SYNC)
     {
         if (Vision_MotorPhase || Vision_WorkState == VISION_WORK_CHECK ||
             Vision_WorkState == VISION_WORK_ACTING || Vision_WorkState == VISION_WORK_RELEASE)
             fail(WORK_RESULT_RESET, now);
-        else if (Vision_Online)
+        else if (Vision_Online && Vision_HomeConfirmed)
         {
             paired = 1;
             Vision_WorkTask = 0;
@@ -432,17 +447,35 @@ static void process_station(uint32_t now, uint32_t frame_count)
             Vision_WorkResult = WORK_RESULT_OK;
             memset(attempts, 0, sizeof(attempts));
             stable_region = stable_frames = 0;
+            alignment_centered = 0;
+            alignment_reply = STATION_TRACKING;
             change_state(VISION_WORK_IDLE, now);
         }
         else if (command.task != Vision_WorkTask || command.region != station_number)
             fail(WORK_RESULT_PROTOCOL, now);
     }
+    else if (have_command && command.state == STATION_ALIGN && paired &&
+             command.task == Vision_WorkTask && command.region == station_number &&
+             (Vision_WorkState == VISION_WORK_IDLE || Vision_WorkState == VISION_WORK_APPROACH ||
+              Vision_WorkState == VISION_WORK_WAIT_STOP))
+    {
+        stable_frames = 0;
+        alignment_centered = 0;
+        alignment_reply = STATION_TRACKING;
+        change_state(VISION_WORK_ALIGN, now);
+    }
     else if (have_command && command.state == STATION_START && paired &&
              command.task == Vision_WorkTask && command.region == station_number &&
-             Vision_WorkState == VISION_WORK_WAIT_STOP)
+             Vision_WorkState == VISION_WORK_ALIGN)
     {
-        tree_since = now;
-        begin_check(now, frame_count, 0);
+        if (!alignment_centered || alignment_reply != STATION_CENTERED || !Vision_Online ||
+            Vision_TreeDX == 9999 || offset < -STATION_VISION_RESTART_PX || offset > STATION_VISION_RESTART_PX)
+            fail(WORK_RESULT_POSITION, now);
+        else
+        {
+            tree_since = now;
+            begin_check(now, frame_count, 0);
+        }
     }
     else if (have_command && command.state == STATION_ABORT &&
              command.task == Vision_WorkTask && command.region == station_number)
@@ -456,7 +489,8 @@ static void process_station(uint32_t now, uint32_t frame_count)
         Vision_WorkState == VISION_WORK_APPROACH || Vision_WorkState == VISION_WORK_WAIT_STOP);
     if (approaching)
     {
-        if (!Vision_Online) fail(WORK_RESULT_VISION, now);
+        if (Vision_MotorResult) fail(Vision_MotorResult, now);
+        else if (!Vision_Online) fail(WORK_RESULT_VISION, now);
         else if (new_frame && Vision_TreeDX != 9999)
         {
             if (Vision_WorkState == VISION_WORK_IDLE &&
@@ -475,7 +509,8 @@ static void process_station(uint32_t now, uint32_t frame_count)
     }
     if (Vision_WorkState == VISION_WORK_CHECK || Vision_WorkState == VISION_WORK_ACTING)
     {
-        if (!Vision_Online) fail(WORK_RESULT_VISION, now);
+        if (Vision_MotorResult) fail(Vision_MotorResult, now);
+        else if (!Vision_Online) fail(WORK_RESULT_VISION, now);
         else if ((uint32_t)(now - tree_since) >= WORK_TREE_TIMEOUT_MS)
             fail(WORK_RESULT_TREE_TIMEOUT, now);
         else if (Vision_WorkState == VISION_WORK_ACTING)
@@ -484,32 +519,65 @@ static void process_station(uint32_t now, uint32_t frame_count)
         }
         else
         {
-            /* Once the chassis confirms the mapped stop, fresh image regions
-             * decide actions. Pixel dx has no chassis feedback controller. */
-            update_target(now, new_frame, Vision_Online, 0);
-            process_check(now, frame_count, new_frame, Vision_Online, 0);
+            uint8_t tree_valid = Vision_Online && Vision_TreeDX != 9999;
+            update_target(now, new_frame, tree_valid, offset);
+            process_check(now, frame_count, new_frame, tree_valid, offset);
+        }
+    }
+    if (Vision_WorkState == VISION_WORK_ALIGN)
+    {
+        if (!Vision_Online) fail(WORK_RESULT_VISION, now);
+        else if (new_frame)
+        {
+            if (Vision_TreeDX == 9999)
+            {
+                alignment_centered = stable_frames = 0;
+                alignment_reply = STATION_TRACKING;
+            }
+            else
+            {
+                int32_t error = offset < 0 ? -offset : offset;
+                if (error <= STATION_VISION_STOP_PX) alignment_centered = 1;
+                else if (error > STATION_VISION_RESTART_PX) alignment_centered = 0;
+                if (alignment_centered)
+                {
+                    if (!stable_frames) stable_since = now;
+                    if (stable_frames < 255) stable_frames++;
+                    alignment_reply = stable_frames >= 3 &&
+                        (uint32_t)(now - stable_since) >= STATION_VISION_STABLE_MS ?
+                        STATION_CENTERED : STATION_TRACKING;
+                }
+                else
+                {
+                    stable_frames = 0;
+                    alignment_reply = offset > 0 ? STATION_ALIGN_EAST : STATION_ALIGN_WEST;
+                }
+            }
         }
     }
     switch (Vision_WorkState)
     {
     case VISION_WORK_IDLE:
-        response = station_number ? STATION_TRACKING : Vision_Online ? STATION_READY : STATION_HELLO;
+        response = station_number ? STATION_TRACKING :
+            Vision_Online && Vision_HomeConfirmed ? STATION_READY : STATION_HELLO;
         break;
     case VISION_WORK_APPROACH: response = STATION_SLOW; break;
     case VISION_WORK_WAIT_STOP: response = STATION_WAIT; break;
+    case VISION_WORK_ALIGN: response = alignment_reply; break;
     case VISION_WORK_CHECK:
     case VISION_WORK_ACTING: response = STATION_WORKING; break;
     case VISION_WORK_RELEASE: response = STATION_DONE; break;
     case VISION_WORK_LEAVING: response = Vision_Online ? STATION_RELEASED : STATION_HELLO; break;
     case VISION_WORK_FAULT:
-        response = Vision_MotorPhase ? STATION_ABORTING : STATION_FAULT;
+        response = Vision_MotorPhase || Vision_MotorResult ? STATION_ABORTING : STATION_FAULT;
         break;
     default: response = STATION_HELLO; break;
     }
     if (response == STATION_HELLO)
         Work_CAN_SetRequest(response, 0, 0, WORK_RESULT_OK);
     else
-        Work_CAN_SetRequest(response, Vision_WorkTask, station_number, Vision_WorkResult);
+        Work_CAN_SetRequest(response, Vision_WorkTask, station_number,
+            station_can_is_alignment(response) ? (uint8_t)frame_count : Vision_WorkResult);
 }
 
 void Work_Control_Task(uint32_t now, uint32_t frame_count)
@@ -518,6 +586,6 @@ void Work_Control_Task(uint32_t now, uint32_t frame_count)
         process_station(now, frame_count);
     else if (ELBOW_TEST_MODE == 1)
         process_test(now, frame_count);
-    else
+    else if (ELBOW_TEST_MODE == 0)
         process_link(now, frame_count);
 }

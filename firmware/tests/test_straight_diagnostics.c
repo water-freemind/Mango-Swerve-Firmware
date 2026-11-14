@@ -12,6 +12,7 @@ uint32_t g_test_tick_ms;
 static uint32_t fake_us;
 static bool fake_online = true, fake_calibrated = true, fresh_flag;
 static bool fake_can_healthy, fake_laser_ready;
+static uint32_t fake_steer_failures, fake_drive_failures;
 static uint16_t fake_swd = 2000u, fake_vrb = 1500u;
 static uint16_t fake_swc = 1500u, fake_ry = 1500u, fake_lx = 1500u;
 static uint16_t fake_swb = 1500u, fake_rx = 1500u;
@@ -129,8 +130,8 @@ static const BusMotorInterface fake_motor = {.get_spd = fake_speed, .get_pos = f
 const BusMotorInterface* steer_motor_instance = &fake_motor;
 const BusMotorInterface* drive_motor_instance = &fake_motor;
 bool can_get_diagnostics(FDCAN_HandleTypeDef* b, STM32HalCanDiagnostics* d) {
-    (void)b;
     memset(d, fake_can_healthy ? 0 : 0xff, sizeof(*d)); /* Otherwise stress counter widths in log formats. */
+    if(fake_can_healthy) d->tx_failed_count=b==CHASSIS_STEER_CAN?fake_steer_failures:fake_drive_failures;
     return true;
 }
 bool laser_get_snapshot(LaserSnapshot* s) {
@@ -588,6 +589,56 @@ static void check_map_mode_selection(void) {
     map_work_enabled=false;
     puts("MAP_NAV_MODE_UART_TEST_OK offline_peer_does_not_block_navigation_mode_change_gates_work_mode_checks_peer");
 }
+static void check_can_manual_recovery(void) {
+    const unsigned now=200000u;
+    fake_can_healthy=fake_online=fake_calibrated=true;
+    fake_swc=2000u;fake_swd=2000u;fake_vrb=1250u;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;
+    fake_steer_failures=fake_drive_failures=0;
+    acknowledged_steer_failures=acknowledged_drive_failures=0;
+    rx_fault=tx_fault=false;
+    feedback(now);fake_us=now*1000u;update_imu_sample();
+    StraightInput in=input(now);
+    fake_steer_failures=1;
+    assert(!can_healthy());
+    blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now,in);
+    assert(can_healthy() && control_source.release_seen);
+    fake_steer_failures=2;
+    fake_vrb=1500u;
+    in=input(now+100u);blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now+100u,in);
+    assert(!can_healthy());
+    fake_swd=1000u;
+    feedback(now+100u);fake_us=(now+100u)*1000u;update_imu_sample();
+    in=input(now+100u);blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now+200u,in);
+    assert(can_healthy() && fake_steer_failures==2u && !tx_fault);
+    test.phase=ST_FAULT;full_map.phase=MAP_FAULT;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_MANUAL};
+    update_control_source(now+100u,in);
+    assert(control_source.release_seen && !control_source.manual_armed);
+    fake_swd=2000u;
+    fake_vrb=1250u;
+    fake_calibrated=false;
+    in=input(now+100u);update_control_source(now+100u,in);
+    assert(control_source.manual_armed && test.phase==ST_FAULT && full_map.phase==MAP_FAULT);
+    fake_calibrated=true;
+    fake_wheel_speed=.10f;
+    in=input(now+100u);
+    assert(!in.stationary && work_stop_feedback);
+    fake_wheel_speed=WORK_STOP_CONTINUE_WHEEL_RAD_S+.01f;
+    in=input(now+100u);
+    assert(!in.stationary && !work_stop_feedback);
+    fake_steer_failures=3;
+    assert(!can_healthy());
+    fake_swd=1000u;fake_can_healthy=false;
+    in=input(now+200u);blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now+200u,in);
+    assert(!can_healthy());
+    puts("CAN_MANUAL_RECOVERY_OK manual_takeover_zero_output_ack_IMU_independent_VRB_gate_bus_fault_blocks");
+    puts("WORK_STOP_HYSTERESIS_OK strict_start_continuation_noise_band_all_wheels_bound");
+}
 int main(void) {
     map_work_enabled=false;
     test.phase = ST_IDLE;
@@ -769,6 +820,7 @@ int main(void) {
     check_map_laser_filter();
     check_map_logging_budget();
     check_map_mode_selection();
+    check_can_manual_recovery();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");

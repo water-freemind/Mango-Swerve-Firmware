@@ -29,11 +29,12 @@ with tempfile.TemporaryDirectory(prefix="vision_motor_", dir=root / "tests") as 
     callback_file = work / "uart_callbacks.c"
     callback_file.write_text('#include "vision_motor.h"\n' + callbacks, encoding="utf-8")
     executable = work / "verify.exe"
-    subprocess.run([
-        "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-        "-I" + str(root / "tests/work_fakes"), "-I" + str(root / "BSP"),
-        "-I" + str(chassis / "tests/fakes"),
-        str(root / "BSP/vision_motor.c"), str(root / "tests/test_vision_motor.c"),
-        str(callback_file), "-o", str(executable),
-    ], check=True)
-    subprocess.run([str(executable)], check=True)
+    for mode in (0, 2, 3):
+        subprocess.run([
+            "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DELBOW_TEST_MODE=" + str(mode),
+            "-I" + str(root / "tests/work_fakes"), "-I" + str(root / "BSP"),
+            "-I" + str(chassis / "tests/fakes"),
+            str(root / "BSP/vision_motor.c"), str(root / "tests/test_vision_motor.c"),
+            str(callback_file), "-o", str(executable),
+        ], check=True)
+        subprocess.run([str(executable)], check=True)
