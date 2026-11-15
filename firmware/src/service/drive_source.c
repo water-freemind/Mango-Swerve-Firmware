@@ -74,13 +74,13 @@ bool drive_source_update(DriveSource* s, const RemoteState* r, bool healthy, boo
     /* Keep the observed SWD release across SWC handovers, including intermediate
      * switch positions. Each new manual owner still waits for centre and stop. */
     if(mode != DRIVE_SOURCE_MANUAL) return changed;
+    if(changed && was_online) s->release_seen=true;
     if(!drive_source_manual_vrb_ok(r)) {
         /* Release stops motion immediately. Keep SWD confirmation so a new
          * press can re-enable only after neutral sticks and stationary wheels. */
         s->manual_armed = false;
         return changed;
     }
-    if(changed && was_online) s->release_seen=true;
     if(!s->manual_armed && s->release_seen && stationary && drive_source_centered(r)) s->manual_armed = true;
     if(s->manual_armed) s->recovery_pending = false;
     return changed;

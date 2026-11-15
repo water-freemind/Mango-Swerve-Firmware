@@ -32,6 +32,9 @@ static uint32_t check_since, check_delay, moving_since, missing_since, last_fram
 static uint8_t test_latched_region; /* 独立测试中已动作的区域，避免同一目标连续打击。 */
 static uint8_t station_number;
 static uint8_t alignment_centered, alignment_reply;
+static uint8_t station_visual_trigger, station_departure_pending, station_started, station_realign_pending, station_realign_sequence;
+static uint32_t station_target_seen_ms;
+static int8_t station_travel_direction;
 
 /* 切换作业阶段，同时清除不能跨阶段累计的无目标/离树计数。 */
 static void change_state(uint8_t state, uint32_t now)
@@ -85,6 +88,8 @@ void Work_Control_Init(void)
     station_number = 0;
     alignment_centered = 0;
     alignment_reply = STATION_TRACKING;
+    station_visual_trigger=station_departure_pending=station_started=station_realign_pending=station_realign_sequence=0;
+    station_target_seen_ms=0;
     memset(attempts, 0, sizeof(attempts));
 }
 
@@ -105,6 +110,7 @@ static void begin_check(uint32_t now, uint32_t frame_count, uint8_t returned)
         if (WORK_SETTLE_MS > check_delay) check_delay = WORK_SETTLE_MS;
     }
     stable_region = stable_frames = 0;
+    empty_timing = empty_frames = 0;
     missing_timing = 0;
 }
 
@@ -146,8 +152,22 @@ static void process_check(uint32_t now, uint32_t frame_count,
     if (offset < -(ELBOW_TEST_MODE == 2 ? STATION_VISION_RESTART_PX : WORK_STOP_DX) ||
         offset > (ELBOW_TEST_MODE == 2 ? STATION_VISION_RESTART_PX : WORK_STOP_DX))
     {
-        /* 停稳后偏移仍超过 ±30 像素，保持故障停车，避免错位肘击。 */
-        fail(WORK_RESULT_POSITION, now);
+        /* 回收并等待图像稳定后，偏移超出死区则重新对中，保留本树次数。 */
+        if (ELBOW_TEST_MODE == 2 && !Vision_MotorPhase)
+        {
+            if ((uint32_t)(now - check_since) < check_delay || !new_frame || frame_count == frame_floor)
+                return;
+            if (!Vision_Motor_VerifyReturned()) { fail(Vision_MotorResult, now); return; }
+            if(!station_realign_pending) {
+                ++station_realign_sequence;
+                if(!station_realign_sequence) ++station_realign_sequence;
+            }
+            station_realign_pending = 1;
+            alignment_centered = stable_frames = 0;
+            alignment_reply = STATION_TRACKING;
+            change_state(VISION_WORK_ALIGN, now);
+        }
+        else fail(WORK_RESULT_POSITION, now);
         return;
     }
     if ((uint32_t)(now - tree_since) >= WORK_TREE_TIMEOUT_MS)
@@ -173,15 +193,13 @@ static void process_check(uint32_t now, uint32_t frame_count,
         /* 视觉区域为 1～4 才有待处理目标，0 表示当前无目标。 */
         empty_timing = empty_frames = 0;
         if (stable_frames < 3 || (uint32_t)(now - stable_since) < WORK_TARGET_STABLE_MS) return;
-        if (attempts[Vision_Region] >= WORK_MAX_ATTEMPTS_PER_REGION)
+        const uint8_t max_attempts = ELBOW_TEST_MODE == 2 ?
+            WORK_STATION_MAX_ATTEMPTS_PER_REGION : WORK_MAX_ATTEMPTS_PER_REGION;
+        if (attempts[Vision_Region] >= max_attempts)
         {
-            /* 当前区域在本棵树已执行 2 次，结束本次作业并携带次数上限结果。 */
-            if (ELBOW_TEST_MODE == 2) fail(WORK_RESULT_ATTEMPTS, now);
-            else
-            {
-                Vision_WorkResult = WORK_RESULT_ATTEMPTS;
-                change_state(VISION_WORK_RELEASE, now);
-            }
+            /* 正常回收后复检仍有目标，达到本模式次数上限才结束。 */
+            Vision_WorkResult = WORK_RESULT_ATTEMPTS;
+            change_state(VISION_WORK_RELEASE, now);
             return;
         }
         if (Vision_Motor_Start(Vision_Region))
@@ -449,6 +467,11 @@ static void process_station(uint32_t now, uint32_t frame_count)
             stable_region = stable_frames = 0;
             alignment_centered = 0;
             alignment_reply = STATION_TRACKING;
+            station_started=station_realign_pending=station_realign_sequence=0;
+            station_target_seen_ms=now;
+            station_visual_trigger=(command.result&STATION_VISUAL_TRIGGER_FLAG)!=0u;
+            station_travel_direction=(command.result&STATION_VISUAL_REVERSE_FLAG)?-1:1;
+            missing_timing=0;
             change_state(VISION_WORK_IDLE, now);
         }
         else if (command.task != Vision_WorkTask || command.region != station_number)
@@ -456,24 +479,40 @@ static void process_station(uint32_t now, uint32_t frame_count)
     }
     else if (have_command && command.state == STATION_ALIGN && paired &&
              command.task == Vision_WorkTask && command.region == station_number &&
+             (!station_realign_pending || command.result==station_realign_sequence) &&
              (Vision_WorkState == VISION_WORK_IDLE || Vision_WorkState == VISION_WORK_APPROACH ||
-              Vision_WorkState == VISION_WORK_WAIT_STOP))
+              Vision_WorkState == VISION_WORK_WAIT_STOP ||
+              (Vision_WorkState == VISION_WORK_ALIGN && station_realign_pending)))
     {
+        station_realign_pending = 0;
         stable_frames = 0;
         alignment_centered = 0;
         alignment_reply = STATION_TRACKING;
         change_state(VISION_WORK_ALIGN, now);
     }
-    else if (have_command && command.state == STATION_START && paired &&
+    else if (have_command && command.state == STATION_START && paired && !station_realign_pending &&
              command.task == Vision_WorkTask && command.region == station_number &&
              Vision_WorkState == VISION_WORK_ALIGN)
     {
         if (!alignment_centered || alignment_reply != STATION_CENTERED || !Vision_Online ||
             Vision_TreeDX == 9999 || offset < -STATION_VISION_RESTART_PX || offset > STATION_VISION_RESTART_PX)
-            fail(WORK_RESULT_POSITION, now);
+        {
+            if(!Vision_MotorPhase && Vision_Online && Vision_Motor_VerifyReturned())
+            {
+                if(!station_realign_pending) {
+                    ++station_realign_sequence;
+                    if(!station_realign_sequence) ++station_realign_sequence;
+                }
+                station_realign_pending = 1;
+                alignment_centered = stable_frames = 0;
+                alignment_reply = STATION_TRACKING;
+            }
+            else fail(Vision_MotorResult ? Vision_MotorResult : WORK_RESULT_POSITION, now);
+        }
         else
         {
-            tree_since = now;
+            if(!station_started) tree_since = now;
+            station_started=1;
             begin_check(now, frame_count, 0);
         }
     }
@@ -482,8 +521,31 @@ static void process_station(uint32_t now, uint32_t frame_count)
         fail(command.result ? command.result : WORK_RESULT_PROTOCOL, now);
     else if (have_command && command.state == STATION_RELEASE &&
              command.task == Vision_WorkTask && command.region == station_number &&
-             Vision_WorkState == VISION_WORK_RELEASE && !Vision_MotorPhase)
+             !Vision_MotorPhase && (Vision_WorkState == VISION_WORK_RELEASE ||
+             (station_visual_trigger && (Vision_WorkState==VISION_WORK_IDLE ||
+              Vision_WorkState==VISION_WORK_APPROACH || Vision_WorkState==VISION_WORK_WAIT_STOP))))
+    {
+        if(Vision_WorkState==VISION_WORK_RELEASE) station_departure_pending=1;
         change_state(VISION_WORK_LEAVING, now);
+    }
+
+    if(station_visual_trigger && station_departure_pending && new_frame && Vision_Online)
+    {
+        if(Vision_TreeDX==9999)
+        {
+            departed_frames=0;
+            if(!missing_timing) {missing_timing=1;missing_since=now;}
+            if((uint32_t)(now-missing_since)>=WORK_LEAVE_MISSING_MS) station_departure_pending=0;
+        }
+        else
+        {
+            missing_timing=0;
+            if(offset>=WORK_LEAVE_DX || offset<=-WORK_LEAVE_DX) {
+                if(departed_frames<3u) ++departed_frames;
+                if(departed_frames>=3u) station_departure_pending=0;
+            } else departed_frames=0;
+        }
+    }
 
     approaching = station_number && (Vision_WorkState == VISION_WORK_IDLE ||
         Vision_WorkState == VISION_WORK_APPROACH || Vision_WorkState == VISION_WORK_WAIT_STOP);
@@ -491,6 +553,29 @@ static void process_station(uint32_t now, uint32_t frame_count)
     {
         if (Vision_MotorResult) fail(Vision_MotorResult, now);
         else if (!Vision_Online) fail(WORK_RESULT_VISION, now);
+        else if(station_visual_trigger)
+        {
+            uint8_t valid_target=Vision_TreeDX!=9999 && Vision_Region && !station_departure_pending &&
+                offset*station_travel_direction>=-WORK_STOP_DX;
+            update_target(now,new_frame,valid_target,offset);
+            if(new_frame)
+            {
+                if(!valid_target || offset < -STATION_VISUAL_SLOW_PX || offset > STATION_VISUAL_SLOW_PX)
+                {
+                    if(Vision_WorkState==VISION_WORK_APPROACH &&
+                       (uint32_t)(now-station_target_seen_ms)>=300u)
+                        change_state(VISION_WORK_IDLE,now);
+                }
+                else if(Vision_WorkState!=VISION_WORK_WAIT_STOP)
+                {
+                    station_target_seen_ms=now;
+                    if(stable_frames>=3u && (uint32_t)(now-stable_since)>=WORK_TARGET_STABLE_MS &&
+                       offset>=-WORK_STOP_DX && offset<=WORK_STOP_DX)
+                        change_state(VISION_WORK_WAIT_STOP,now);
+                    else if(Vision_WorkState!=VISION_WORK_APPROACH) change_state(VISION_WORK_APPROACH,now);
+                }
+            }
+        }
         else if (new_frame && Vision_TreeDX != 9999)
         {
             if (Vision_WorkState == VISION_WORK_IDLE &&
@@ -555,6 +640,8 @@ static void process_station(uint32_t now, uint32_t frame_count)
             }
         }
     }
+    if(Vision_WorkState==VISION_WORK_RELEASE && !Vision_MotorPhase && !Vision_Motor_VerifyReturned())
+        fail(Vision_MotorResult?Vision_MotorResult:STATION_RESULT_RETURN_NOT_READY,now);
     switch (Vision_WorkState)
     {
     case VISION_WORK_IDLE:
@@ -563,7 +650,7 @@ static void process_station(uint32_t now, uint32_t frame_count)
         break;
     case VISION_WORK_APPROACH: response = STATION_SLOW; break;
     case VISION_WORK_WAIT_STOP: response = STATION_WAIT; break;
-    case VISION_WORK_ALIGN: response = alignment_reply; break;
+    case VISION_WORK_ALIGN: response = station_realign_pending ? STATION_REALIGN : alignment_reply; break;
     case VISION_WORK_CHECK:
     case VISION_WORK_ACTING: response = STATION_WORKING; break;
     case VISION_WORK_RELEASE: response = STATION_DONE; break;
@@ -577,6 +664,7 @@ static void process_station(uint32_t now, uint32_t frame_count)
         Work_CAN_SetRequest(response, 0, 0, WORK_RESULT_OK);
     else
         Work_CAN_SetRequest(response, Vision_WorkTask, station_number,
+            response == STATION_REALIGN ? station_realign_sequence :
             station_can_is_alignment(response) ? (uint8_t)frame_count : Vision_WorkResult);
 }
 

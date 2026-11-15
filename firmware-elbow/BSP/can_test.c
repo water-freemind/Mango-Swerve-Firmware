@@ -19,6 +19,7 @@ static uint8_t ready, have_reply, dirty, tx_pending;
 static uint32_t last_tx, last_rx, mailbox, pending_since;
 static uint32_t last_encoder_tx;
 static uint8_t last_encoder_result;
+static uint32_t last_return_tx;
 static uint16_t laser_mm[4]; /* 左、右、后、前的原始毫米值，主循环收帧后更新。 */
 static uint32_t laser_rx_ms;
 static uint8_t laser_received;
@@ -36,7 +37,8 @@ static void send_encoder_diagnostic(uint32_t now)
     WorkCanPacket packet;
     uint8_t data[8], motor, phase, result;
     int32_t progress, target;
-    uint32_t key, encoder_mailbox;
+    uint32_t key, encoder_mailbox, return_sequence;
+    uint8_t final_return;
     if (ELBOW_TEST_MODE != 2 || HAL_CAN_GetTxMailboxesFreeLevel(&hcan2) < 2U) return;
     key = __get_PRIMASK();
     __disable_irq();
@@ -45,14 +47,20 @@ static void send_encoder_diagnostic(uint32_t now)
     phase = result ? Vision_FaultPhase : Vision_MotorPhase;
     progress = result ? Vision_FaultProgress : Vision_MotorProgress;
     target = result ? Vision_FaultTarget : phase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
+    return_sequence=Vision_ReturnSequence;
+    final_return=!result && return_sequence!=last_return_tx;
+    if(final_return) {
+        motor=Vision_ReturnMotor;phase=3;
+        progress=Vision_ReturnProgress;target=Vision_ReturnTarget;
+    }
     __set_PRIMASK(key);
     if (!motor || (phase != 1 && phase != 3) ||
-        ((uint32_t)(now - last_encoder_tx) < WORK_CAN_PERIOD_MS && result == last_encoder_result)) return;
+        (!final_return && (uint32_t)(now - last_encoder_tx) < WORK_CAN_PERIOD_MS && result == last_encoder_result)) return;
     if (progress > 32767) progress = 32767;
     if (progress < -32768) progress = -32768;
     packet.task = (uint32_t)(uint16_t)progress | ((uint32_t)(uint16_t)target << 16);
     packet.state = STATION_ENCODER_DIAG;
-    packet.region = (uint8_t)(motor | (phase << 3));
+    packet.region = (uint8_t)(motor | (phase << 3) | (final_return?STATION_ENCODER_RETURN_FLAG:0u));
     packet.result = result;
     station_can_encode(data, packet);
     header.StdId = WORK_CAN_REQUEST_ID;
@@ -62,6 +70,7 @@ static void send_encoder_diagnostic(uint32_t now)
     {
         last_encoder_tx = now;
         last_encoder_result = result;
+        if(final_return) last_return_tx=return_sequence;
         CAN_Test_TxCount++;
     }
 }
@@ -73,6 +82,7 @@ void CAN_Test_Init(void)
     dirty = 1;
     last_tx = last_rx = 0;
     last_encoder_tx = 0; last_encoder_result = 0;
+    last_return_tx=0;
     CAN_Test_TxCount = CAN_Test_RxCount = CAN_Test_ErrorCount = 0;
     CAN_Test_LastHalError = 0;
     CAN_Test_State = 0;

@@ -6,16 +6,19 @@
 #include "test_full_map.c"
 #undef main
 
-static void route_with_work(const char* speed, const char* approach) {
+static void route_with_work(const char* speed, const char* approach, int unresolved_tree) {
     FullMapTest map;
     FullMapInput input = {0};
     AutoPose actual = {.2f, -.5f, 1.570796327f};
     AutoTwist velocity = {0};
     unsigned completed = 0;
+    unsigned fruit_done = 0;
+    unsigned station_start_count = 0;
     unsigned alignment_started = 0, alignment_station = 0, longest_alignment = 0;
     char command[32];
     reset_station(0);
     full_map_init(&map, now_ms);
+    memset(map.trees,0,sizeof(map.trees)); /* Visual work cannot depend on configured tree X. */
     input.now = now_ms;
     input.healthy = input.odom_ok = input.stationary = input.aligned = true;
     input.work_enabled = input.work_online = input.work_ready = true;
@@ -30,7 +33,8 @@ static void route_with_work(const char* speed, const char* approach) {
     while(now_ms < 850000u && map.phase != MAP_DONE) {
         unsigned region = 0;
         int dx = 9999;
-        unsigned before = map.trees_done;
+        unsigned before = map.work_count;
+        unsigned physical_slot = 0;
         float target_vx = g_station_work.hold ? 0 : map.command.vx;
         float target_vy = g_station_work.hold ? 0 : map.command.vy;
         AutoVec2 delta;
@@ -43,18 +47,27 @@ static void route_with_work(const char* speed, const char* approach) {
         actual.yaw = auto_wrap_angle(actual.yaw + velocity.wz*.01f);
         input.stationary = hypotf(velocity.vx, velocity.vy) < .01f && fabsf(velocity.wz) < .02f;
         if(map.target_tree) {
-            unsigned index = map.target_tree - 1u;
-            float tree_x = map.trees[index/2u][index%2u].x + (index%2u ? .024f : -.024f);
+            const unsigned row=map.route.segment[map.segment].row;
+            const float west=.78f+row*.02f,east=2.02f+row*.015f;
+            unsigned local=fabsf(actual.x-west)<fabsf(actual.x-east)?0u:1u;
+            unsigned index=(row-1u)*2u+local;
+            float tree_x = local?east:west;
+            if(unresolved_tree==4 && row==6u && fabsf(actual.x-1.55f)<fabsf(actual.x-tree_x)) {
+                tree_x=1.55f;index=12u;
+            }
+            physical_slot=index;
             float distance = fabsf(actual.x - tree_x);
             dx = (int)lroundf((tree_x-actual.x)*2000.0f);
             if(dx > 200) dx=200;
             if(dx < -200) dx=-200;
-            region = distance <= .25f ? index%4u + 1u : 0u;
-            if(starts > completed) region = 0;
+            region = distance <= .25f && !(fruit_done&(1u<<index)) ? index%4u + 1u : 0u;
+            if(unresolved_tree==3 || (unresolved_tree==2 && index==11u)) region=0;
+            if(starts > station_start_count && (unresolved_tree!=1 || index!=11u)) region = 0;
+            if(distance>.40f) dx=9999;
         }
         /* One second of camera silence during entry must leave driving active. */
         int camera = now_ms < 1000u || now_ms >= 2000u;
-        run_station(10, region, dx, camera, 1, input.stationary);
+        run_station(10, region, dx, camera && now_ms%100u==0u, 1, input.stationary);
         if(starts>completed && Vision_MotorPhase) {
             assert(abs(dx)<=STATION_VISION_RESTART_PX);
             assert(g_station_work.hold && input.stationary);
@@ -79,6 +92,7 @@ static void route_with_work(const char* speed, const char* approach) {
         input.work_wait = g_station_work.stop_requested;
         input.work_active = g_station_work.hold;
         input.work_done = g_station_work.phase == STATION_LINK_DONE;
+        input.work_result = g_station_work.result;
         input.work_align = g_station_work.phase == STATION_LINK_ALIGN;
         input.work_alignment_fresh = station_work_alignment_fresh(now_ms);
         input.work_centered = g_station_work.aligned;
@@ -105,8 +119,13 @@ static void route_with_work(const char* speed, const char* approach) {
             assert(0);
         }
         if(map.phase == MAP_RUNNING && map.target_tree) {
-            if(g_station_work.station != map.target_tree && station_work_ready())
-                assert(station_work_begin(map.target_tree, now_ms));
+            if(map.work_request_pending && station_work_ready()) {
+                station_start_count=starts;
+                assert(station_work_begin_visual(map.target_tree, now_ms,
+                    map.route.segment[map.segment].line.end.x>map.route.segment[map.segment].line.start.x));
+                map.work_request_pending=false;
+            }
+            if(map.work_scan_ending) (void)station_work_cancel_scan();
             if(map.tree_hold_stable && now_ms - map.tree_hold_ms >= 200u) {
                 if(g_station_work.phase == STATION_LINK_APPROACH)
                     (void)station_work_align(now_ms, input.stationary);
@@ -114,15 +133,21 @@ static void route_with_work(const char* speed, const char* approach) {
                     (void)station_work_start(now_ms, input.stationary);
             }
         }
-        if(before != map.trees_done) {
+        if(before != map.work_count) {
             assert(input.work_done && !g_station_work.hold && Vision_MotorPhase == 0);
             completed++;
+            if(unresolved_tree!=1 || physical_slot!=11u) fruit_done|=1u<<physical_slot;
         }
         if(map.tree_hold || g_station_work.hold)
             assert(map.command.vx == 0 && map.command.vy == 0 && map.command.wz == 0);
     }
-    assert(map.phase == MAP_DONE && map.coverage == 0x7fu && map.trees_done == 0xfffu);
-    assert(completed == 12u && starts == 12u);
+    const unsigned expected=unresolved_tree==2?11u:unresolved_tree==3?0u:unresolved_tree==4?13u:12u;
+    const unsigned done=unresolved_tree==2?0xbffu:unresolved_tree==3?0u:0xfffu;
+    if(map.phase!=MAP_DONE || map.trees_done!=done) fprintf(stderr,"ROUTE_FINAL speed=%s phase=%u segment=%u reason=%s trees=%x expected=%x jobs=%u actual=%.3f,%.3f hold=%u motion=%u target=%.3f pose=%.3f station_phase=%u\n",speed,map.phase,map.segment,map.reason,map.trees_done,done,map.work_count,actual.x,actual.y,map.tree_hold,map.motion.out.phase,map.motion.segment.end.x,map.localization.pose.pose.x,g_station_work.phase);
+    assert(map.phase == MAP_DONE && map.coverage == 0x7fu && map.trees_done == done);
+    assert(completed == expected && map.work_count==expected && starts == (unresolved_tree==1?15u:expected));
+    assert(map.trees_unresolved == (unresolved_tree==1?(1u<<11):0u));
+    assert(!strcmp(map.reason,unresolved_tree==1?"ROUTE_COMPLETE_WITH_UNRESOLVED":"ROUTE_COMPLETE"));
     printf("FULL_ROUTE_WORK_OK speed=%s approach=%s stations=%u actions=%u time_ms=%u\n",
         speed, approach, completed, starts, now_ms);
     printf("CONTINUOUS_ALIGNMENT_TIME_OK max_ms=%u stations=%u\n",longest_alignment,completed);
@@ -133,6 +158,12 @@ int main(void) {
     unsigned index, approach;
     for(index=0; index<5; index++)
         for(approach=0; approach<5; approach++)
-            route_with_work(speeds[index], approaches[approach]);
+            route_with_work(speeds[index], approaches[approach], 0);
+    route_with_work("0.50", "0.30", 1);
+    route_with_work("0.50", "0.30", 2);
+    route_with_work("0.50", "0.30", 3);
+    route_with_work("0.50", "0.30", 4);
+    puts("VISUAL_ROUTE_OK displaced_tree_positions_greenless_tree_skipped_no_green_entire_map_no_work_third_tree_supported");
+    puts("FULL_ROUTE_RETRY_LIMIT_CONTINUE_OK unresolved_G6_first_tree_recorded_all_12_stations_finished");
     return 0;
 }

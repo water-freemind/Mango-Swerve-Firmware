@@ -36,6 +36,9 @@ typedef struct {
     bool approaching, north_confirmed, left_observed;
     uint8_t confirmations;
     uint32_t sample_ms, first_ms, left_sample_ms;
+    uint32_t recovery_sample_ms, recovery_first_ms;
+    uint8_t recovery_samples;
+    float recovery_front_m, recovery_m;
 } MapEntryGuidance;
 
 typedef struct {
@@ -106,6 +109,12 @@ typedef struct {
     AutoMotionError motion_error;
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */
     uint16_t trees_done;
+    uint16_t trees_unresolved; /* Visited tree stations still reporting fruit after the retry limit. */
+    bool aisle_entry_qualified;
+    bool visual_work, visual_stop, work_request_pending, work_scan_ending;
+    uint8_t visual_segment, row_work_count;
+    uint32_t work_count, unresolved_work_count;
+    float visual_stop_x;
     uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
     bool tree_hold, tree_hold_stable;
     uint32_t tree_hold_ms;

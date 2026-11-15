@@ -1,3 +1,8 @@
+param(
+    [ValidateSet('All','Control')][string]$Suite='All',
+    [ValidateSet(0,5,6)][int[]]$Modes=@(0,5,6),
+    [switch]$ReuseBuild
+)
 $ErrorActionPreference = 'Stop'
 $firmwareRoot = Split-Path $PSScriptRoot -Parent
 $output = Join-Path $firmwareRoot 'build/host-tests'
@@ -10,16 +15,28 @@ foreach($path in @('src/app','src/service','src/domain','src/device','src/device
 function Invoke-ChassisTest([string]$name, [string[]]$sources, [int]$mode=6) {
     $exe = Join-Path $output "$name-$mode.exe"
     $args = $flags + @("-DAPP_RUN_MODE=$mode") + @($sources | ForEach-Object {Join-Path $firmwareRoot $_}) + @('-lm','-o',$exe)
-    & $compiler @args
-    if($LASTEXITCODE -ne 0) { throw "$name compilation failed (mode=$mode)." }
+    $inputs=@($sources | ForEach-Object {Join-Path $firmwareRoot $_}) +
+        @(Get-ChildItem (Join-Path $firmwareRoot 'src'),(Join-Path $firmwareRoot 'tests/fakes') -Recurse -Filter '*.h' | Select-Object -ExpandProperty FullName)
+    $hashes=@($inputs | Sort-Object -Unique | ForEach-Object {$_+'='+(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash})
+    $fingerprint=($args -join "`n")+($hashes -join "`n")+(Get-Item $compiler).LastWriteTimeUtc.Ticks
+    $cache="$exe.inputs"
+    $reuse=$ReuseBuild -and (Test-Path -LiteralPath $exe) -and (Test-Path -LiteralPath $cache) -and
+        [IO.File]::ReadAllText($cache).Equals($fingerprint)
+    if(!$reuse) {
+        & $compiler @args
+        if($LASTEXITCODE -ne 0) { throw "$name compilation failed (mode=$mode)." }
+        [IO.File]::WriteAllText($cache,$fingerprint)
+    }
     & $exe
     if($LASTEXITCODE -ne 0) { throw "$name failed (mode=$mode)." }
 }
+if($Suite -eq 'All') {
 Invoke-ChassisTest 'kine' @('tests/test_steer_wheel_kine.c','src/domain/steer_wheel_kine.c')
 Invoke-ChassisTest 'profile' @('tests/test_chassis_profile.c','src/service/chassis_profile.c','src/domain/steer_wheel_kine.c')
 Invoke-ChassisTest 'dji-timing' @('tests/test_dji_motor_timing.c','src/device/bus_motor/dji_motor.c')
 Invoke-ChassisTest 'dm-numeric' @('tests/test_dm_motor_numeric.c','src/device/bus_motor/dm_motor.c')
 Invoke-ChassisTest 'trace' @('tests/test_chassis_trace.c','src/service/chassis_trace.c','src/domain/steer_wheel_kine.c')
-foreach($mode in @(0,5,6)) {
+}
+foreach($mode in $Modes) {
     Invoke-ChassisTest 'chassis-control' @('tests/test_chassis_control.c','src/service/chassis.c','src/device/bus_motor/agv_motor.c','src/domain/steer_wheel_kine.c','src/service/auto_motion.c','src/service/auto_geometry.c','src/service/full_map_test.c','src/service/field_pose.c','src/service/auto_route.c','src/service/laser_prediction.c') $mode
 }

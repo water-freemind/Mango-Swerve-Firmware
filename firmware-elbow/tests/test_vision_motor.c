@@ -81,7 +81,7 @@ int main(void) {
             Encoder_Position[index] = signs[index] * (Vision_ExtendTarget - 100);
             tick += 20U; Vision_Motor_Task();
             assert(Vision_MotorPhase == 1 && !Vision_MotorResult);
-            check_duty(motors[region], ELBOW_POSITION_SLOW_PWM);
+            check_duty(motors[region], index==0u?ELBOW_A_STRIKE_SLOW_PWM:ELBOW_POSITION_SLOW_PWM);
             Encoder_Position[index] = signs[index] * Vision_ExtendTarget;
             tick += 20U;
             Vision_Motor_EncoderTick();
@@ -101,6 +101,8 @@ int main(void) {
             Encoder_Position[index] = signs[index] * Vision_RetractTarget;
             tick += 20U; Vision_Motor_Task();
             assert(Vision_MotorPhase == 4 && !Vision_MotorResult);
+            assert(Vision_ReturnSequence==1u && Vision_ReturnMotor==motors[region]);
+            assert(Vision_ReturnProgress<=Vision_ReturnTarget);
             check_pwm(0);
         }
         Vision_Motor_Init();
@@ -117,7 +119,7 @@ int main(void) {
         assert(Vision_MotorResult == STATION_RESULT_ENCODER_LIMIT && !Vision_HomeConfirmed && !Vision_MotorPhase);
         assert(Vision_FaultMotor == 2 && Vision_FaultProgress > Vision_ExtendTarget);
         check_pwm(0);
-        puts("ENCODER_DUTY_PROFILE_OK strike_80_return_40_slow_35_soft_margin_10_overrun_stops");
+        puts("ENCODER_DUTY_PROFILE_OK strike_100_return_40_slow_25_extend_85_retract_10_overrun_stops");
         Vision_Motor_Init();
         assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start(1));
         Encoder_Position[1] -= 20;
@@ -134,6 +136,30 @@ int main(void) {
         assert(Vision_FaultMotor == 2 && Vision_FaultPhase == 1 && Vision_FaultProgress == 2);
         check_pwm(0);
         puts("ENCODER_POSITION_LIMITS_OK four_regions_home_required_two_end_margins_stall_wrong_direction_stop");
+        memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
+        Vision_Motor_Init();
+        assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start(2));
+        assert(Vision_ExtendTarget==3858*85/100 && Vision_RetractTarget==3858*10/100);
+        Encoder_Position[3]=-Vision_ExtendTarget;
+        tick+=10;Vision_Motor_EncoderTick();Vision_Motor_Task();
+        assert(Vision_MotorPhase==2);check_pwm(0);
+        Encoder_Position[3]-=200; /* Reproduce the recorded post-cutoff coast. */
+        tick+=VISION_REVERSE_PAUSE_MS;Vision_Motor_Task();
+        tick+=10;Vision_Motor_EncoderTick();
+        assert(Vision_MotorPhase==3 && Vision_MotorResult==0);
+        Encoder_Position[3]=-3678;
+        tick+=10;Vision_Motor_EncoderTick();
+        assert(Vision_MotorResult==STATION_RESULT_ENCODER_LIMIT);
+        check_pwm(0);
+        puts("D_COAST_MARGIN_OK 85_percent_target_200_count_coast_95_percent_hard_guard_retained");
+        memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
+        Vision_Motor_Init();assert(Vision_Motor_ConfirmHome());
+        Encoder_Position[0]=ELBOW_STROKE_A_COUNTS/5;
+        assert(!Vision_Motor_Start(1)); /* A must be returned before B can start. */
+        assert(Vision_MotorResult==STATION_RESULT_RETURN_NOT_READY && Vision_FaultMotor==1);
+        assert(Vision_FaultPhase==3 && Vision_FaultTarget==ELBOW_STROKE_A_COUNTS/10);
+        check_pwm(0);
+        puts("ALL_CHANNEL_RETURN_GATE_OK unretracted_A_blocks_B_start_preserves_10_percent_margin");
         return 0;
     }
     if (ELBOW_TEST_MODE == 3)

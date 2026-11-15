@@ -30,6 +30,9 @@ volatile uint8_t Vision_MotorResult;
 volatile uint8_t Vision_HomeConfirmed;
 volatile uint8_t Vision_FaultMotor, Vision_FaultPhase;
 volatile int32_t Vision_FaultProgress, Vision_FaultTarget;
+volatile uint8_t Vision_ReturnMotor;
+volatile int32_t Vision_ReturnProgress, Vision_ReturnTarget;
+volatile uint32_t Vision_ReturnSequence;
 static volatile uint8_t position_target_reached;
 volatile int32_t Vision_MotorProgress, Vision_ExtendTarget, Vision_RetractTarget;
 static const int32_t full_stroke[4] = {ELBOW_STROKE_A_COUNTS, ELBOW_STROKE_B_COUNTS,
@@ -157,6 +160,7 @@ void Vision_Motor_Init(void)
     Vision_HomeConfirmed = 0;
     Vision_FaultMotor = Vision_FaultPhase = 0;
     Vision_FaultProgress = Vision_FaultTarget = 0;
+    Vision_ReturnMotor=0;Vision_ReturnProgress=Vision_ReturnTarget=0;Vision_ReturnSequence=0;
     position_target_reached = 0;
     Vision_MotorProgress = Vision_ExtendTarget = Vision_RetractTarget = 0;
     used = received = pending_region = 0;
@@ -269,7 +273,7 @@ static uint8_t position_step(uint32_t now)
     }
     pwm = Vision_MotorPhase == 1 ? ELBOW_POSITION_PWM : ELBOW_POSITION_RETURN_PWM;
     if (remaining <= magnitude * (int32_t)ELBOW_POSITION_SLOW_ZONE_PERCENT / 100)
-        pwm = ELBOW_POSITION_SLOW_PWM;
+        pwm = Vision_MotorPhase==1 && index==0u ? ELBOW_A_STRIKE_SLOW_PWM : ELBOW_POSITION_SLOW_PWM;
     if (pwm != motor_pwm)
     {
         motor_pwm = pwm;
@@ -372,6 +376,12 @@ void Vision_Motor_Task(void)
         if (ELBOW_TEST_MODE == 2 ? position_target_reached : (uint32_t)(now - phase_started) >= VISION_CCW_MS)
         {
             Motor_Stop();
+            if(ELBOW_TEST_MODE==2) {
+                Vision_ReturnMotor=Vision_MotorRegion;
+                Vision_ReturnProgress=Vision_MotorProgress;
+                Vision_ReturnTarget=Vision_RetractTarget;
+                ++Vision_ReturnSequence;
+            }
             Vision_MotorRegion = 0;
             phase_started = now;
             Vision_MotorPhase = 4;
@@ -397,6 +407,7 @@ uint8_t Vision_Motor_Start(uint8_t region)
 {
     if (ELBOW_TEST_MODE == 3 || Vision_MotorPhase || region < 1 || region > 4) return 0;
     if (ELBOW_TEST_MODE == 2 && !Vision_HomeConfirmed) return 0;
+    if (ELBOW_TEST_MODE == 2 && !Vision_Motor_VerifyReturned()) return 0;
     Vision_MotorRegion = region_to_motor[region];
     position_target_reached = 0;
     Vision_MotorResult = 0;
@@ -407,7 +418,7 @@ uint8_t Vision_Motor_Start(uint8_t region)
         int32_t delta = (int32_t)((uint32_t)Encoder_Position[Vision_MotorRegion - 1U] -
             (uint32_t)motor_home[Vision_MotorRegion - 1U]);
         int32_t progress = stroke < 0 ? -delta : delta;
-        Vision_ExtendTarget = magnitude * (100U - ELBOW_STROKE_MARGIN_PERCENT) / 100U;
+        Vision_ExtendTarget = magnitude * (100U - ELBOW_EXTEND_MARGIN_PERCENT) / 100U;
         Vision_RetractTarget = magnitude * ELBOW_STROKE_MARGIN_PERCENT / 100U;
         if(progress < -8 || progress > Vision_ExtendTarget) {
             Vision_MotorResult=progress < -8 ? STATION_RESULT_ENCODER_DIRECTION : STATION_RESULT_ENCODER_LIMIT;
@@ -438,6 +449,23 @@ uint8_t Vision_Motor_ConfirmHome(void)
 }
 
 /* 作业控制器在空闲复检前读取，此时 phase_started 仍保存返回结束时刻。 */
+uint8_t Vision_Motor_VerifyReturned(void) {
+    if(Vision_MotorPhase || Vision_MotorResult || !Vision_HomeConfirmed) return 0;
+    for(uint8_t index=0;index<4u;++index) {
+        int32_t magnitude=full_stroke[index]<0?-full_stroke[index]:full_stroke[index];
+        int32_t delta=(int32_t)((uint32_t)Encoder_Position[index]-(uint32_t)motor_home[index]);
+        int32_t progress=full_stroke[index]<0?-delta:delta;
+        int32_t target=magnitude*ELBOW_STROKE_MARGIN_PERCENT/100;
+        /* Retain the measured 10% return margin and allow 2% encoder tolerance. */
+        if(progress < -8 || progress > target+magnitude*2/100) {
+            Vision_FaultMotor=index+1u;Vision_FaultPhase=3;
+            Vision_FaultProgress=progress;Vision_FaultTarget=target;
+            Vision_MotorResult=STATION_RESULT_RETURN_NOT_READY;
+            Vision_HomeConfirmed=0;Motor_Stop();return 0;
+        }
+    }
+    return 1;
+}
 uint32_t Vision_Motor_ReturnedAt(void) { return phase_started; }
 
 /* 供 OLED 在主循环中读取当前阶段的剩余毫秒数。 */

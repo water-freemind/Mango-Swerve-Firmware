@@ -44,7 +44,7 @@ public static class MangoStraightConsole {
             {"ARM_NOT_READY","尚未满足准备条件；请先登记起点，检查SWC、SWD及停稳状态"},
             {"ARMED","全图已准备，请点击开始"},{"RUNNING","任务运行中"},
             {"WORK_PEER_NOT_READY","疏果端未就绪，请先确认四路手动收回零位，再检查视觉在线"},
-            {"WORK_ATTEMPTS_EXHAUSTED","当前树同一区域已作业两次，复检仍有目标，保持停车"},
+            {"WORK_ATTEMPTS_EXHAUSTED","当前树同一区域已达到四次作业上限，复检仍有目标，保持停车"},
             {"WORK_TREE_TIMEOUT","当前树作业超时，保持停车"},
             {"WORK_VISION_OFFLINE","疏果视觉连续离线，保持停车"},
             {"WORK_ALIGNMENT_LOST","疏果复检发现树位偏离对中区间，保持停车"},
@@ -55,6 +55,9 @@ public static class MangoStraightConsole {
             {"WORK_ENCODER_LIMIT","肘击编码器超出安全行程，保持停车"},
             {"WORK_ENCODER_STALL","肘击动作期间编码器连续300毫秒无进展，保持停车"},
             {"WORK_ENCODER_TIMEOUT","肘击动作超过6秒，保持停车"},
+            {"WORK_RETURN_NOT_READY","肘击机构未回到回收目标，查看通道与编码器读数"},
+            {"TREE_VISION_BRAKE","识别到树和绿色芒果，正在停车对中"},
+            {"VISION_SCAN_END","本垄扫描结束，确认疏果端空闲后换垄"},
             {"WORK_PEER_FAULT","疏果端故障，请查看作业结果码"},
             {"VRB_RELEASED","VRB尚未压到使能位置，请保持VRB≤1250"},
             {"SWD_REARM","请松杆回中，将SWD拨到1000再拨回2000"},
@@ -73,6 +76,8 @@ public static class MangoStraightConsole {
             {"POSE_OBSERVATION_PAUSE","定位观测不足，暂停等待有效观测"},
             {"ENTRY_NORTH_PAUSE","即将到G7，等待远端围栏定位确认"},
             {"RESUMED","保护条件恢复，继续行驶"},{"ROUTE_COMPLETE","全图路线已完成"},
+            {"TREE_ATTEMPTS_CONTINUE","已达到四次作业上限，记录未打落树位并继续行驶"},
+            {"ROUTE_COMPLETE_WITH_UNRESOLVED","全图路线已完成，仍有果子未打落，请查看未完成树位记录"},
             {"MAP_ENVELOPE","估计车体超出地图通行包络，任务已停止"},
             {"MOTION_FAULT","运动控制检测到偏差或过点异常，任务已停止"},
             {"MODE_NAV_SELECTED","已选择单独跑图模式"},{"MODE_WORK_SELECTED","已选择联合疏果模式"},
@@ -167,7 +172,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT|WORK_ENCODER|WORK_STOP)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.UTF8.GetBytes(ChineseStatus(plain) + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -349,7 +354,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
-        if (category == "WORK" || category == "WORK_EVENT") return true;
+        if (category == "WORK" || category == "WORK_EVENT" || category == "WORK_ENCODER" || category == "WORK_STOP") return true;
         if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "MAP_TREE_EVENT" || category == "MAP_CONTROL_FAULT" || category == "PREDICT") return true;
         if (category == "MAP_STATUS" || category == "MAP_POSE" || category == "MAP_AISLE" || category == "MAP_TREE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;

@@ -16,6 +16,7 @@ extern WorkLinkStatus g_work_link;
 bool work_link_init(void);
 void work_link_process(uint32_t now_ms, bool chassis_ready);
 bool work_link_hold(void);
+void work_link_set_manual_override(bool manual_owner);
 void work_link_limit_velocity(float* vx, float* vy, float* wz);
 
 #endif

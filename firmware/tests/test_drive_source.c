@@ -129,6 +129,16 @@ int main(void) {
     /* An explicit online mode change acknowledges takeover after STOP. */
     drive_source_stop_manual(&s);
     r.rc_data.channel[REMOTE_CH_SWC]=1500u;
+    drive_source_update(&s,&r,true,true);
+    r.rc_data.channel[REMOTE_CH_SWC]=2000u;
+    r.rc_data.channel[REMOTE_CH_VRB]=1500u;
+    drive_source_update(&s,&r,true,true);
+    assert(s.release_seen && !s.manual_armed);
+    r.rc_data.channel[REMOTE_CH_VRB]=1250u;
+    drive_source_update(&s,&r,true,true);
+    assert(s.manual_armed);
+    drive_source_stop_manual(&s);
+    r.rc_data.channel[REMOTE_CH_SWC]=1500u;
     drive_source_update(&s,&r,true,false);
     r.rc_data.channel[REMOTE_CH_SWC]=2000u;
     r.rc_data.channel[REMOTE_CH_RIGHT_Y]=2000u;

@@ -11,6 +11,12 @@ static volatile uint32_t encoder_inbox_ms;
 static volatile bool encoder_pending;
 static uint32_t peer_ms, sent_ms, started_ms, next_task;
 static bool initialized, dirty, seen_peer, task_acknowledged;
+static bool stopped_tracking;
+static bool manual_recovery_pending;
+static bool visual_scan, scan_cancel_pending;
+static bool visual_scan_east;
+static uint8_t realign_sequence;
+static uint32_t stopped_since;
 
 static bool receive_station(const Can3Frame* frame, void* user) {
     WorkCanPacket packet;
@@ -33,6 +39,9 @@ bool station_work_init(void) {
     memset(&g_station_work, 0, sizeof(g_station_work));
     pending = seen_peer = task_acknowledged = false;
     encoder_pending=false;
+    stopped_tracking=false;
+    manual_recovery_pending=false;
+    visual_scan=scan_cancel_pending=false;realign_sequence=0;
     peer_ms = sent_ms = started_ms = next_task = 0u;
     dirty = true;
     initialized = true;
@@ -56,6 +65,7 @@ bool station_work_confirm_home(bool stationary) {
     g_station_work.phase=STATION_LINK_SYNC;
     g_station_work.task=0u;g_station_work.station=0u;
     g_station_work.home_pending=true;
+    manual_recovery_pending=false;
     started_ms=HAL_GetTick();
     dirty=true;
     return true;
@@ -70,6 +80,10 @@ void station_work_abort(uint8_t result) {
     g_station_work.returned = false;
     dirty = true;
 }
+void station_work_request_manual_recovery(void) {
+    if(g_station_work.phase!=STATION_LINK_SYNC && g_station_work.phase!=STATION_LINK_READY &&
+       g_station_work.phase!=STATION_LINK_DONE) manual_recovery_pending=true;
+}
 
 bool station_work_reset(bool stationary) {
     if(!stationary || g_station_work.phase == STATION_LINK_APPROACH ||
@@ -83,6 +97,8 @@ bool station_work_reset(bool stationary) {
     g_station_work.online = g_station_work.hold = false;
     g_station_work.returned = g_station_work.slow_requested = g_station_work.stop_requested = false;
     pending = seen_peer = task_acknowledged = false;
+    manual_recovery_pending=false;
+    visual_scan=scan_cancel_pending=false;realign_sequence=0;
     dirty = true;
     return true;
 }
@@ -101,8 +117,23 @@ bool station_work_begin(uint8_t station, uint32_t now) {
     g_station_work.align_direction = 0;
     g_station_work.align_updates = 0;
     task_acknowledged = false;
+    visual_scan=scan_cancel_pending=false;realign_sequence=0;
     started_ms = now;
     dirty = true;
+    return true;
+}
+bool station_work_begin_visual(uint8_t station,uint32_t now,bool east) {
+    if(!station_work_begin(station,now)) return false;
+    visual_scan=true;
+    visual_scan_east=east;
+    return true;
+}
+bool station_work_cancel_scan(void) {
+    if(!visual_scan || g_station_work.phase!=STATION_LINK_APPROACH)
+        return false;
+    scan_cancel_pending=true;
+    g_station_work.slow_requested=g_station_work.stop_requested=false;
+    dirty=true;
     return true;
 }
 
@@ -124,8 +155,10 @@ bool station_work_alignment_fresh(uint32_t now) {
 }
 
 bool station_work_start(uint32_t now, bool stationary) {
+    now=HAL_GetTick();
     if(g_station_work.phase != STATION_LINK_ALIGN || !g_station_work.online ||
-       !g_station_work.aligned || !station_work_alignment_fresh(now) || !stationary)
+       !g_station_work.aligned || !station_work_alignment_fresh(now) || !stationary ||
+       !stopped_tracking || (uint32_t)(now-stopped_since)<WORK_STOP_STABLE_MS)
         return false;
     g_station_work.phase = STATION_LINK_WORKING;
     g_station_work.hold = true;
@@ -173,9 +206,23 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
            (packet.state == STATION_TRACKING || packet.state == STATION_SLOW ||
             packet.state == STATION_WAIT)) {
             task_acknowledged = true;
-            g_station_work.slow_requested = g_station_work.slow_requested ||
-                packet.state == STATION_SLOW || packet.state == STATION_WAIT;
-            g_station_work.stop_requested = g_station_work.stop_requested || packet.state == STATION_WAIT;
+            if(!scan_cancel_pending) {
+                g_station_work.slow_requested = (!visual_scan && g_station_work.slow_requested) ||
+                    packet.state == STATION_SLOW || packet.state == STATION_WAIT;
+                g_station_work.stop_requested = g_station_work.stop_requested || packet.state == STATION_WAIT;
+            }
+        } else if(packet.state == STATION_REALIGN &&
+                  (g_station_work.phase == STATION_LINK_WORKING || g_station_work.phase == STATION_LINK_ALIGN)) {
+            const uint8_t advance=(uint8_t)(packet.result-realign_sequence);
+            if(advance && advance<128u) {
+                /* A new returned-tool request precedes the ALIGN acknowledgement. */
+                realign_sequence=packet.result;
+                g_station_work.phase=STATION_LINK_ALIGN;
+                g_station_work.hold=false;
+                g_station_work.align_seen=g_station_work.aligned=false;
+                g_station_work.align_direction=0;
+                started_ms=stamp;dirty=true;
+            } else if(g_station_work.phase!=STATION_LINK_ALIGN || advance) return false;
         } else if(g_station_work.phase == STATION_LINK_ALIGN && station_can_is_alignment(packet.state)) {
             const uint8_t advance = (uint8_t)(packet.result - g_station_work.align_sequence);
             if(!g_station_work.align_seen || (advance && advance < 128u)) {
@@ -200,17 +247,21 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
         } else if(packet.state == STATION_DONE &&
                   (g_station_work.phase == STATION_LINK_WORKING ||
                    g_station_work.phase == STATION_LINK_RELEASE)) {
-            if(packet.result != WORK_RESULT_OK) station_work_abort(packet.result);
+            if(packet.result != WORK_RESULT_OK && packet.result != WORK_RESULT_ATTEMPTS)
+                station_work_abort(packet.result);
             else {
+                g_station_work.result = packet.result;
                 g_station_work.phase = STATION_LINK_RELEASE;
                 g_station_work.returned = true;
                 dirty = true;
             }
         } else if(packet.state == STATION_RELEASED &&
                   (g_station_work.phase == STATION_LINK_RELEASE ||
-                   g_station_work.phase == STATION_LINK_DONE)) {
+                   g_station_work.phase == STATION_LINK_DONE ||
+                   (g_station_work.phase==STATION_LINK_APPROACH && scan_cancel_pending))) {
             g_station_work.phase = STATION_LINK_DONE;
             g_station_work.hold = false;
+            g_station_work.returned=true;
         } else return false;
     }
     peer_ms = stamp;
@@ -241,14 +292,25 @@ void station_work_process(uint32_t now, bool healthy, bool stationary) {
     encoder_pending=false;
     now = HAL_GetTick();
     __set_PRIMASK(key);
+    if(!healthy || !stationary) stopped_tracking=false;
+    else if(!stopped_tracking) {
+        stopped_tracking=true;
+        stopped_since=now;
+    }
     if(encoder_received && (uint32_t)(now-encoder_stamp)<WORK_CAN_TIMEOUT_MS) {
         g_station_work.encoder_motor=encoder_packet.region&7u;
-        g_station_work.encoder_phase=encoder_packet.region>>3;
+        g_station_work.encoder_phase=(encoder_packet.region>>3)&3u;
         g_station_work.encoder_result=encoder_packet.result;
         g_station_work.encoder_progress=(int16_t)(uint16_t)encoder_packet.task;
         g_station_work.encoder_target=(int16_t)(uint16_t)(encoder_packet.task>>16);
         g_station_work.encoder_sample_ms=encoder_stamp;
         ++g_station_work.encoder_rx_count;
+        if(encoder_packet.region&STATION_ENCODER_RETURN_FLAG) {
+            ++g_station_work.return_count;g_station_work.return_sample_ms=encoder_stamp;
+            g_station_work.return_motor=g_station_work.encoder_motor;
+            g_station_work.return_progress=g_station_work.encoder_progress;
+            g_station_work.return_target=g_station_work.encoder_target;
+        }
     }
     /* A completion acknowledgement cannot bypass a failed stop interlock. */
     if((g_station_work.phase == STATION_LINK_WORKING ||
@@ -271,16 +333,25 @@ void station_work_process(uint32_t now, bool healthy, bool stationary) {
         else if((uint32_t)(now - started_ms) >= WORK_STATION_TIMEOUT_MS)
             station_work_abort(WORK_RESULT_TREE_TIMEOUT);
     }
+    if(manual_recovery_pending && healthy && stationary &&
+       g_station_work.phase==STATION_LINK_FAULT && g_station_work.returned)
+        (void)station_work_reset(true);
     command = (WorkCanPacket){g_station_work.task, STATION_START,
         g_station_work.station, g_station_work.result};
     if(g_station_work.phase == STATION_LINK_SYNC ||
        g_station_work.phase == STATION_LINK_READY) command.state = STATION_SYNC;
     else if(g_station_work.phase == STATION_LINK_APPROACH) command.state = STATION_APPROACH;
-    else if(g_station_work.phase == STATION_LINK_ALIGN) command.state = STATION_ALIGN;
+    else if(g_station_work.phase == STATION_LINK_ALIGN) {
+        command.state = STATION_ALIGN;command.result=realign_sequence;
+    }
     else if(g_station_work.phase == STATION_LINK_RELEASE ||
             g_station_work.phase == STATION_LINK_DONE) command.state = STATION_RELEASE;
     else if(g_station_work.phase == STATION_LINK_FAULT) command.state = STATION_ABORT;
     if(g_station_work.home_pending) command.state=STATION_HOME;
+    else if(g_station_work.phase==STATION_LINK_APPROACH && visual_scan) {
+        command.state=scan_cancel_pending?STATION_RELEASE:STATION_APPROACH;
+        command.result=STATION_VISUAL_TRIGGER_FLAG | (visual_scan_east?0u:STATION_VISUAL_REVERSE_FLAG);
+    }
     if(dirty || (uint32_t)(now - sent_ms) >= WORK_CAN_PERIOD_MS) {
         station_can_encode(bytes, command);
         if(can3_bus_send(WORK_CAN_REPLY_ID, bytes, 8u) == CAN3_BUS_OK) {

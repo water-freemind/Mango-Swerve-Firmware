@@ -72,6 +72,8 @@ static uint8_t feedback_seen, enabled_mask;
 static RemoteState rc_state;
 static bool rc_online, rc_switches, rc_centered;
 static bool work_stop_feedback;
+static bool work_stop_excursion;
+static uint32_t work_stop_excursion_ms;
 static Bmi088AttitudeDebug imu_debug;
 static bool imu_debug_valid;
 static uint32_t imu_age_us;
@@ -222,15 +224,25 @@ static StraightInput input(uint32_t now) {
             trace_sensor.drive_valid_mask |= (uint8_t)(1u << (id-1u));
         if(!isfinite(speed) || !isfinite(angle)) blockers |= BLOCK_NONFINITE;
         in.stationary = in.stationary && fabsf(speed) < 0.05f;
-        /* Work starts at the strict zero-speed gate. After that, all four
-         * wheels must stay below 0.16rad/s (8.2mm/s at the fitted radius).
-         * This hysteresis prevents a small brake-feedback fluctuation from
-         * cancelling an already stopped station on its next control tick. */
+        /* Start uses the strict zero-speed gate. Continued work tolerates only
+         * a bounded, short excursion, with fresh finite feedback on each wheel. */
         work_stop_feedback=work_stop_feedback && drive_status[id-1u]==MOTOR_STATUS_OK &&
             motor_age[id+3u]<=WORK_FEEDBACK_TIMEOUT_MS && fabsf(speed)<=WORK_STOP_CONTINUE_WHEEL_RAD_S;
         in.vx_mps += sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * cosf(angle) * 0.25f;
         in.vy_mps -= sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * sinf(angle) * 0.25f;
     }
+    float peak_wheel_speed=0;
+    for(unsigned i=0;i<4u;i++) peak_wheel_speed=fmaxf(peak_wheel_speed,fabsf(trace_sensor.wheel_rad_s[i]));
+    const bool working=g_station_work.phase==STATION_LINK_WORKING || g_station_work.phase==STATION_LINK_RELEASE;
+    if(!working || work_stop_feedback || trace_sensor.drive_valid_mask!=15u) work_stop_excursion=false;
+    else if(!work_stop_excursion) {
+        work_stop_excursion=true;
+        work_stop_excursion_ms=now;
+    }
+    if(working && work_stop_excursion && trace_sensor.drive_valid_mask==15u &&
+       peak_wheel_speed<=WORK_STOP_HARD_WHEEL_RAD_S &&
+       (uint32_t)(now-work_stop_excursion_ms)<WORK_STOP_NOISE_MS)
+        work_stop_feedback=true;
     const ImuAngle attitude = imu.get_angle();
     const ImuGyro gyro = imu_get_gyro_corrected();
     trace_sensor.yaw_rad = attitude.yaw;
@@ -440,7 +452,7 @@ static void commands(uint32_t now, StraightInput in) {
                     else if(WORK_STATION_ENABLED && !full_map_active(&full_map) && rc_online &&
                             rc_state.rc_data.channel[REMOTE_CH_SWD]<=1250u && in.stationary)
                         ok=station_work_reset(true);
-                    log_info("TEST_WORK enabled=%u ok=%u phase=%u online=%u task=%lu station=%u slow=%u wait=%u hold=%u returned=%u result=%u rx=%lu tx=%lu rejected=%lu mode=%s available=%u home_pending=%u aligned=%u align_dir=%d enc_motor=%u enc_phase=%u enc_result=%u enc_progress=%d enc_target=%d",
+                    log_info("TEST_WORK enabled=%u ok=%u phase=%u online=%u task=%lu station=%u slow=%u wait=%u hold=%u returned=%u result=%u rx=%lu tx=%lu rejected=%lu mode=%s available=%u home_pending=%u aligned=%u align_dir=%d",
                         (unsigned)(WORK_STATION_ENABLED && map_work_enabled),(unsigned)ok,(unsigned)g_station_work.phase,
                         (unsigned)g_station_work.online,(unsigned long)g_station_work.task,g_station_work.station,
                         (unsigned)g_station_work.slow_requested,(unsigned)g_station_work.stop_requested,
@@ -448,9 +460,11 @@ static void commands(uint32_t now, StraightInput in) {
                         (unsigned long)g_station_work.rx_count,(unsigned long)g_station_work.tx_count,
                         (unsigned long)g_station_work.rejected_count,map_work_enabled?"WORK":"NAV",
                         (unsigned)WORK_STATION_ENABLED,(unsigned)g_station_work.home_pending,
-                        (unsigned)g_station_work.aligned,(int)g_station_work.align_direction,
+                        (unsigned)g_station_work.aligned,(int)g_station_work.align_direction);
+                    log_info("TEST_WORK_ENCODER motor=%u phase=%u result=%u progress=%d target=%d sample_ms=%lu rx=%lu",
                         g_station_work.encoder_motor,g_station_work.encoder_phase,g_station_work.encoder_result,
-                        (int)g_station_work.encoder_progress,(int)g_station_work.encoder_target);
+                        (int)g_station_work.encoder_progress,(int)g_station_work.encoder_target,
+                        (unsigned long)g_station_work.encoder_sample_ms,(unsigned long)g_station_work.encoder_rx_count);
                     line_len=0u;continue;
                 }
                 const bool read_or_stop=!strcmp(line,"MAP STATUS")||!strcmp(line,"MAP STOP");
@@ -535,6 +549,14 @@ static void commands(uint32_t now, StraightInput in) {
     }
 }
 static void log_work_event(uint32_t now) {
+    static uint32_t previous_return_count;
+    if(previous_return_count!=g_station_work.return_count) {
+        previous_return_count=g_station_work.return_count;
+        log_info("TEST_WORK_RETURN t_ms=%lu motor=%u progress=%d target=%d count=%lu sample_ms=%lu",
+            (unsigned long)now,g_station_work.return_motor,(int)g_station_work.return_progress,
+            (int)g_station_work.return_target,(unsigned long)g_station_work.return_count,
+            (unsigned long)g_station_work.return_sample_ms);
+    }
     static unsigned previous_phase=UINT32_MAX;
     static uint32_t previous_task;
     static bool previous_slow, previous_wait;
@@ -585,8 +607,11 @@ static void update_control_source(uint32_t now, StraightInput in) {
     const bool ready=drive_source_requested(&rc_state)==DRIVE_SOURCE_MANUAL?
         manual_hardware_healthy():hardware_healthy();
     const bool source_changed=drive_source_update(&control_source, &rc_state, ready, in.stationary);
+    work_link_set_manual_override(control_source.mode==DRIVE_SOURCE_MANUAL);
     const char* manual_wait=drive_source_manual_wait_reason(&control_source,&rc_state,ready,in.stationary);
     if(source_changed) {
+        if(WORK_STATION_ENABLED && control_source.mode==DRIVE_SOURCE_MANUAL)
+            station_work_request_manual_recovery();
         if(full_map_active(&full_map)||full_map.localization.registered)
             full_map_stop(&full_map,"CONTROL_MODE_CHANGED",true);
         const float wheel_limit = control_source.mode == DRIVE_SOURCE_HOST ?
@@ -615,6 +640,7 @@ static void update_control_source(uint32_t now, StraightInput in) {
     if(!was_manual && control_source.manual_armed) {
         manual_target = manual_velocity = (DriveVelocity){0};
         last_manual_target = now;
+        last_manual_process = now;
         if(!source_changed) log_control(now,in.stationary);
     } else if(!was_manual && !source_changed && control_source.mode==DRIVE_SOURCE_MANUAL &&
               strcmp(previous_wait,manual_wait)) {
@@ -894,6 +920,13 @@ void straight_test_app_loop(void) {
         const bool work_running=g_station_work.phase==STATION_LINK_WORKING ||
             g_station_work.phase==STATION_LINK_RELEASE;
         station_work_process(now,hardware_healthy(),work_running?work_stop_feedback:in.stationary);
+        if(work_running && g_station_work.phase==STATION_LINK_FAULT && g_station_work.result==WORK_RESULT_FEEDBACK)
+            log_info("TEST_WORK_STOP t_ms=%lu blockers=0x%lx valid=0x%x speed=%.3f,%.3f,%.3f,%.3f age=%u,%u,%u,%u",
+                (unsigned long)now,(unsigned long)blockers,trace_sensor.drive_valid_mask,
+                (double)trace_sensor.wheel_rad_s[0],(double)trace_sensor.wheel_rad_s[1],
+                (double)trace_sensor.wheel_rad_s[2],(double)trace_sensor.wheel_rad_s[3],
+                trace_sensor.drive_age_ms[0],trace_sensor.drive_age_ms[1],
+                trace_sensor.drive_age_ms[2],trace_sensor.drive_age_ms[3]);
     }
     update_drift(in);
     if(rx_fault) straight_fault(&test, "UART_ERROR_OR_OVERFLOW");
@@ -913,7 +946,13 @@ void straight_test_app_loop(void) {
             const FullMapInput map_state=map_input(now,in);
             full_map_step(&full_map,map_state);
             if(WORK_STATION_ENABLED && map_work_enabled && full_map.phase==MAP_RUNNING && full_map.target_tree) {
-                if(g_station_work.station!=full_map.target_tree && station_work_ready())
+                if(full_map.visual_work) {
+                    if(full_map.work_request_pending && station_work_ready() &&
+                       station_work_begin_visual(full_map.target_tree,now,
+                           full_map.route.segment[full_map.segment].line.end.x>
+                           full_map.route.segment[full_map.segment].line.start.x)) full_map.work_request_pending=false;
+                    if(full_map.work_scan_ending) (void)station_work_cancel_scan();
+                } else if(g_station_work.station!=full_map.target_tree && station_work_ready())
                     (void)station_work_begin(full_map.target_tree,now);
                 if(full_map.tree_hold_stable && now-full_map.tree_hold_ms>=200u) {
                     if(g_station_work.phase==STATION_LINK_APPROACH)
@@ -950,9 +989,9 @@ void straight_test_app_loop(void) {
             }
             if(tree_hold_before!=full_map.tree_hold || trees_done_before!=full_map.trees_done) {
                 map_transition_logged=true;
-                log_info("TEST_MAP_TREE_EVENT t_ms=%lu segment=%u target=%u hold=%u new_done=0x%x done=0x%x reason=%s",
+                log_info("TEST_MAP_TREE_EVENT t_ms=%lu segment=%u target=%u hold=%u new_done=0x%x done=0x%x unresolved=0x%x reason=%s",
                     (unsigned long)now,full_map.segment,full_map.target_tree,(unsigned)full_map.tree_hold,
-                    trees_done_before^full_map.trees_done,full_map.trees_done,full_map.reason);
+                    trees_done_before^full_map.trees_done,full_map.trees_done,full_map.trees_unresolved,full_map.reason);
             }
         }
         if(control_source.mode == DRIVE_SOURCE_HOST && !full_map_active(&full_map)) {
@@ -1029,7 +1068,9 @@ void straight_test_app_loop(void) {
             }
         }
     }
-    if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed && now - last_manual_process >= 2u) {
+    /* Match the proven navigation output rate. Handover/stop checks still run
+     * every loop, while grouped CAN commands have time to drain between batches. */
+    if(control_source.mode == DRIVE_SOURCE_MANUAL && control_source.manual_armed && now - last_manual_process >= 10u) {
         if(now - last_manual_process > 50u || chassis.process() != chassis.OK) {
             drive_source_stop_manual(&control_source);
             straight_fault(&test, "MANUAL_CONTROL_TIMING_OR_OUTPUT");
@@ -1063,11 +1104,13 @@ void straight_test_app_loop(void) {
                 (unsigned)full_map.localization.registered,(double)p.x,(double)p.y,(double)p.yaw*57.295779513,
                 (double)full_map.speed,(double)full_map.approach_speed,full_map.reason,map_work_enabled?"WORK":"NAV",(unsigned long)now);
         } else if(slot==1u) {
-            log_info("TEST_MAP_TREE target=%u row=%u number=%u hold=%u stable=%u elapsed_ms=%lu done=0x%x dwell_ms=2000 t_ms=%lu",
+            log_info("TEST_MAP_TREE target=%u row=%u number=%u hold=%u stable=%u elapsed_ms=%lu done=0x%x unresolved=0x%x dwell_ms=%u visual=%u jobs=%lu missed=%lu t_ms=%lu",
                 full_map.target_tree,full_map.target_tree?(full_map.target_tree-1u)/2u+1u:0u,
-                full_map.target_tree?(full_map.target_tree-1u)%2u+1u:0u,
+                full_map.target_tree?(full_map.visual_work?full_map.row_work_count+1u:(full_map.target_tree-1u)%2u+1u):0u,
                 (unsigned)full_map.tree_hold,(unsigned)full_map.tree_hold_stable,
-                (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done,(unsigned long)now);
+                (unsigned long)(full_map.tree_hold_stable?now-full_map.tree_hold_ms:0u),full_map.trees_done,full_map.trees_unresolved,
+                map_work_enabled?0u:2000u,(unsigned)full_map.visual_work,
+                (unsigned long)full_map.work_count,(unsigned long)full_map.unresolved_work_count,(unsigned long)now);
         } else if(slot==2u) {
             log_info("TEST_MAP_POSE used=0x%x rejected=0x%x axes=0x%x required=0x%x predicted=0x%x vx=%.3f vy=%.3f motion_error=%u uncorrected_m=%.3f,%.3f wz=%.4f motion_phase=%u odom=0x%x entry=%u fb_mm=%.1f pending_x_mm=%.1f g=%x st=%u t_ms=%lu",
                 full_map.localization.used_mask,full_map.localization.rejected_mask,full_map.localization.constrained_axes,
@@ -1081,6 +1124,16 @@ void straight_test_app_loop(void) {
                 (unsigned long)now);
         } else {
             const MapAisleCorrection ac=full_map.aisle_correction;
+            const ChassisSteeringDiagnostic steering=chassis_get_steering_diagnostic();
+            log_info("TEST_MAP_STEER valid=%u gate=%u target=%.3f,%.3f,%.3f,%.3f error=%.3f,%.3f,%.3f,%.3f hint=%.3f,%.3f,%.3f cross_mm=%.1f yaw_deg=%.2f entry_fix_mm=%.1f t_ms=%lu",
+                (unsigned)steering.valid,(unsigned)chassis_drive_output_allowed(),
+                (double)steering.target_rad[0],(double)steering.target_rad[1],
+                (double)steering.target_rad[2],(double)steering.target_rad[3],
+                (double)steering.error_rad[0],(double)steering.error_rad[1],
+                (double)steering.error_rad[2],(double)steering.error_rad[3],
+                (double)full_map.hint.vx,(double)full_map.hint.vy,(double)full_map.hint.wz,
+                (double)full_map.motion.out.cross_error*1000,(double)full_map.motion.out.heading_error*57.295779513,
+                (double)full_map.entry.recovery_m*1000,(unsigned long)now);
             log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu centering=%u align=%u limit=%.3f reject=0x%x wall_mm=%.1f along=%.3f t_ms=%lu",
                 (unsigned)ac.active,(unsigned)ac.frozen,ac.confirmations,ac.front_mm,ac.rear_mm,
                 (double)ac.error_m*1000,(double)ac.correction_m*1000,

@@ -387,6 +387,8 @@ Assert ($workPanel.Command('UI MAP WORK STATUS',3)) 'Work status query rejected'
 Assert ($tx[-1] -eq 'MAP WORK STATUS') 'Work query changed in bridge'
 Assert ($workPanel.Command('UI MAP WORK RESET',4)) 'Work reset rejected'
 Assert ($workPanel.ShouldForwardStatus('[INFO] TEST_WORK enabled=1 phase=2 task=1 station=12',5)) 'Work status hidden'
+Assert ($workPanel.ShouldForwardStatus('[INFO] TEST_WORK_ENCODER motor=4 phase=3 result=0 progress=528 target=385',5)) 'Encoder snapshot hidden'
+Assert ($workPanel.ShouldForwardStatus('[INFO] TEST_WORK_STOP valid=0xf speed=0.2,0,0,0',5)) 'Stop feedback snapshot hidden'
 'VOFA_WORK_QUERY_AND_APPROACH_PRESETS_OK'
 
 $notReadyMap = [VofaTestSession]::new($true,$send,$report)

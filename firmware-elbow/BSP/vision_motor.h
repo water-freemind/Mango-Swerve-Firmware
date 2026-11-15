@@ -28,7 +28,7 @@
  * 本节区间参数用于底盘协同模式。独立测试只使用目标稳定、无目标确认参数。
  * 修改参数后需要重新编译和烧录。当前激光读数只参与显示。
  */
-#define WORK_DX_CENTER STATION_VISION_CENTER_DX // 实车对中目标为-35像素。
+#define WORK_DX_CENTER STATION_VISION_CENTER_DX // 调整相机位置后以0像素为对中目标。
 #define WORK_SLOW_DX 100                  // 进入中心 ±100 像素时请求底盘减速。
 #define WORK_STOP_DX 30                   // 目标稳定且进入中心 ±30 像素时请求停车。
 #define WORK_LEAVE_DX 120                 // 树越过离树位置后，才允许触发下一棵树。
@@ -39,6 +39,7 @@
 #define WORK_NO_TARGET_MS 500U            // 树仍在停车区间内，连续无目标至少 500 ms 才正常放行。
 #define WORK_NO_TARGET_FRAMES 3U          // 无目标确认还需要至少 3 帧新图像。
 #define WORK_MAX_ATTEMPTS_PER_REGION 2U   // 同一棵树每个区域最多执行 2 次。
+#define WORK_STATION_MAX_ATTEMPTS_PER_REGION 4U // 定点联合作业复检后最多执行4次。
 #define WORK_TREE_TIMEOUT_MS 60000U       // 编码器限位作业允许逐区域完整伸出、回收及复检。
 #define WORK_STOP_TIMEOUT_MS 2000U        // 请求停车后 2 秒未收到 STOPPED，进入故障。
 #define WORK_VISION_WAIT_MS 2000U         // 停稳复检时连续 2 秒无有效树信息，进入视觉故障。
@@ -58,6 +59,7 @@ extern volatile uint8_t Vision_WorkState, Vision_WorkResult; // 当前阶段、�
 extern volatile uint32_t Vision_WorkTask;                   // 当前树任务编号，用于配对底盘应答。
 uint8_t Vision_Motor_Start(uint8_t region);                 // 空闲时锁定区域并开始动作，成功返回 1。
 uint32_t Vision_Motor_ReturnedAt(void);                     // 读取返回计时结束时刻，用于图像稳定等待。
+uint8_t Vision_Motor_VerifyReturned(void);
 
 /* ==================== 常用参数：主要修改下面五行 ====================
  * 修改方法：只改右侧数字，保留数字后面的 U。U 是 C 语言的类型标记，不是单位。
@@ -105,6 +107,9 @@ extern volatile uint8_t Vision_MotorResult;  // 0 正常，12方向异常，13�
 extern volatile uint8_t Vision_HomeConfirmed;
 extern volatile uint8_t Vision_FaultMotor, Vision_FaultPhase;
 extern volatile int32_t Vision_FaultProgress, Vision_FaultTarget;
+extern volatile uint8_t Vision_ReturnMotor;
+extern volatile int32_t Vision_ReturnProgress, Vision_ReturnTarget;
+extern volatile uint32_t Vision_ReturnSequence;
 extern volatile int32_t Vision_MotorProgress;
 extern volatile int32_t Vision_ExtendTarget, Vision_RetractTarget;
 uint8_t Vision_Motor_ConfirmHome(void); /* 操作者确认四路完全收回后记录增量编码器零位。 */
