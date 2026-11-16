@@ -38,6 +38,7 @@ void full_map_init(FullMapTest* m,uint32_t now) {
 }
 void full_map_stop(FullMapTest* m,const char* reason,bool lose_origin) {
     m->work_pose_excursion=false;
+    m->envelope_excursion=false;
     m->tree_hold=m->tree_hold_stable=false;
     m->aisle_correction.active=false;
     m->aisle_correction.centering=false;
@@ -713,11 +714,18 @@ static float endpoint_feedback(FullMapTest* m,FullMapInput in,const LaserSnapsho
         (!control_clear?0x800u:0u)|(!e->ready?0x1000u:0u));
     return e->x;
 }
+/* Limit a side-transfer model overlap to 10mm along either map axis. */
+static AutoEnvelope shift_tolerance_body(AutoPose pose) {
+    const float trim=.010f/(fabsf(cosf(pose.yaw))+fabsf(sinf(pose.yaw)));
+    const float side=.155f-trim;
+    return (AutoEnvelope){side,side,side,side};
+}
 static void map_cross_limits(const FullMapTest* m,FullMapInput in,AutoMotionInput* input) {
     const unsigned axis=fabsf(m->motion.segment.end.y-m->motion.segment.start.y)>
         fabsf(m->motion.segment.end.x-m->motion.segment.start.x)?0u:1u;
     float negative,positive;
-    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    const AutoEnvelope body=m->envelope_excursion?shift_tolerance_body(m->localization.pose.pose):
+        (AutoEnvelope){.155f,.155f,.155f,.155f};
     input->limit_cross=true;input->cross_negative_limit=input->cross_positive_limit=0;
     if(!auto_route_axis_clearance(&m->route,body,m->localization.pose.pose,axis,&negative,&positive)) return;
     /* Bound the dangerous normal component, not just the along-route speed.
@@ -897,7 +905,22 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     if(in.now-m->run_ms>900000u||in.now-m->segment_ms>180000u) {full_map_stop(m,"RUN_TIMEOUT",false);return;}
     const AutoEnvelope body={.155f,.155f,.155f,.155f};
     if(!auto_route_pose_clear(&m->route,body,m->localization.pose.pose,0)) {
-        full_map_stop(m,"MAP_ENVELOPE",false);return;
+        const AutoPose pose=m->localization.pose.pose;
+        bool recoverable=m->route.segment[m->segment].kind==AUTO_ROUTE_SHIFT &&
+            !in.work_active && raw_laser.frame_fresh && (raw_laser.valid_mask&15u)==15u &&
+            auto_envelope_inside(body,pose,0,-m->route.scale,3*m->route.scale,4.6f*m->route.scale,0) &&
+            auto_route_pose_clear(&m->route,shift_tolerance_body(pose),pose,0);
+        for(unsigned ch=0;ch<4u;++ch)
+            if(raw_laser.sample_age_ms[ch]>200u || raw_laser.accepted_mm[ch]<=120u) recoverable=false;
+        if(!m->envelope_excursion) m->envelope_excursion_ms=in.now;
+        if(!recoverable || in.now-m->envelope_excursion_ms>=2000u) {
+            full_map_stop(m,"MAP_ENVELOPE",false);return;
+        }
+        m->envelope_excursion=true;
+        m->reason="SHIFT_ENVELOPE_RECOVER";
+    } else {
+        m->envelope_excursion=false;
+        if(!strcmp(m->reason,"SHIFT_ENVELOPE_RECOVER")) m->reason="SHIFT_ENVELOPE_CLEAR";
     }
     const bool margin_limited=!auto_route_pose_clear(&m->route,body,m->localization.pose.pose,.02f);
     m->along_speed_limit=margin_limited?.05f:0;
@@ -1002,9 +1025,9 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         (!m->entry.north_confirmed || in.now-m->localization.constrained_ms[1]>500u);
     uint8_t required=0;bool safe=!pose_limited && !entry_needs_north;
     float range_speed=segment_speed(m);
-    /* The visual source sends at 10 Hz. Use the commissioned 0.50m/s
+    /* The visual source sends at 10 Hz. Use the commissioned 0.40m/s
      * survey ceiling while waiting for the first target-acquisition frame. */
-    if(m->visual_work && m->target_tree) range_speed=fminf(range_speed,.50f);
+    if(m->visual_work && m->target_tree) range_speed=fminf(range_speed,.40f);
     /* Side-corridor Y is odometry until the ridge pair is actually visible.
      * Acquire a centered pair before accelerating through the first tree leg.
      * Keep qualification through ordinary producer gaps and later tree stops. */
@@ -1012,7 +1035,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         range_speed=fminf(range_speed,.15f);
     if(visual_alignment) range_speed=fminf(range_speed,.05f);
     if(in.work_enabled && m->target_tree && in.work_slow && in.work_station==m->target_tree) {
-        if(m->visual_work) range_speed=fminf(range_speed,.10f);
+        if(m->visual_work) range_speed=fminf(range_speed,.20f);
         else if(fabsf(m->motion.segment.end.x-m->localization.pose.pose.x)<=.35f)
             range_speed=fminf(range_speed,m->approach_speed);
     }
@@ -1209,7 +1232,10 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             in.work_align_direction!=m->tree_alignment.direction;
         m->tree_alignment.ready=false;
     }
-    const float cross=continuous_cross_feedback(m,in,&seg);
+    /* In a tight shift corridor, recover toward the route center using the
+     * fused pose. A changing ridge-end wall reference must not steer inward. */
+    const float cross=m->envelope_excursion?
+        m->localization.pose.pose.x-seg.start.x:continuous_cross_feedback(m,in,&seg);
     if(fabsf(seg.end.y-seg.start.y)>fabsf(seg.end.x-seg.start.x)) input.pose.pose.x=seg.start.x+cross;
     else input.pose.pose.y=seg.start.y+cross;
     if(m->endpoint.active && !visual_alignment && !m->visual_work) input.pose.pose.x=endpoint_x;

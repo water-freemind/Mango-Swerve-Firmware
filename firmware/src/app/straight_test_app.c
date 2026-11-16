@@ -72,7 +72,8 @@ static uint8_t feedback_seen, enabled_mask;
 static RemoteState rc_state;
 static bool rc_online, rc_switches, rc_centered;
 static bool work_stop_feedback;
-static bool work_stop_excursion;
+static bool work_stop_excursion, work_stop_fast;
+static uint32_t work_stop_fast_ms;
 static uint32_t work_stop_excursion_ms;
 static uint32_t work_stop_sample_ms;
 static float work_stop_excursion_m;
@@ -271,9 +272,16 @@ static StraightInput input(uint32_t now) {
         work_stop_excursion_m+=peak_wheel_speed*STRAIGHT_TEST_WHEEL_RADIUS_M*(float)elapsed*.001f;
     }
     work_stop_sample_ms=now;
+    if(!working || !work_feedback_valid || peak_wheel_speed<=WORK_STOP_HARD_WHEEL_RAD_S)
+        work_stop_fast=false;
+    else if(!work_stop_fast) {
+        work_stop_fast=true;
+        work_stop_fast_ms=now;
+    }
     if(working && work_stop_excursion && trace_sensor.drive_valid_mask==15u &&
        work_feedback_valid &&
-       peak_wheel_speed<=WORK_STOP_HARD_WHEEL_RAD_S &&
+       peak_wheel_speed<=WORK_STOP_IMMEDIATE_WHEEL_RAD_S &&
+       (!work_stop_fast || (uint32_t)(now-work_stop_fast_ms)<WORK_STOP_HARD_CONFIRM_MS) &&
        work_stop_excursion_m<WORK_STOP_EXCURSION_M &&
        (uint32_t)(now-work_stop_excursion_ms)<WORK_STOP_NOISE_MS)
         work_stop_feedback=true;
@@ -975,7 +983,7 @@ void straight_test_app_loop(void) {
                 (double)trace_sensor.wheel_rad_s[2],(double)trace_sensor.wheel_rad_s[3],
                 trace_sensor.drive_age_ms[0],trace_sensor.drive_age_ms[1],
                 trace_sensor.drive_age_ms[2],trace_sensor.drive_age_ms[3],
-                (unsigned long)(work_stop_excursion?now-work_stop_excursion_ms:0u),
+                (unsigned long)(work_stop_excursion?HAL_GetTick()-work_stop_excursion_ms:0u),
                 (double)(work_stop_excursion_m*1000));
     }
     update_drift(in);

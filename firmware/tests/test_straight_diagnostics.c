@@ -620,7 +620,7 @@ static void check_work_stop_noise(void) {
     feedback(now+252u);input(now+252u);assert(!work_stop_feedback);
     fake_wheel_speed=0;
     feedback(now+262u);input(now+262u);assert(work_stop_feedback);
-    fake_wheel_speed=WORK_STOP_HARD_WHEEL_RAD_S+.01f;
+    fake_wheel_speed=WORK_STOP_IMMEDIATE_WHEEL_RAD_S+.01f;
     feedback(now+272u);input(now+272u);assert(!work_stop_feedback);
     fake_wheel_speed=.20f;
     feedback(now+282u);motor_ms[4]=now-101u;input(now+282u);assert(!work_stop_feedback);
@@ -628,6 +628,26 @@ static void check_work_stop_noise(void) {
     feedback(now+292u);input(now+292u);assert(!work_stop_feedback);
     fake_wheel_speed=0;g_station_work.phase=STATION_LINK_SYNC;
     feedback(now+302u);input(now+302u);
+    for(unsigned wrap=0;wrap<2u;++wrap) {
+        const uint32_t start=wrap?UINT32_MAX-10u:400000u;
+        g_station_work.phase=wrap?STATION_LINK_RELEASE:STATION_LINK_WORKING;
+        fake_wheel_speed=0;feedback(start);input(start);
+        fake_wheel_speed=1.396f;
+        feedback(start+1u);input(start+1u);assert(work_stop_feedback);
+        fake_wheel_speed=0;
+        feedback(start+2u);input(start+2u);assert(work_stop_feedback && !work_stop_fast);
+        fake_wheel_speed=-1.396f;
+        feedback(start+3u);input(start+3u);assert(work_stop_feedback);
+        feedback(start+22u);input(start+22u);assert(work_stop_feedback);
+        feedback(start+23u);input(start+23u);assert(!work_stop_feedback);
+        fake_wheel_speed=0;
+        feedback(start+24u);input(start+24u);assert(work_stop_feedback && !work_stop_fast);
+        fake_wheel_speed=WORK_STOP_IMMEDIATE_WHEEL_RAD_S+.01f;
+        feedback(start+25u);input(start+25u);assert(!work_stop_feedback);
+    }
+    fake_wheel_speed=0;g_station_work.phase=STATION_LINK_SYNC;
+    feedback(400100u);input(400100u);
+    puts("WORK_STOP_SPIKE_REPLAY_OK recorded_1p396_1ms_pass_20ms_confirm_3rad_immediate_2mm_budget_work_release_wrap");
     puts("WORK_STOP_NOISE_OK recorded_0p327_impulse_120ms_bound_2mm_travel_hard_speed_stale_nonfinite_stop");
 }
 static void check_can_manual_recovery(void) {
