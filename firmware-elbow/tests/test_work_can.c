@@ -441,10 +441,10 @@ static void request_station(unsigned station, unsigned region) {
     assert(station_work_begin((uint8_t)station, now_ms));
     run_station(300, region, 80, 1, 1, 0);
     assert(g_station_work.slow_requested && !g_station_work.hold);
-    run_station(300, region, 20, 1, 1, 0);
+    run_station(300, region, STATION_VISION_STOP_PX, 1, 1, 0);
     assert(g_station_work.stop_requested && Vision_MotorPhase == 0);
     assert(!station_work_start(now_ms, false));
-    run_station(150, region, 20, 1, 1, 1);
+    run_station(150, region, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(station_work_align(now_ms, true));
     run_station(450, region, 0, 1, 1, 1);
     assert(g_station_work.aligned && Vision_MotorPhase == 0);
@@ -462,7 +462,7 @@ static void test_station_inflight_ready(void) {
     station_work_process(now_ms, true, true);
     /* READY sent before APPROACH reached the peer is not a peer reset. */
     assert(g_station_work.phase == STATION_LINK_APPROACH && !g_station_work.hold);
-    run_station(400, 1, 20, 1, 1, 1);
+    run_station(400, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.stop_requested);
     frame.rx_ms = now_ms;
     assert(request_callback(&frame, NULL));
@@ -484,7 +484,12 @@ static void test_station_inflight_ready(void) {
 }
 static void test_alignment_hysteresis_and_encoder_fault(void) {
     reset_station(0);
+    g_station_work.slow_requested=g_station_work.stop_requested=true;
+    g_station_work.aligned=g_station_work.align_seen=true;
+    g_station_work.align_direction=1;
     assert(station_work_confirm_home(true));
+    assert(!g_station_work.slow_requested && !g_station_work.stop_requested &&
+        !g_station_work.aligned && !g_station_work.align_seen && !g_station_work.align_direction);
     Can3Frame old_ready = {.id=WORK_CAN_REQUEST_ID,.len=8,.rx_ms=now_ms};
     WorkCanPacket ready_packet = {0,STATION_READY,0,WORK_RESULT_OK};
     station_can_encode(old_ready.data,ready_packet);
@@ -493,6 +498,7 @@ static void test_alignment_hysteresis_and_encoder_fault(void) {
     assert(g_station_work.home_pending && g_station_work.phase==STATION_LINK_SYNC);
     run_station(400,0,0,1,1,1);
     assert(station_work_ready());
+    assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
     assert(station_work_begin(1, now_ms));
     run_station(100, 1, 80, 1, 1, 1);
     assert(station_work_align(now_ms, true));
@@ -503,13 +509,13 @@ static void test_alignment_hysteresis_and_encoder_fault(void) {
     assert(!station_work_start(now_ms, true));
     run_station(500, 1, 0, 1, 1, 1);
     assert(g_station_work.aligned && !g_station_work.align_direction);
-    run_station(500, 1, 30, 1, 1, 1);
+    run_station(500, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.aligned && !g_station_work.align_direction);
-    run_station(200, 1, 45, 1, 1, 1);
+    run_station(200, 1, 30, 1, 1, 1);
     assert(g_station_work.aligned && !g_station_work.align_direction);
-    run_station(100, 1, 46, 1, 1, 1);
+    run_station(100, 1, 31, 1, 1, 1);
     assert(!g_station_work.aligned && g_station_work.align_direction == 1);
-    run_station(100, 1, -46, 1, 1, 1);
+    run_station(100, 1, -31, 1, 1, 1);
     assert(g_station_work.align_direction == -1);
     assert(!station_work_confirm_home(true));
     reset_station(0);
@@ -522,7 +528,7 @@ static void test_alignment_hysteresis_and_encoder_fault(void) {
     assert(station_work_confirm_home(true));
     run_station(400, 0, 0, 1, 1, 1);
     assert(station_work_ready() && Vision_HomeConfirmed && !g_station_work.hold);
-    puts("ALIGNMENT_ENCODER_FAULT_OK 30_45px_hysteresis_fresh_source_required_stall_hold_manual_home_recovery");
+    puts("ALIGNMENT_ENCODER_FAULT_OK 15_30px_hysteresis_fresh_source_required_stall_hold_manual_home_recovery");
 }
 
 static void test_station_sequence(void) {
@@ -532,13 +538,13 @@ static void test_station_sequence(void) {
         unsigned before = starts;
         unsigned region = (station - 1u) % 4u + 1u;
         request_station(station, region);
-        run_station(600, region, 20, 1, 1, 1);
+        run_station(600, region, STATION_VISION_STOP_PX, 1, 1, 1);
         assert(starts == before + 1u && g_station_work.hold);
         drop_go = 2;
         run_station(3000, 0, 0, 1, 1, 1);
         assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
         assert(g_station_work.station == station && Vision_MotorPhase == 0);
-        run_station(400, region, 20, 1, 1, 1);
+        run_station(400, region, STATION_VISION_STOP_PX, 1, 1, 1);
         assert(starts == before + 1u);
     }
     assert(starts == 12u);
@@ -564,7 +570,7 @@ static void test_station_realign_after_return(void) {
             station_work_process(now_ms,true,true);
             assert(g_station_work.phase==STATION_LINK_WORKING && g_station_work.hold);
         }
-        run_station(2500,1,60,1,1,1);
+        run_station(2500,1,26,1,1,1);
         assert(!Vision_MotorPhase && Vision_Motor_VerifyReturned());
         assert(g_station_work.phase==STATION_LINK_ALIGN && !g_station_work.hold);
         assert(g_station_work.align_direction==1 && g_station_work.task==task);
@@ -579,6 +585,21 @@ static void test_station_realign_after_return(void) {
 }
 
 static void test_station_stable_start(void) {
+    reset_station(0);
+    assert(station_work_begin(1,now_ms));
+    run_station(100,1,0,1,1,1);
+    assert(station_work_align(now_ms,true));
+    run_station(500,1,0,1,1,1);
+    assert(station_work_start(now_ms,true));
+    run_station(500,1,-26,1,1,1);
+    assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
+    run_station(500,1,16,1,1,1);
+    assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
+    run_station(500,1,15,1,1,1);
+    assert(station_work_start(now_ms,true));
+    run_station(500,1,15,1,1,1);
+    assert(starts==1);
+    puts("STRIKE_DX_GATE_OK minus_26_plus_16_block_plus_15_allows");
     reset_station(UINT32_MAX-300u);
     assert(STATION_VISION_CENTER_DX==0 && WORK_DX_CENTER==0);
     assert(station_work_begin(1,now_ms));
@@ -597,34 +618,34 @@ static void test_station_faults(void) {
     unsigned before;
     reset_station(0);
     request_station(1, 1);
-    run_station(600, 1, 20, 1, 1, 1);
+    run_station(600, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     before = starts;
     drop_requests = 1;
-    run_station(600, 1, 20, 1, 1, 1);
+    run_station(600, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.hold);
     assert(!station_work_reset(true));
-    run_station(1800, 1, 20, 1, 1, 1);
+    run_station(1800, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(Vision_MotorPhase == 0 && starts == before);
     drop_requests = 0;
-    run_station(150, 1, 20, 1, 1, 1);
+    run_station(150, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.returned && station_work_reset(true));
     run_station(150, 0, 9999, 1, 1, 1);
     assert(station_work_ready());
     request_station(2, 2);
-    run_station(600, 2, 20, 1, 1, 1);
-    run_station(VISION_TIMEOUT_MS + 100U, 2, 20, 0, 1, 1);
+    run_station(600, 2, STATION_VISION_STOP_PX, 1, 1, 1);
+    run_station(VISION_TIMEOUT_MS + 100U, 2, STATION_VISION_STOP_PX, 0, 1, 1);
     assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.hold);
     reset_station(0);
     request_station(3, 3);
-    run_station(500, 3, 20, 1, 1, 1);
+    run_station(500, 3, STATION_VISION_STOP_PX, 1, 1, 1);
     Vision_Motor_Init();
     CAN_Test_Init();
     run_station(150, 0, 9999, 1, 1, 1);
     assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.hold);
     reset_station(0);
     request_station(4, 4);
-    run_station(500, 4, 20, 1, 1, 1);
-    run_station(100, 4, 20, 1, 0, 1);
+    run_station(500, 4, STATION_VISION_STOP_PX, 1, 1, 1);
+    run_station(100, 4, STATION_VISION_STOP_PX, 1, 0, 1);
     assert(g_station_work.phase == STATION_LINK_FAULT);
     puts("STATION_CAN_VISION_RESTART_FEEDBACK_ABORT_RETURN_RESET_OK");
 }
@@ -634,7 +655,7 @@ static void test_station_replay_and_release_gate(void) {
     uint32_t rejected;
     reset_station(0);
     request_station(1, 1);
-    run_station(500, 1, 20, 1, 1, 1);
+    run_station(500, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     frame.len = 8;
     frame.rx_ms = now_ms;
     packet = (WorkCanPacket){g_station_work.task+1u, STATION_DONE, 1, WORK_RESULT_OK};
@@ -662,7 +683,7 @@ static void test_station_replay_and_release_gate(void) {
     assert(g_station_work.result == WORK_RESULT_FEEDBACK);
     reset_station(0);
     request_station(1, 1);
-    run_station(500, 1, 20, 1, 1, 1);
+    run_station(500, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(station_work_init()); /* Chassis reboot ends the old route. */
     run_station(200, 0, 9999, 1, 1, 1);
     assert(!station_work_ready());
@@ -716,20 +737,20 @@ static void test_station_transient_camera_off(void) {
         assert(Vision_FrameCount == frames);
         assert(station_work_begin(1, now_ms));
         Vision_Motor_RxError();
-        run_station(400, 1, 20, 0, 1, 0);
+        run_station(400, 1, STATION_VISION_STOP_PX, 0, 1, 0);
         assert(Vision_Online && g_station_work.phase == STATION_LINK_APPROACH);
         assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
         assert(!g_station_work.hold && starts == 0);
-        run_station(400, 1, 20, 1, 1, 0);
+        run_station(400, 1, STATION_VISION_STOP_PX, 1, 1, 0);
         assert(g_station_work.stop_requested && starts == 0);
-        run_station(150, 1, 20, 1, 1, 1);
+        run_station(150, 1, STATION_VISION_STOP_PX, 1, 1, 1);
         assert(station_work_align(now_ms, true));
         run_station(450, 1, 0, 1, 1, 1);
         assert(station_work_start(now_ms, true));
-        run_station(450, 1, 20, 1, 1, 1);
+        run_station(450, 1, STATION_VISION_STOP_PX, 1, 1, 1);
         assert(starts == 1);
         frames = Vision_FrameCount;
-        run_station(1000, 2, 20, 0, 1, 1);
+        run_station(1000, 2, STATION_VISION_STOP_PX, 0, 1, 1);
         assert(Vision_Online && g_station_work.phase == STATION_LINK_WORKING);
         assert(g_station_work.hold && starts == 1 && Vision_FrameCount == frames);
         run_station(1800, 0, 0, 1, 1, 1);
@@ -742,24 +763,24 @@ static void test_station_transient_camera_off(void) {
 static void test_station_manual_recovery(void) {
     reset_station(0);
     request_station(1, 1);
-    run_station(600, 1, 20, 1, 1, 1);
+    run_station(600, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(Vision_MotorPhase && g_station_work.hold);
     station_work_request_manual_recovery();
     station_work_abort(STATION_RESULT_CANCELLED);
-    run_station(100, 1, 20, 1, 1, 0);
+    run_station(100, 1, STATION_VISION_STOP_PX, 1, 1, 0);
     assert(g_station_work.phase==STATION_LINK_FAULT && !station_work_ready());
-    run_station(2500, 1, 20, 1, 1, 1);
+    run_station(2500, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(station_work_ready() && Vision_MotorPhase==0 && !g_station_work.hold);
     request_station(2, 2);
-    run_station(600, 2, 20, 1, 1, 1);
+    run_station(600, 2, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts==2u && g_station_work.hold);
     reset_station(0);
     request_station(1, 1);
     freeze_encoder=1;
-    run_station(600, 1, 20, 1, 1, 1);
+    run_station(600, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.phase==STATION_LINK_FAULT && !Vision_HomeConfirmed);
     station_work_request_manual_recovery();
-    run_station(1000, 1, 20, 1, 1, 1);
+    run_station(1000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(!station_work_ready() && !Vision_HomeConfirmed && starts==1u);
     puts("STATION_MANUAL_RECOVERY_OK cancel_wait_return_stationary_resync_next_task_encoder_home_still_required");
 }
@@ -767,8 +788,22 @@ static void test_station_visual_trigger(void) {
     uint8_t bytes[8];WorkCanPacket packet={0,STATION_READY,0,0},decoded;
     station_can_encode(bytes,packet);assert(station_can_decode(bytes,&decoded));
     bytes[0]=3u;assert(!station_can_decode(bytes,&decoded));
+    packet.state=STATION_VISION_DIAG;packet.region=4;
+    packet.result=STATION_VISION_ONLINE_FLAG|VISION_WORK_ALIGN;
+    station_can_encode(bytes,packet);
+    assert(station_can_decode(bytes,&decoded) && station_can_is_reply(decoded.state));
+    bytes[6]=5u;assert(!station_can_decode(bytes,&decoded));
+    bytes[6]=4u;bytes[7]=0x80u;assert(!station_can_decode(bytes,&decoded));
     for(unsigned reverse=0;reverse<2u;++reverse) {
         const int direction=reverse?-1:1;
+        reset_station(0);
+        assert(station_work_begin_visual(1,now_ms,!reverse));
+        run_station(100,1,180*direction,1,1,0);
+        run_station(100,2,120*direction,1,1,0);
+        run_station(150,3,-160*direction,1,1,0);
+        assert(g_station_work.stop_requested && starts==0);
+        assert(g_station_work.visual_rx_count && g_station_work.visual_dx==-160*direction);
+        assert(g_station_work.visual_region==3 && g_station_work.visual_online);
         reset_station(0);
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(800,0,0,1,1,0); /* Tree without green fruit. */
@@ -807,14 +842,37 @@ static void test_station_visual_trigger(void) {
     reset_station(0);
     assert(station_work_begin_visual(1,now_ms,true));
     run_station(400,1,80,1,1,0);
-    run_station(100,1,20,1,1,0);
+    run_station(100,1, STATION_VISION_STOP_PX,1,1,0);
     assert(g_station_work.stop_requested);
     assert(station_work_cancel_scan());
-    run_station(300,1,20,1,1,1);
+    run_station(300,1, STATION_VISION_STOP_PX,1,1,1);
     assert(g_station_work.phase==STATION_LINK_DONE && starts==0);
     puts("VISUAL_SCAN_GATE_OK both_directions_tree_and_green_required_lost_green_releases_slow_old_tree_suppressed_scan_cancel_ack");
 }
+static void test_visual_acquisition_replay(void) {
+    for(unsigned reverse=0;reverse<2u;++reverse) {
+        const int direction=reverse?-1:1;
+        reset_station(0);
+        assert(station_work_begin_visual(1,now_ms,!reverse));
+        run_station(150,1,180*direction,1,1,0);
+        run_station(100,0,120*direction,1,1,0); /* Brief missing green frame. */
+        run_station(150,1,-60*direction,1,1,0); /* Passed +/-30 during deceleration. */
+        assert(g_station_work.stop_requested && starts==0);
+        run_station(400,0,9999,1,1,0);
+        assert(g_station_work.stop_requested && starts==0); /* Retain stop until alignment. */
+
+        reset_station(0);
+        assert(station_work_begin_visual(1,now_ms,!reverse));
+        run_station(100,1,80*direction,1,1,0);
+        run_station(400,0,80*direction,1,1,0);
+        assert(!g_station_work.stop_requested && !g_station_work.slow_requested);
+        run_station(100,1,80*direction,1,1,0);
+        assert(!g_station_work.stop_requested); /* Long gap discards previous evidence. */
+    }
+    puts("VISUAL_ACQUISITION_REPLAY_OK both_directions_brief_gap_passed_center_latched_stop_long_gap_reset");
+}
 static void test_station_empty_and_limits(void) {
+    test_visual_acquisition_replay();
     test_station_visual_trigger();
     test_station_realign_after_return();
     reset_station(0);
@@ -824,7 +882,7 @@ static void test_station_empty_and_limits(void) {
     assert(!Vision_MotorPhase && g_station_work.hold);
     assert(g_station_work.return_count>0 && g_station_work.return_motor==2u);
     assert(g_station_work.return_progress<=g_station_work.return_target);
-    Encoder_Position[0]=ELBOW_STROKE_A_COUNTS/5;
+    Encoder_Position[0]=377; /* Recorded A return formerly accepted at the 10% target. */
     run_station(1000,0,0,1,1,1);
     assert(g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold);
     assert(g_station_work.result==STATION_RESULT_RETURN_NOT_READY);
@@ -836,14 +894,14 @@ static void test_station_empty_and_limits(void) {
     assert(g_station_work.phase == STATION_LINK_DONE && starts == 0);
     reset_station(0);
     request_station(2, 1);
-    run_station(6000, 1, 20, 1, 1, 1);
+    run_station(6000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION && g_station_work.phase == STATION_LINK_DONE);
     assert(Vision_WorkResult == WORK_RESULT_ATTEMPTS && !g_station_work.hold);
     assert(g_station_work.result == WORK_RESULT_ATTEMPTS && g_station_work.returned && !Vision_MotorPhase);
-    run_station(1000, 1, 20, 1, 1, 1);
+    run_station(1000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION);
     request_station(3, 2);
-    run_station(600, 2, 20, 1, 1, 1);
+    run_station(600, 2, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION+1u && g_station_work.hold);
     puts("STATION_ATTEMPTS_CONTINUE_OK four_attempts_return_release_result_retained_no_fifth_next_tree_starts");
 }

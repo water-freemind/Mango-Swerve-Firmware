@@ -20,6 +20,8 @@ static uint32_t last_tx, last_rx, mailbox, pending_since;
 static uint32_t last_encoder_tx;
 static uint8_t last_encoder_result;
 static uint32_t last_return_tx;
+static uint32_t last_visual_frame;
+static uint8_t last_visual_state, last_visual_online;
 static uint16_t laser_mm[4]; /* 左、右、后、前的原始毫米值，主循环收帧后更新。 */
 static uint32_t laser_rx_ms;
 static uint8_t laser_received;
@@ -75,6 +77,31 @@ static void send_encoder_diagnostic(uint32_t now)
     }
 }
 
+static void send_visual_diagnostic(void)
+{
+    CAN_TxHeaderTypeDef header = {0};
+    WorkCanPacket packet;
+    uint8_t data[8];
+    uint32_t diagnostic_mailbox;
+    if(ELBOW_TEST_MODE != 2 || HAL_CAN_GetTxMailboxesFreeLevel(&hcan2) < 2U) return;
+    if(last_visual_frame == Vision_StateFrameCount && last_visual_state == Vision_WorkState &&
+       last_visual_online == Vision_Online) return;
+    packet.state=STATION_VISION_DIAG;
+    packet.task=(uint16_t)Vision_TreeDX | ((uint32_t)(uint16_t)Vision_StateFrameCount << 16);
+    packet.region=Vision_Region;
+    packet.result=Vision_WorkState | (Vision_Online?STATION_VISION_ONLINE_FLAG:0u);
+    station_can_encode(data,packet);
+    header.StdId=WORK_CAN_REQUEST_ID;
+    header.IDE=CAN_ID_STD;header.RTR=CAN_RTR_DATA;header.DLC=8;
+    header.TransmitGlobalTime=DISABLE;
+    if(HAL_CAN_AddTxMessage(&hcan2,&header,data,&diagnostic_mailbox)==HAL_OK) {
+        last_visual_frame=Vision_StateFrameCount;
+        last_visual_state=Vision_WorkState;
+        last_visual_online=Vision_Online;
+        ++CAN_Test_TxCount;
+    }
+}
+
 void CAN_Test_Init(void)
 {
     CAN_FilterTypeDef filter = {0};
@@ -83,6 +110,8 @@ void CAN_Test_Init(void)
     last_tx = last_rx = 0;
     last_encoder_tx = 0; last_encoder_result = 0;
     last_return_tx=0;
+    last_visual_frame=UINT32_MAX;
+    last_visual_state=last_visual_online=0;
     CAN_Test_TxCount = CAN_Test_RxCount = CAN_Test_ErrorCount = 0;
     CAN_Test_LastHalError = 0;
     CAN_Test_State = 0;
@@ -260,6 +289,7 @@ void CAN_Test_Task(void)
      */
     /* 独立测试保留激光/状态接收，收帧后返回，不向底盘发布作业请求。 */
     send_encoder_diagnostic(now);
+    send_visual_diagnostic();
     if (ELBOW_TEST_MODE == 0 || ELBOW_TEST_MODE == 2)
     {
         if (tx_pending || (!dirty && (uint32_t)(now - last_tx) < WORK_CAN_PERIOD_MS)) return;

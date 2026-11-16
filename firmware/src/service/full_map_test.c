@@ -18,6 +18,9 @@
 #define NEAR_OBSERVATION_REJECT_MM 100u
 #define NEAR_RECOVERY_HARD_MM 80u
 #define FULL_MAP_ARM_TIMEOUT_MS 30000u
+#define WORK_POSE_CONFIRM_MS 200u
+#define WORK_POSE_HARD_DISTANCE_M .08f
+#define WORK_POSE_HARD_YAW_RAD .13962634f
 
 const char* full_map_phase_name(FullMapPhase p) {
     static const char* const names[]={"IDLE","READY","ARMED","RUNNING","PAUSED","SEGMENT_DONE","DONE","FAULT"};
@@ -34,6 +37,7 @@ void full_map_init(FullMapTest* m,uint32_t now) {
         if(!full_map_set_tree_x(m,row,number,full_map_tree_x_m[row-1][number-1])) m->initialized=false;
 }
 void full_map_stop(FullMapTest* m,const char* reason,bool lose_origin) {
+    m->work_pose_excursion=false;
     m->tree_hold=m->tree_hold_stable=false;
     m->aisle_correction.active=false;
     m->aisle_correction.centering=false;
@@ -737,7 +741,14 @@ static bool refine_tree_position(FullMapTest* m,FullMapInput in) {
             .nominal_x=m->visual_work?m->visual_stop_x:m->trees[index/2u][index%2u].x,
             .target_x=m->motion.segment.end.x};
     }
+    const bool was_ready=a->ready;
     a->ready=in.work_alignment_fresh && in.work_centered;
+    if(a->ready && !was_ready && in.stationary) {
+        /* The visual stop can settle short of the planned brake endpoint.
+         * Record its measured X once before handing the hold to the tool. */
+        a->target_x=m->localization.pose.pose.x;
+        m->motion.segment.end.x=a->target_x;
+    }
     if(a->ready) return false;
     m->tree_hold_stable=false;m->reason="TREE_VISION_WAIT";
     if(in.now-a->started_ms>=12000u) {
@@ -760,6 +771,8 @@ static bool refine_tree_position(FullMapTest* m,FullMapInput in) {
 }
 void full_map_step(FullMapTest* m,FullMapInput in) {
     if(!m->initialized) full_map_init(m,in.now);
+    if(!in.work_enabled || !in.work_active || !m->tree_hold)
+        m->work_pose_excursion=false;
     const AutoTwist previous_command=m->command;
     m->command=m->hint=(AutoTwist){0};
     const LaserSnapshot raw_laser=in.laser;
@@ -836,6 +849,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         const char* reason="WORK_PEER_FAULT";
         if(!in.work_online) reason="WORK_CAN_TIMEOUT";
         else switch(in.work_result) {
+        case STATION_RESULT_CANCELLED: reason="WORK_CANCELLED";break;
         case WORK_RESULT_ATTEMPTS: reason="WORK_ATTEMPTS_EXHAUSTED";break;
         case WORK_RESULT_TREE_TIMEOUT: reason="WORK_TREE_TIMEOUT";break;
         case WORK_RESULT_VISION: reason="WORK_VISION_OFFLINE";break;
@@ -997,7 +1011,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     if(paired_aisle && m->route.segment[m->segment].row==1u && !m->aisle_entry_qualified)
         range_speed=fminf(range_speed,.15f);
     if(visual_alignment) range_speed=fminf(range_speed,.05f);
-    if(in.work_enabled && in.work_slow && in.work_station==m->target_tree) {
+    if(in.work_enabled && m->target_tree && in.work_slow && in.work_station==m->target_tree) {
         if(m->visual_work) range_speed=fminf(range_speed,.10f);
         else if(fabsf(m->motion.segment.end.x-m->localization.pose.pose.x)<=.35f)
             range_speed=fminf(range_speed,m->approach_speed);
@@ -1107,10 +1121,27 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         m->phase=MAP_RUNNING;m->reason="RESUMED";
     }
     if(m->tree_hold) {
-        if(m->aisle_correction.active && m->aisle_correction.centering) {
-            if(in.work_enabled && in.work_active) {
-                full_map_stop(m,"WORK_STATION_MOVED",false);return;
+        if(in.work_enabled && in.work_active) {
+            const AutoPose pose=m->localization.pose.pose;
+            const AutoVec2 target=m->motion.segment.end;
+            const float distance=fmaxf(fabsf(pose.x-target.x),fabsf(pose.y-target.y));
+            const float yaw=fabsf(auto_wrap_angle(pose.yaw-m->motion.segment.heading));
+            const bool displaced=distance>.03f || yaw>m->motion.config.finish_yaw_tolerance ||
+                (m->aisle_correction.active && m->aisle_correction.centering);
+            if(displaced) {
+                if(!m->work_pose_excursion) {
+                    m->work_pose_excursion=true;
+                    m->work_pose_excursion_ms=in.now;
+                }
+                if(distance>WORK_POSE_HARD_DISTANCE_M || yaw>WORK_POSE_HARD_YAW_RAD ||
+                   in.now-m->work_pose_excursion_ms>=WORK_POSE_CONFIRM_MS)
+                    full_map_stop(m,"WORK_STATION_MOVED",false);
+                else m->reason="WORK_POSE_SETTLING";
+                return;
             }
+            m->work_pose_excursion=false;
+        }
+        if(m->aisle_correction.active && m->aisle_correction.centering) {
             m->tree_hold=m->tree_hold_stable=false;
             if(!begin(m,in.now))
                 full_map_stop(m,"TREE_RECENTER_FAILED",false);
@@ -1121,9 +1152,6 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         const AutoVec2 target=m->motion.segment.end;
         if(fabsf(p.x-target.x)>.03f || fabsf(p.y-target.y)>.03f ||
            fabsf(auto_wrap_angle(p.yaw-m->motion.segment.heading))>m->motion.config.finish_yaw_tolerance) {
-            if(in.work_enabled && in.work_active) {
-                full_map_stop(m,"WORK_STATION_MOVED",false);return;
-            }
             m->tree_hold=m->tree_hold_stable=false;
             if(!begin(m,in.now)) full_map_stop(m,"TREE_REPOSITION_FAILED",false);
             else m->reason="TREE_REPOSITION";

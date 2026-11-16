@@ -25,6 +25,11 @@ typedef struct {
     uint32_t return_count, return_sample_ms;
     uint8_t return_motor;
     int16_t return_progress, return_target;
+    uint32_t visual_rx_count, visual_sample_ms;
+    uint16_t visual_frame;
+    int16_t visual_dx;
+    uint8_t visual_region, visual_state;
+    bool visual_online;
 } StationWorkStatus;
 
 extern StationWorkStatus g_station_work;

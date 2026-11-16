@@ -97,7 +97,7 @@ int main(void) {
             check_duty(motors[region], ELBOW_POSITION_RETURN_PWM);
             Encoder_Position[index] = signs[index] * (Vision_RetractTarget + 100);
             tick += 20U; Vision_Motor_Task();
-            check_duty(motors[region], ELBOW_POSITION_SLOW_PWM);
+            check_duty(motors[region], ELBOW_RETURN_HOME_PWM);
             Encoder_Position[index] = signs[index] * Vision_RetractTarget;
             tick += 20U; Vision_Motor_Task();
             assert(Vision_MotorPhase == 4 && !Vision_MotorResult);
@@ -105,6 +105,30 @@ int main(void) {
             assert(Vision_ReturnProgress<=Vision_ReturnTarget);
             check_pwm(0);
         }
+        for(region=1;region<=4;++region) {
+            const int offsets[]={18,100};
+            const unsigned index=motors[region]-1u;
+            for(unsigned sample=0;sample<2;++sample) {
+                memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
+                Vision_Motor_Init();
+                assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start((uint8_t)region));
+                Encoder_Position[index]=signs[index]*Vision_ExtendTarget;
+                tick+=20;Vision_Motor_Task();
+                tick+=VISION_REVERSE_PAUSE_MS;Vision_Motor_Task();
+                assert(Vision_MotorPhase==3);
+                Encoder_Position[index]=signs[index]*(Vision_RetractTarget+offsets[sample]);
+                tick+=10;Vision_Motor_Task();
+                tick+=ELBOW_POSITION_STALL_MS;Vision_Motor_Task();
+                check_pwm(0);
+                if(offsets[sample]==18) {
+                    assert(!Vision_MotorResult && Vision_HomeConfirmed && Vision_MotorPhase==4);
+                    assert(Vision_ReturnProgress==Vision_RetractTarget+18);
+                } else {
+                    assert(Vision_MotorResult==STATION_RESULT_ENCODER_STALL && !Vision_HomeConfirmed);
+                }
+            }
+        }
+        puts("RETURN_TOLERANCE_REPLAY_OK four_motors_18_counts_settled_accept_100_counts_stall");
         Vision_Motor_Init();
         assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start(1));
         tick += ELBOW_POSITION_STALL_MS; Vision_Motor_Task();
@@ -119,7 +143,7 @@ int main(void) {
         assert(Vision_MotorResult == STATION_RESULT_ENCODER_LIMIT && !Vision_HomeConfirmed && !Vision_MotorPhase);
         assert(Vision_FaultMotor == 2 && Vision_FaultProgress > Vision_ExtendTarget);
         check_pwm(0);
-        puts("ENCODER_DUTY_PROFILE_OK strike_100_return_40_slow_25_extend_85_retract_10_overrun_stops");
+        puts("ENCODER_DUTY_PROFILE_OK strike_100_return_40_slow_25_extend_85_retract_2_overrun_stops");
         Vision_Motor_Init();
         assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start(1));
         Encoder_Position[1] -= 20;
@@ -139,7 +163,7 @@ int main(void) {
         memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
         Vision_Motor_Init();
         assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start(2));
-        assert(Vision_ExtendTarget==3858*85/100 && Vision_RetractTarget==3858*10/100);
+        assert(Vision_ExtendTarget==3858*85/100 && Vision_RetractTarget==3858*2/100);
         Encoder_Position[3]=-Vision_ExtendTarget;
         tick+=10;Vision_Motor_EncoderTick();Vision_Motor_Task();
         assert(Vision_MotorPhase==2);check_pwm(0);
@@ -153,13 +177,40 @@ int main(void) {
         check_pwm(0);
         puts("D_COAST_MARGIN_OK 85_percent_target_200_count_coast_95_percent_hard_guard_retained");
         memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
+        Vision_Motor_Init();assert(Vision_Motor_ConfirmHome() && Vision_Motor_Start(1));
+        Encoder_Position[1]=Vision_ExtendTarget;
+        tick+=10;Vision_Motor_Task();
+        tick+=VISION_REVERSE_PAUSE_MS;Vision_Motor_Task();
+        assert(Vision_MotorPhase==3);
+        Encoder_Position[1]=0;
+        tick+=10;Vision_Motor_EncoderTick();
+        assert(Vision_MotorResult==STATION_RESULT_ENCODER_LIMIT && !Vision_HomeConfirmed);
+        check_pwm(0);
+        puts("RETURN_HARD_GUARD_OK zero_crossing_cuts_PWM_requires_home");
+        memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
         Vision_Motor_Init();assert(Vision_Motor_ConfirmHome());
         Encoder_Position[0]=ELBOW_STROKE_A_COUNTS/5;
         assert(!Vision_Motor_Start(1)); /* A must be returned before B can start. */
         assert(Vision_MotorResult==STATION_RESULT_RETURN_NOT_READY && Vision_FaultMotor==1);
-        assert(Vision_FaultPhase==3 && Vision_FaultTarget==ELBOW_STROKE_A_COUNTS/10);
+        assert(Vision_FaultPhase==3 && Vision_FaultTarget==ELBOW_STROKE_A_COUNTS*2/100);
         check_pwm(0);
-        puts("ALL_CHANNEL_RETURN_GATE_OK unretracted_A_blocks_B_start_preserves_10_percent_margin");
+        puts("ALL_CHANNEL_RETURN_GATE_OK unretracted_A_blocks_B_start_2_percent_target");
+        for(unsigned index=0;index<4;++index) {
+            const int magnitudes[]={3822,3866,3866,3858};
+            memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
+            Vision_Motor_Init();assert(Vision_Motor_ConfirmHome());
+            Encoder_Position[index]=signs[index]*(magnitudes[index]*10/100);
+            assert(!Vision_Motor_VerifyReturned());
+            assert(Vision_MotorResult==STATION_RESULT_RETURN_NOT_READY && Vision_FaultMotor==index+1u);
+            memset((void *)Encoder_Position,0,sizeof(Encoder_Position));
+            Vision_Motor_Init();assert(Vision_Motor_ConfirmHome());
+            const int limit=magnitudes[index]*2/100+magnitudes[index]*5/1000;
+            Encoder_Position[index]=signs[index]*limit;
+            assert(Vision_Motor_VerifyReturned());
+            Encoder_Position[index]=signs[index]*(limit+1);
+            assert(!Vision_Motor_VerifyReturned());
+        }
+        puts("RETRACT_GATE_REPLAY_OK four_motors_old_10_percent_rejected_exact_2p5_percent_limit");
         return 0;
     }
     if (ELBOW_TEST_MODE == 3)

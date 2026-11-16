@@ -602,19 +602,33 @@ static void check_work_stop_noise(void) {
     feedback(now);input(now);assert(work_stop_feedback);
     fake_wheel_speed=.20f;
     feedback(now+1u);input(now+1u);assert(work_stop_feedback);
-    feedback(now+40u);input(now+40u);assert(work_stop_feedback);
-    feedback(now+41u);input(now+41u);assert(!work_stop_feedback);
+    feedback(now+120u);input(now+120u);assert(work_stop_feedback);
+    feedback(now+121u);input(now+121u);assert(!work_stop_feedback);
     fake_wheel_speed=0;
-    feedback(now+42u);input(now+42u);assert(work_stop_feedback && !work_stop_excursion);
+    feedback(now+122u);input(now+122u);assert(work_stop_feedback && !work_stop_excursion);
+    /* The observed strike impulse 0.327 rad/s is allowed for 60 ms. */
+    fake_wheel_speed=.327f;
+    for(unsigned step=1;step<=6;step++) {
+        feedback(now+122u+step*10u);input(now+122u+step*10u);
+        assert(work_stop_feedback);
+    }
+    fake_wheel_speed=0;
+    feedback(now+192u);input(now+192u);assert(work_stop_feedback);
+    /* A faster sub-hard-limit excursion exhausts the 2 mm budget first. */
+    fake_wheel_speed=.8f;
+    feedback(now+202u);input(now+202u);assert(work_stop_feedback);
+    feedback(now+252u);input(now+252u);assert(!work_stop_feedback);
+    fake_wheel_speed=0;
+    feedback(now+262u);input(now+262u);assert(work_stop_feedback);
     fake_wheel_speed=WORK_STOP_HARD_WHEEL_RAD_S+.01f;
-    feedback(now+43u);input(now+43u);assert(!work_stop_feedback);
+    feedback(now+272u);input(now+272u);assert(!work_stop_feedback);
     fake_wheel_speed=.20f;
-    feedback(now+44u);motor_ms[4]=now-101u;input(now+44u);assert(!work_stop_feedback);
+    feedback(now+282u);motor_ms[4]=now-101u;input(now+282u);assert(!work_stop_feedback);
     fake_wheel_speed=NAN;
-    feedback(now+45u);input(now+45u);assert(!work_stop_feedback);
+    feedback(now+292u);input(now+292u);assert(!work_stop_feedback);
     fake_wheel_speed=0;g_station_work.phase=STATION_LINK_SYNC;
-    feedback(now+46u);input(now+46u);
-    puts("WORK_STOP_NOISE_OK 7ms_excursion_tolerated_40ms_bound_hard_speed_stale_nonfinite_stop");
+    feedback(now+302u);input(now+302u);
+    puts("WORK_STOP_NOISE_OK recorded_0p327_impulse_120ms_bound_2mm_travel_hard_speed_stale_nonfinite_stop");
 }
 static void check_can_manual_recovery(void) {
     const unsigned now=200000u;
@@ -668,6 +682,25 @@ static void check_can_manual_recovery(void) {
     puts("WORK_STOP_HYSTERESIS_OK strict_start_continuation_noise_band_all_wheels_bound");
 }
 int main(void) {
+    /* Recorded HOST offsets 1473/1523/1527 must not revoke permission. */
+    g_test_tick_ms=100u;
+    fake_ry=1473u; fake_rx=1527u;
+    blockers=0; assert(remote_permit() && !(blockers&BLOCK_RC_STICK));
+    fake_ry=1523u;
+    blockers=0; assert(remote_permit());
+    fake_ry=1560u;
+    blockers=0; assert(remote_permit());
+    g_test_tick_ms=199u; blockers=0; assert(remote_permit());
+    g_test_tick_ms=200u; blockers=0;
+    assert(!remote_permit() && (blockers&BLOCK_RC_STICK));
+    fake_ry=1530u; blockers=0; assert(remote_permit());
+    fake_ry=1620u; blockers=0; assert(!remote_permit());
+    fake_swc=2000u; fake_vrb=1000u; fake_rx=fake_ry=1500u;
+    blockers=0; assert(remote_permit()); /* Manual switch takes effect immediately. */
+    fake_swc=1500u; fake_swd=1000u;
+    blockers=0; assert(!remote_permit() && (blockers&BLOCK_RC_SWITCH));
+    fake_swd=2000u; fake_vrb=1500u;
+    puts("HOST_STICK_REPLAY_OK neutral_noise_debounce_large_move_immediate_manual_SWD_immediate");
     map_work_enabled=false;
     test.phase = ST_IDLE;
     test.target_m = 4.0f;

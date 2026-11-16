@@ -59,6 +59,8 @@ public static class MangoStraightConsole {
             {"TREE_VISION_BRAKE","识别到树和绿色芒果，正在停车对中"},
             {"VISION_SCAN_END","本垄扫描结束，确认疏果端空闲后换垄"},
             {"WORK_PEER_FAULT","疏果端故障，请查看作业结果码"},
+            {"WORK_CANCELLED","作业任务已取消，请查看 TEST_WORK_CANCEL 中的遥控许可和跑图状态"},
+            {"WORK_POSE_SETTLING","作业保持停车，正在确认短时定位偏差"},
             {"VRB_RELEASED","VRB尚未压到使能位置，请保持VRB≤1250"},
             {"SWD_REARM","请松杆回中，将SWD拨到1000再拨回2000"},
             {"STICKS_NOT_CENTERED","请先松杆回中，再手动接管"},
@@ -172,7 +174,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT|WORK_ENCODER|WORK_STOP)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT|WORK_VISION|WORK_ENCODER|WORK_STOP)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.UTF8.GetBytes(ChineseStatus(plain) + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -354,7 +356,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
-        if (category == "WORK" || category == "WORK_EVENT" || category == "WORK_ENCODER" || category == "WORK_STOP") return true;
+        if (category == "WORK" || category == "WORK_EVENT" || category == "WORK_VISION" || category == "WORK_ENCODER" || category == "WORK_STOP") return true;
         if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "MAP_TREE_EVENT" || category == "MAP_CONTROL_FAULT" || category == "PREDICT") return true;
         if (category == "MAP_STATUS" || category == "MAP_POSE" || category == "MAP_AISLE" || category == "MAP_TREE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;

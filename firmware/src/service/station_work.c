@@ -9,6 +9,9 @@ static volatile bool pending;
 static volatile WorkCanPacket encoder_inbox;
 static volatile uint32_t encoder_inbox_ms;
 static volatile bool encoder_pending;
+static volatile WorkCanPacket visual_inbox;
+static volatile uint32_t visual_inbox_ms;
+static volatile bool visual_pending;
 static uint32_t peer_ms, sent_ms, started_ms, next_task;
 static bool initialized, dirty, seen_peer, task_acknowledged;
 static bool stopped_tracking;
@@ -29,6 +32,12 @@ static bool receive_station(const Can3Frame* frame, void* user) {
         encoder_pending=true;
         return true;
     }
+    if(packet.state==STATION_VISION_DIAG) {
+        visual_inbox=packet;
+        visual_inbox_ms=frame->rx_ms;
+        visual_pending=true;
+        return true;
+    }
     inbox = packet;
     inbox_ms = frame->rx_ms;
     pending = true;
@@ -39,6 +48,7 @@ bool station_work_init(void) {
     memset(&g_station_work, 0, sizeof(g_station_work));
     pending = seen_peer = task_acknowledged = false;
     encoder_pending=false;
+    visual_pending=false;
     stopped_tracking=false;
     manual_recovery_pending=false;
     visual_scan=scan_cancel_pending=false;realign_sequence=0;
@@ -65,6 +75,13 @@ bool station_work_confirm_home(bool stationary) {
     g_station_work.phase=STATION_LINK_SYNC;
     g_station_work.task=0u;g_station_work.station=0u;
     g_station_work.home_pending=true;
+    g_station_work.slow_requested=g_station_work.stop_requested=false;
+    g_station_work.align_seen=g_station_work.aligned=false;
+    g_station_work.align_direction=0;
+    g_station_work.align_updates=0;
+    visual_scan=scan_cancel_pending=false;
+    task_acknowledged=false;
+    realign_sequence=0;
     manual_recovery_pending=false;
     started_ms=HAL_GetTick();
     dirty=true;
@@ -171,6 +188,7 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
     if(packet.state == STATION_HOME_READY && packet.task == 0u && packet.region == 0u &&
        g_station_work.phase == STATION_LINK_SYNC && g_station_work.home_pending) {
         g_station_work.home_pending=false;
+        g_station_work.slow_requested=g_station_work.stop_requested=false;
         g_station_work.hold=false;
         g_station_work.returned=true;
         g_station_work.result=WORK_RESULT_OK;
@@ -273,10 +291,13 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
 void station_work_process(uint32_t now, bool healthy, bool stationary) {
     WorkCanPacket packet, command;
     WorkCanPacket encoder_packet;
+    WorkCanPacket visual_packet;
     uint32_t stamp;
     uint32_t encoder_stamp;
+    uint32_t visual_stamp;
     bool received;
     bool encoder_received;
+    bool visual_received;
     uint8_t bytes[8];
     uint32_t key;
     if(!WORK_STATION_ENABLED || !initialized) return;
@@ -290,8 +311,21 @@ void station_work_process(uint32_t now, bool healthy, bool stationary) {
     encoder_packet=encoder_inbox;
     encoder_stamp=encoder_inbox_ms;
     encoder_pending=false;
+    visual_received=visual_pending;
+    visual_packet=visual_inbox;
+    visual_stamp=visual_inbox_ms;
+    visual_pending=false;
     now = HAL_GetTick();
     __set_PRIMASK(key);
+    if(visual_received && (uint32_t)(now-visual_stamp)<WORK_CAN_TIMEOUT_MS) {
+        g_station_work.visual_dx=(int16_t)(uint16_t)visual_packet.task;
+        g_station_work.visual_frame=(uint16_t)(visual_packet.task>>16);
+        g_station_work.visual_region=visual_packet.region;
+        g_station_work.visual_state=visual_packet.result&0x0fu;
+        g_station_work.visual_online=(visual_packet.result&STATION_VISION_ONLINE_FLAG)!=0u;
+        g_station_work.visual_sample_ms=visual_stamp;
+        ++g_station_work.visual_rx_count;
+    }
     if(!healthy || !stationary) stopped_tracking=false;
     else if(!stopped_tracking) {
         stopped_tracking=true;

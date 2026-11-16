@@ -118,6 +118,8 @@ typedef struct {
     uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
     bool tree_hold, tree_hold_stable;
     uint32_t tree_hold_ms;
+    bool work_pose_excursion;
+    uint32_t work_pose_excursion_ms;
 } FullMapTest;
 /* Station vehicle-center X in metres from the west map boundary. No guessed defaults. */
 bool full_map_set_tree_x(FullMapTest* map,unsigned row,unsigned number,float x);

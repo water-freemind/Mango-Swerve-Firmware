@@ -11,6 +11,7 @@ volatile uint8_t Vision_Region;
 volatile int32_t Vision_TreeDX = 9999;
 volatile uint8_t Vision_Online;
 volatile uint32_t Vision_FrameCount;
+volatile uint32_t Vision_StateFrameCount;
 volatile uint32_t Vision_ByteCount;
 volatile uint32_t Vision_BadFrameCount;
 
@@ -167,6 +168,7 @@ void Vision_Motor_Init(void)
     pending_dx = Vision_TreeDX = 9999;
     Vision_Region = Vision_Online = 0;
     last_frame = Vision_FrameCount = 0;
+    Vision_StateFrameCount = 0;
     Vision_ByteCount = Vision_BadFrameCount = 0;
     Vision_MotorRegion = Vision_MotorPhase = 0;
     phase_started = 0;
@@ -253,9 +255,14 @@ static uint8_t position_step(uint32_t now)
     }
     if (progress < -8) Vision_MotorResult = STATION_RESULT_ENCODER_DIRECTION;
     if (progress > magnitude * 95 / 100 ||
-        (Vision_MotorPhase == 3 && progress < magnitude * 5 / 100))
+        (Vision_MotorPhase == 3 && progress < magnitude * (int32_t)ELBOW_RETURN_HARD_MARGIN_PERMILLE / 1000))
         Vision_MotorResult = STATION_RESULT_ENCODER_LIMIT;
     if (remaining <= 0 && !Vision_MotorResult) return 1;
+    /* A settled return inside the same tolerance used by the four-channel
+     * return gate is complete. Stop PWM before attempting further motion. */
+    if (!Vision_MotorResult && Vision_MotorPhase == 3 &&
+        remaining <= magnitude * (int32_t)ELBOW_RETURN_TOLERANCE_PERMILLE / 1000 &&
+        (uint32_t)(now - last_motion_ms) >= ELBOW_POSITION_STALL_MS) return 1;
     if (!Vision_MotorResult && (uint32_t)(now - phase_started) >= ELBOW_POSITION_TIMEOUT_MS)
         Vision_MotorResult = STATION_RESULT_ENCODER_TIMEOUT;
     if (!Vision_MotorResult && (uint32_t)(now - last_motion_ms) >= ELBOW_POSITION_STALL_MS)
@@ -274,6 +281,8 @@ static uint8_t position_step(uint32_t now)
     pwm = Vision_MotorPhase == 1 ? ELBOW_POSITION_PWM : ELBOW_POSITION_RETURN_PWM;
     if (remaining <= magnitude * (int32_t)ELBOW_POSITION_SLOW_ZONE_PERCENT / 100)
         pwm = Vision_MotorPhase==1 && index==0u ? ELBOW_A_STRIKE_SLOW_PWM : ELBOW_POSITION_SLOW_PWM;
+    if (Vision_MotorPhase == 3 && remaining <= magnitude * (int32_t)ELBOW_RETURN_HOME_ZONE_PERCENT / 100)
+        pwm = ELBOW_RETURN_HOME_PWM;
     if (pwm != motor_pwm)
     {
         motor_pwm = pwm;
@@ -330,6 +339,7 @@ void Vision_Motor_Task(void)
     Vision_Region = region;
     Vision_TreeDX = dx;
     Vision_Online = valid;
+    Vision_StateFrameCount = frame_count;
 
     if (ELBOW_TEST_MODE == 3)
     {
@@ -456,8 +466,8 @@ uint8_t Vision_Motor_VerifyReturned(void) {
         int32_t delta=(int32_t)((uint32_t)Encoder_Position[index]-(uint32_t)motor_home[index]);
         int32_t progress=full_stroke[index]<0?-delta:delta;
         int32_t target=magnitude*ELBOW_STROKE_MARGIN_PERCENT/100;
-        /* Retain the measured 10% return margin and allow 2% encoder tolerance. */
-        if(progress < -8 || progress > target+magnitude*2/100) {
+        /* The release gate uses the same bounded return tolerance as motion. */
+        if(progress < -8 || progress > target+magnitude*(int32_t)ELBOW_RETURN_TOLERANCE_PERMILLE/1000) {
             Vision_FaultMotor=index+1u;Vision_FaultPhase=3;
             Vision_FaultProgress=progress;Vision_FaultTarget=target;
             Vision_MotorResult=STATION_RESULT_RETURN_NOT_READY;

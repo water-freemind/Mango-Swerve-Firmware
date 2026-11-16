@@ -29,8 +29,8 @@
  * 修改参数后需要重新编译和烧录。当前激光读数只参与显示。
  */
 #define WORK_DX_CENTER STATION_VISION_CENTER_DX // 调整相机位置后以0像素为对中目标。
-#define WORK_SLOW_DX 100                  // 进入中心 ±100 像素时请求底盘减速。
-#define WORK_STOP_DX 30                   // 目标稳定且进入中心 ±30 像素时请求停车。
+#define WORK_SLOW_DX 100                  // 模式2稳定目标进入±100像素即请求平滑停车，再由底盘视觉对中。
+#define WORK_STOP_DX 30                   // 传统协同停车区间；模式2首次捕获时用此范围排除已驶过的树。
 #define WORK_LEAVE_DX 120                 // 树越过离树位置后，才允许触发下一棵树。
 #define WORK_LEAVE_DIRECTION (-1)         // -1 表示树离开时 dx 变小，+1 表示变大，按实车标定。
 #define WORK_TARGET_STABLE_MS 200U        // 同一区域目标至少持续 200 ms，代码另要求至少 3 帧。
@@ -98,6 +98,7 @@ extern volatile uint8_t Vision_Region;          // 当前视觉区域：0 无目
 extern volatile int32_t Vision_TreeDX;          // 树的水平偏移：左负右正；9999 表示无树或视觉离线。
 extern volatile uint8_t Vision_Online;          // 视觉通信状态：1 正常，0 离线。
 extern volatile uint32_t Vision_FrameCount;     // 累计解析成功的帧数，状态机用它区分新帧和旧帧。
+extern volatile uint32_t Vision_StateFrameCount; // 与当前区域、dx一同提交的帧序号，供CAN诊断使用。
 extern volatile uint32_t Vision_ByteCount;      // 累计收到并交给解析器的字节数，排查串口时查看。
 extern volatile uint32_t Vision_BadFrameCount;  // 累计丢弃的格式错误帧/超长数据次数。
 

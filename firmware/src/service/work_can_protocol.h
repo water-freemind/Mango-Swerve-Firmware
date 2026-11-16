@@ -63,9 +63,11 @@ static inline uint8_t work_can_decode(const uint8_t data[8], WorkCanPacket* pack
 #define STATION_RESULT_RETURN_NOT_READY 16u
 #define STATION_RESULT_MAX STATION_RESULT_RETURN_NOT_READY
 #define STATION_ENCODER_RETURN_FLAG 0x20u
+/* Diagnostic task packs signed dx in low 16 bits and frame sequence in high 16. */
+#define STATION_VISION_ONLINE_FLAG 0x10u
 #define STATION_VISION_CENTER_DX 0
-#define STATION_VISION_STOP_PX 30
-#define STATION_VISION_RESTART_PX 45
+#define STATION_VISION_STOP_PX 15
+#define STATION_VISION_RESTART_PX 30
 #define STATION_VISION_STABLE_MS 300u
 #define STATION_VISION_MAX_AGE_MS 300u
 #define STATION_VISUAL_TRIGGER_FLAG 1u
@@ -77,7 +79,7 @@ typedef enum {
     STATION_FAULT, STATION_ABORTING, STATION_HELLO, STATION_APPROACH,
     STATION_SLOW, STATION_WAIT, STATION_TRACKING,
     STATION_ALIGN, STATION_ALIGN_EAST, STATION_ALIGN_WEST, STATION_CENTERED,
-    STATION_HOME, STATION_HOME_READY, STATION_ENCODER_DIAG, STATION_REALIGN
+    STATION_HOME, STATION_HOME_READY, STATION_ENCODER_DIAG, STATION_REALIGN, STATION_VISION_DIAG
 } StationCanState;
 
 /* 对中反馈的最后一字节为视觉新帧序号，重复心跳保持原序号。 */
@@ -90,7 +92,7 @@ static inline uint8_t station_can_is_reply(uint8_t state) {
         state == STATION_DONE || state == STATION_RELEASED ||
         state == STATION_FAULT || state == STATION_ABORTING || state == STATION_HELLO || state == STATION_SLOW ||
         state == STATION_WAIT || state == STATION_TRACKING || state == STATION_HOME_READY ||
-        state == STATION_ENCODER_DIAG || state == STATION_REALIGN || station_can_is_alignment(state);
+        state == STATION_ENCODER_DIAG || state == STATION_VISION_DIAG || state == STATION_REALIGN || station_can_is_alignment(state);
 }
 static inline void station_can_encode(uint8_t data[8], WorkCanPacket packet) {
     work_can_encode(data, packet);
@@ -98,13 +100,14 @@ static inline void station_can_encode(uint8_t data[8], WorkCanPacket packet) {
 }
 static inline uint8_t station_can_decode(const uint8_t data[8], WorkCanPacket* packet) {
     if(data[0] != STATION_CAN_VERSION || data[1] < STATION_SYNC ||
-       data[1] > STATION_REALIGN ||
+       data[1] > STATION_VISION_DIAG ||
+       (data[1] == STATION_VISION_DIAG && (data[6]>4u || (data[7]&0xe0u) || (data[7]&0x0fu)>10u)) ||
        (data[1] == STATION_ENCODER_DIAG ?
         ((data[6]&7u)<1u || (data[6]&7u)>4u ||
          (data[6]&0xc0u) ||
          (((data[6]>>3)&3u)!=1u && ((data[6]>>3)&3u)!=3u) ||
          ((data[6]&STATION_ENCODER_RETURN_FLAG) && (((data[6]>>3)&3u)!=3u || data[7]))) : data[6]>12u) ||
-       (!station_can_is_alignment(data[1]) && data[1] != STATION_REALIGN && data[1] != STATION_ALIGN && data[7] > STATION_RESULT_MAX))
+       (!station_can_is_alignment(data[1]) && data[1] != STATION_REALIGN && data[1] != STATION_ALIGN && data[1] != STATION_VISION_DIAG && data[7] > STATION_RESULT_MAX))
         return 0u;
     packet->state = data[1];
     packet->task = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |

@@ -74,6 +74,8 @@ static bool rc_online, rc_switches, rc_centered;
 static bool work_stop_feedback;
 static bool work_stop_excursion;
 static uint32_t work_stop_excursion_ms;
+static uint32_t work_stop_sample_ms;
+static float work_stop_excursion_m;
 static Bmi088AttitudeDebug imu_debug;
 static bool imu_debug_valid;
 static uint32_t imu_age_us;
@@ -152,6 +154,8 @@ static void motor_received(FDCAN_HandleTypeDef* bus, const FDCAN_RxHeaderTypeDef
     seen |= (uint8_t)(1u << index);
 }
 static bool remote_permit(void) {
+    static uint32_t stick_since;
+    static bool stick_pending, stick_blocked;
     remote_process();
     rc_online = remote_get_state(&rc_state) && remote_is_online(100u);
     rc_state.online = rc_online;
@@ -160,11 +164,28 @@ static bool remote_permit(void) {
         rc_state.rc_data.channel[REMOTE_CH_VRA] > REMOTE_VR_LOW_THRESHOLD &&
         (drive_source_requested(&rc_state) != DRIVE_SOURCE_MANUAL || drive_source_manual_vrb_ok(&rc_state));
     /* Manual additionally requires the spring-return VRB permit; HOST does not. */
-    rc_centered = true;
+    unsigned stick_offset = 0u;
     const unsigned channels[] = {REMOTE_CH_RIGHT_X, REMOTE_CH_RIGHT_Y, REMOTE_CH_LEFT_X};
-    for(unsigned i = 0u; i < 3u; ++i)
-        if((unsigned)abs((int)rc_state.rc_data.channel[channels[i]] - (int)REMOTE_CENTER) > REMOTE_DEADBAND)
-            rc_centered = false;
+    for(unsigned i = 0u; i < 3u; ++i) {
+        const unsigned offset = (unsigned)abs(
+            (int)rc_state.rc_data.channel[channels[i]] - (int)REMOTE_CENTER);
+        if(offset > stick_offset) stick_offset = offset;
+    }
+    if(!rc_online || drive_source_requested(&rc_state) != DRIVE_SOURCE_HOST) {
+        stick_pending = stick_blocked = false;
+        rc_centered = drive_source_centered(&rc_state);
+    } else {
+        /* Neutral jitter must not cancel a run. Deliberate movement and switch
+         * handovers still revoke HOST permission without waiting for a fault. */
+        const uint32_t now = HAL_GetTick();
+        if(stick_offset <= 35u) stick_pending = stick_blocked = false;
+        else if(stick_offset > 50u) {
+            if(!stick_pending) { stick_pending = true; stick_since = now; }
+            if(stick_offset >= 120u || (uint32_t)(now-stick_since) >= 100u)
+                stick_blocked = true;
+        } else stick_pending = false;
+        rc_centered = !stick_blocked;
+    }
     if(!rc_online) blockers |= BLOCK_RC_OFFLINE;
     else {
         if(!rc_switches) blockers |= BLOCK_RC_SWITCH;
@@ -196,6 +217,7 @@ static StraightInput input(uint32_t now) {
      * newer than the loop's original 'now', which must not underflow its age. */
     now = HAL_GetTick();
     work_stop_feedback=true;
+    bool work_feedback_valid=true;
     trace_sensor = (ChassisTraceSample){.t_ms = now};
     for(unsigned i = 0u; i < 8u; ++i) motor_age[i] = now - stamp[i];
     for(unsigned i = 0u; i < 8u; ++i)
@@ -226,21 +248,33 @@ static StraightInput input(uint32_t now) {
         in.stationary = in.stationary && fabsf(speed) < 0.05f;
         /* Start uses the strict zero-speed gate. Continued work tolerates only
          * a bounded, short excursion, with fresh finite feedback on each wheel. */
-        work_stop_feedback=work_stop_feedback && drive_status[id-1u]==MOTOR_STATUS_OK &&
-            motor_age[id+3u]<=WORK_FEEDBACK_TIMEOUT_MS && fabsf(speed)<=WORK_STOP_CONTINUE_WHEEL_RAD_S;
+        const bool valid=drive_status[id-1u]==MOTOR_STATUS_OK &&
+            motor_age[id+3u]<=WORK_FEEDBACK_TIMEOUT_MS && isfinite(speed);
+        work_feedback_valid=work_feedback_valid && valid;
+        work_stop_feedback=work_stop_feedback && valid && fabsf(speed)<=WORK_STOP_CONTINUE_WHEEL_RAD_S;
         in.vx_mps += sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * cosf(angle) * 0.25f;
         in.vy_mps -= sign * speed * STRAIGHT_TEST_WHEEL_RADIUS_M * sinf(angle) * 0.25f;
     }
     float peak_wheel_speed=0;
     for(unsigned i=0;i<4u;i++) peak_wheel_speed=fmaxf(peak_wheel_speed,fabsf(trace_sensor.wheel_rad_s[i]));
     const bool working=g_station_work.phase==STATION_LINK_WORKING || g_station_work.phase==STATION_LINK_RELEASE;
-    if(!working || work_stop_feedback || trace_sensor.drive_valid_mask!=15u) work_stop_excursion=false;
-    else if(!work_stop_excursion) {
-        work_stop_excursion=true;
-        work_stop_excursion_ms=now;
+    if(!working || work_stop_feedback) {
+        work_stop_excursion=false;
+        work_stop_excursion_m=0;
+    } else if(work_feedback_valid && trace_sensor.drive_valid_mask==15u) {
+        if(!work_stop_excursion) {
+            work_stop_excursion=true;
+            work_stop_excursion_ms=now;
+            work_stop_excursion_m=0;
+        }
+        const uint32_t elapsed=now-work_stop_sample_ms;
+        work_stop_excursion_m+=peak_wheel_speed*STRAIGHT_TEST_WHEEL_RADIUS_M*(float)elapsed*.001f;
     }
+    work_stop_sample_ms=now;
     if(working && work_stop_excursion && trace_sensor.drive_valid_mask==15u &&
+       work_feedback_valid &&
        peak_wheel_speed<=WORK_STOP_HARD_WHEEL_RAD_S &&
+       work_stop_excursion_m<WORK_STOP_EXCURSION_M &&
        (uint32_t)(now-work_stop_excursion_ms)<WORK_STOP_NOISE_MS)
         work_stop_feedback=true;
     const ImuAngle attitude = imu.get_angle();
@@ -550,6 +584,15 @@ static void commands(uint32_t now, StraightInput in) {
 }
 static void log_work_event(uint32_t now) {
     static uint32_t previous_return_count;
+    static uint32_t previous_visual_count;
+    if(previous_visual_count!=g_station_work.visual_rx_count) {
+        previous_visual_count=g_station_work.visual_rx_count;
+        log_info("TEST_WORK_VISION t_ms=%lu frame=%u dx=%d region=%u state=%u online=%u station=%u task=%lu sample_ms=%lu",
+            (unsigned long)now,g_station_work.visual_frame,(int)g_station_work.visual_dx,
+            g_station_work.visual_region,g_station_work.visual_state,(unsigned)g_station_work.visual_online,
+            g_station_work.station,(unsigned long)g_station_work.task,
+            (unsigned long)g_station_work.visual_sample_ms);
+    }
     if(previous_return_count!=g_station_work.return_count) {
         previous_return_count=g_station_work.return_count;
         log_info("TEST_WORK_RETURN t_ms=%lu motor=%u progress=%d target=%d count=%lu sample_ms=%lu",
@@ -915,18 +958,25 @@ void straight_test_app_loop(void) {
             g_station_work.phase==STATION_LINK_ALIGN ||
             g_station_work.phase==STATION_LINK_WORKING || g_station_work.phase==STATION_LINK_RELEASE;
         if(transaction && (!in.healthy || !full_map_active(&full_map) ||
-           (g_station_work.hold && full_map.phase!=MAP_RUNNING)))
+           (g_station_work.hold && full_map.phase!=MAP_RUNNING))) {
+            log_info("TEST_WORK_CANCEL t_ms=%lu blockers=0x%lx source=%s map_reason=%s RX=%u RY=%u LX=%u",
+                (unsigned long)now,(unsigned long)blockers,drive_source_name(control_source.mode),
+                full_map.reason,rc_state.rc_data.channel[REMOTE_CH_RIGHT_X],
+                rc_state.rc_data.channel[REMOTE_CH_RIGHT_Y],rc_state.rc_data.channel[REMOTE_CH_LEFT_X]);
             station_work_abort(hardware_healthy()?STATION_RESULT_CANCELLED:WORK_RESULT_FEEDBACK);
+        }
         const bool work_running=g_station_work.phase==STATION_LINK_WORKING ||
             g_station_work.phase==STATION_LINK_RELEASE;
         station_work_process(now,hardware_healthy(),work_running?work_stop_feedback:in.stationary);
         if(work_running && g_station_work.phase==STATION_LINK_FAULT && g_station_work.result==WORK_RESULT_FEEDBACK)
-            log_info("TEST_WORK_STOP t_ms=%lu blockers=0x%lx valid=0x%x speed=%.3f,%.3f,%.3f,%.3f age=%u,%u,%u,%u",
+            log_info("TEST_WORK_STOP t_ms=%lu blockers=0x%lx valid=0x%x speed=%.3f,%.3f,%.3f,%.3f age=%u,%u,%u,%u excursion_ms=%lu travel_mm=%.2f",
                 (unsigned long)now,(unsigned long)blockers,trace_sensor.drive_valid_mask,
                 (double)trace_sensor.wheel_rad_s[0],(double)trace_sensor.wheel_rad_s[1],
                 (double)trace_sensor.wheel_rad_s[2],(double)trace_sensor.wheel_rad_s[3],
                 trace_sensor.drive_age_ms[0],trace_sensor.drive_age_ms[1],
-                trace_sensor.drive_age_ms[2],trace_sensor.drive_age_ms[3]);
+                trace_sensor.drive_age_ms[2],trace_sensor.drive_age_ms[3],
+                (unsigned long)(work_stop_excursion?now-work_stop_excursion_ms:0u),
+                (double)(work_stop_excursion_m*1000));
     }
     update_drift(in);
     if(rx_fault) straight_fault(&test, "UART_ERROR_OR_OVERFLOW");

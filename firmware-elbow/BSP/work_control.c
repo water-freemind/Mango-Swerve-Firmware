@@ -149,8 +149,8 @@ static void process_check(uint32_t now, uint32_t frame_count,
         return;
     }
     missing_timing = 0;
-    if (offset < -(ELBOW_TEST_MODE == 2 ? STATION_VISION_RESTART_PX : WORK_STOP_DX) ||
-        offset > (ELBOW_TEST_MODE == 2 ? STATION_VISION_RESTART_PX : WORK_STOP_DX))
+    if (offset < -(ELBOW_TEST_MODE == 2 ? STATION_VISION_STOP_PX : WORK_STOP_DX) ||
+        offset > (ELBOW_TEST_MODE == 2 ? STATION_VISION_STOP_PX : WORK_STOP_DX))
     {
         /* 回收并等待图像稳定后，偏移超出死区则重新对中，保留本树次数。 */
         if (ELBOW_TEST_MODE == 2 && !Vision_MotorPhase)
@@ -495,7 +495,7 @@ static void process_station(uint32_t now, uint32_t frame_count)
              Vision_WorkState == VISION_WORK_ALIGN)
     {
         if (!alignment_centered || alignment_reply != STATION_CENTERED || !Vision_Online ||
-            Vision_TreeDX == 9999 || offset < -STATION_VISION_RESTART_PX || offset > STATION_VISION_RESTART_PX)
+            Vision_TreeDX == 9999 || offset < -STATION_VISION_STOP_PX || offset > STATION_VISION_STOP_PX)
         {
             if(!Vision_MotorPhase && Vision_Online && Vision_Motor_VerifyReturned())
             {
@@ -525,8 +525,12 @@ static void process_station(uint32_t now, uint32_t frame_count)
              (station_visual_trigger && (Vision_WorkState==VISION_WORK_IDLE ||
               Vision_WorkState==VISION_WORK_APPROACH || Vision_WorkState==VISION_WORK_WAIT_STOP))))
     {
-        if(Vision_WorkState==VISION_WORK_RELEASE) station_departure_pending=1;
-        change_state(VISION_WORK_LEAVING, now);
+        if(!Vision_Motor_VerifyReturned())
+            fail(Vision_MotorResult?Vision_MotorResult:STATION_RESULT_RETURN_NOT_READY,now);
+        else {
+            if(Vision_WorkState==VISION_WORK_RELEASE) station_departure_pending=1;
+            change_state(VISION_WORK_LEAVING, now);
+        }
     }
 
     if(station_visual_trigger && station_departure_pending && new_frame && Vision_Online)
@@ -556,21 +560,36 @@ static void process_station(uint32_t now, uint32_t frame_count)
         else if(station_visual_trigger)
         {
             uint8_t valid_target=Vision_TreeDX!=9999 && Vision_Region && !station_departure_pending &&
-                offset*station_travel_direction>=-WORK_STOP_DX;
-            update_target(now,new_frame,valid_target,offset);
+                (Vision_WorkState!=VISION_WORK_IDLE || offset*station_travel_direction>=-WORK_STOP_DX);
             if(new_frame)
             {
                 if(!valid_target || offset < -STATION_VISUAL_SLOW_PX || offset > STATION_VISUAL_SLOW_PX)
                 {
                     if(Vision_WorkState==VISION_WORK_APPROACH &&
                        (uint32_t)(now-station_target_seen_ms)>=300u)
+                    {
+                        stable_region=stable_frames=0;
                         change_state(VISION_WORK_IDLE,now);
+                    }
                 }
                 else if(Vision_WorkState!=VISION_WORK_WAIT_STOP)
                 {
+                    /* Acquire while slowing across the whole visual window.
+                     * Keep evidence over a brief gap, then let the chassis
+                     * brake and align before the final fruit confirmation. */
+                    if(!stable_frames ||
+                       (uint32_t)(now-station_target_seen_ms)>300u) {
+                        stable_frames=0;
+                        stable_since=now;
+                    }
+                    /* During travel any green region confirms this tree.
+                     * The stopped CHECK stage independently selects the motor. */
+                    stable_region=Vision_Region;
+                    if(stable_frames<255u) ++stable_frames;
                     station_target_seen_ms=now;
                     if(stable_frames>=3u && (uint32_t)(now-stable_since)>=WORK_TARGET_STABLE_MS &&
-                       offset>=-WORK_STOP_DX && offset<=WORK_STOP_DX)
+                       ((offset>=-WORK_SLOW_DX && offset<=WORK_SLOW_DX) ||
+                        offset*station_travel_direction<=0))
                         change_state(VISION_WORK_WAIT_STOP,now);
                     else if(Vision_WorkState!=VISION_WORK_APPROACH) change_state(VISION_WORK_APPROACH,now);
                 }

@@ -1,4 +1,5 @@
 #include "full_map_test.h"
+#include "work_can_protocol.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -430,6 +431,12 @@ static void work_failure_reason_test(void) {
     full_map_step(&map,input);
     assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WORK_ATTEMPTS_EXHAUSTED"));
     assert(map.command.vx==0 && map.command.vy==0);
+    input=setup_aisle(&map,4,1.887f);
+    input.now=10;
+    input.work_enabled=input.work_online=input.work_failed=true;
+    input.work_result=STATION_RESULT_CANCELLED;
+    full_map_step(&map,input);
+    assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WORK_CANCELLED"));
 }
 static void aisle_correction_tests(void) {
     for(int sign=-1;sign<=1;sign+=2) {
@@ -550,6 +557,20 @@ static void tree_config_and_pause_tests(void) {
     puts("TREE_STOP_TEST_OK measured coordinates, reverse order, 2s dwell and pause reset");
 }
 static void work_slow_distance_test(void) {
+    float idle_limit[2];
+    for(unsigned slow=0;slow<2;++slow) {
+        FullMapTest map;
+        FullMapInput input=setup_aisle(&map,2,2.5f);
+        map.visual_work=true;map.target_tree=0;
+        input.work_enabled=input.work_online=true;
+        input.work_station=0;input.work_slow=slow!=0u;
+        input.now=10;input.laser=scan(map.localization.pose.pose,input.now);
+        full_map_step(&map,input);
+        assert(map.phase==MAP_RUNNING);
+        idle_limit[slow]=map.motion.config.vmax;
+    }
+    assert(idle_limit[0]>.1f && fabsf(idle_limit[0]-idle_limit[1])<.00001f);
+    puts("HOME_SLOW_REPLAY_OK zero_station_stale_slow_cannot_limit_G7");
     for(unsigned near=0;near<2u;near++) {
         float limit[2];
         for(unsigned slow=0;slow<2u;slow++) {
@@ -1199,13 +1220,41 @@ static void station_work_gate_test(void) {
     assert(map.tree_hold && map.trees_done == (1u << 11));
     input.work_station = 11;
     input.work_done = false;
-    map.localization.pose.pose.x += .05f;
+    map.localization.pose.pose.x += .035f;
     input.now += 10;
     input.laser = ridge_scan(map.localization.pose.pose, input.now);
     full_map_step(&map, input);
+    assert(map.phase==MAP_RUNNING && map.tree_hold && map.work_pose_excursion);
+    assert(map.command.vx==0 && map.command.vy==0);
+    for(unsigned tick=0;tick<9;++tick) {
+        input.now+=10;
+        input.laser=ridge_scan(map.localization.pose.pose,input.now);
+        full_map_step(&map,input);
+        assert(map.phase==MAP_RUNNING && map.command.vx==0 && map.command.vy==0);
+    }
+    map.localization.pose.pose.x=pose.x;
+    input.now+=10;
+    input.laser=ridge_scan(pose,input.now);
+    full_map_step(&map,input);
+    assert(map.phase==MAP_RUNNING && !map.work_pose_excursion);
+    map.localization.pose.pose.x+=.05f;
+    for(unsigned tick=0;tick<=20 && map.phase==MAP_RUNNING;++tick) {
+        input.now+=10;
+        input.laser=ridge_scan(map.localization.pose.pose,input.now);
+        full_map_step(&map,input);
+    }
     assert(map.phase == MAP_FAULT && !strcmp(map.reason, "WORK_STATION_MOVED"));
     assert(map.command.vx == 0 && map.command.vy == 0);
-    puts("STATION_MAP_GATE_OK no_timer_release wrong_tree_done active_tool_blocks_reposition");
+    input=setup_aisle(&map,4,.665f);
+    map.target_tree=11;map.tree_hold=true;
+    map.motion.segment.end=(AutoVec2){.665f,3.7f};
+    input.work_enabled=input.work_online=input.work_active=true;
+    input.work_station=11;
+    map.localization.pose.pose.x+=.09f;
+    input.now=10;input.laser=ridge_scan(map.localization.pose.pose,input.now);
+    full_map_step(&map,input);
+    assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WORK_STATION_MOVED"));
+    puts("STATION_MAP_GATE_OK no_timer_release wrong_tree_done_short_pose_impulse_200ms_bound_90mm_immediate");
 }
 
 static void tree_overshoot_recovery_test(void) {
