@@ -118,6 +118,8 @@ typedef struct {
     uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
     bool tree_hold, tree_hold_stable;
     uint32_t tree_hold_ms;
+    bool envelope_excursion;
+    uint32_t envelope_excursion_ms;
     bool work_pose_excursion;
     uint32_t work_pose_excursion_ms;
 } FullMapTest;

@@ -23,8 +23,11 @@
 #define WORK_STOP_STABLE_MS 200u
 #define WORK_STOP_CONTINUE_WHEEL_RAD_S 0.16f
 /* Strike impulses may exceed the continued-stop band briefly. Bound both
- * duration and each wheel's estimated travel, with an immediate speed guard. */
+ * duration and estimated travel. Confirm a fast spike for 20ms while
+ * retaining an immediate guard for larger wheel speeds. */
 #define WORK_STOP_HARD_WHEEL_RAD_S 1.0f
+#define WORK_STOP_HARD_CONFIRM_MS 20u
+#define WORK_STOP_IMMEDIATE_WHEEL_RAD_S 3.0f
 #define WORK_STOP_NOISE_MS 120u
 #define WORK_STOP_EXCURSION_M 0.002f
 #define WORK_STOP_TIMEOUT_MS 2000U
