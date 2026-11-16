@@ -40,15 +40,17 @@ static void send_encoder_diagnostic(uint32_t now)
     uint8_t data[8], motor, phase, result;
     int32_t progress, target;
     uint32_t key, encoder_mailbox, return_sequence;
-    uint8_t final_return;
+    uint8_t final_return, fault_snapshot;
     if (ELBOW_TEST_MODE != 2 || HAL_CAN_GetTxMailboxesFreeLevel(&hcan2) < 2U) return;
     key = __get_PRIMASK();
     __disable_irq();
     result = Vision_MotorResult;
-    motor = result ? Vision_FaultMotor : Vision_MotorRegion;
-    phase = result ? Vision_FaultPhase : Vision_MotorPhase;
-    progress = result ? Vision_FaultProgress : Vision_MotorProgress;
-    target = result ? Vision_FaultTarget : phase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
+    fault_snapshot=result && (!Vision_MotorRecovering || result!=last_encoder_result);
+    motor = fault_snapshot ? Vision_FaultMotor : Vision_MotorRegion;
+    phase = fault_snapshot ? Vision_FaultPhase : Vision_MotorPhase;
+    progress = fault_snapshot ? Vision_FaultProgress : Vision_MotorProgress;
+    target = fault_snapshot ? Vision_FaultTarget : phase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
+    if(phase==5) {phase=1;target=Vision_RecoveryTarget;}
     return_sequence=Vision_ReturnSequence;
     final_return=!result && return_sequence!=last_return_tx;
     if(final_return) {

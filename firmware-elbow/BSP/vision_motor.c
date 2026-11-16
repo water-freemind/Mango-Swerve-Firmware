@@ -29,6 +29,9 @@ volatile uint8_t Vision_MotorRegion;
 volatile uint8_t Vision_MotorPhase;
 volatile uint8_t Vision_MotorResult;
 volatile uint8_t Vision_HomeConfirmed;
+volatile uint8_t Vision_MotorRecovering;
+volatile int32_t Vision_RecoveryTarget;
+static uint8_t recovery_attempted, recovery_push_pending;
 volatile uint8_t Vision_FaultMotor, Vision_FaultPhase;
 volatile int32_t Vision_FaultProgress, Vision_FaultTarget;
 volatile uint8_t Vision_ReturnMotor;
@@ -51,6 +54,20 @@ static void Motor_Stop(void)
     TIM1->CCR2 = 0;
     TIM1->CCR3 = 0;
     TIM1->CCR4 = 0;
+}
+
+void Vision_Motor_RequestReturn(void)
+{
+    uint32_t key = __get_PRIMASK();
+    __disable_irq();
+    if (ELBOW_TEST_MODE == 2 && Vision_MotorPhase == 1 &&
+        Vision_HomeConfirmed && !Vision_MotorResult) {
+        Motor_Stop();
+        position_target_reached = 0;
+        Vision_MotorPhase = 2;
+        phase_started = HAL_GetTick();
+    }
+    __set_PRIMASK(key);
 }
 
 /* ==================== 每个区域单独控制方向 ====================
@@ -158,6 +175,9 @@ void Vision_Motor_Init(void)
     for (motor = 0; motor < 4; motor++) motor_home[motor] = Encoder_Position[motor];
     motor_pwm = VISION_MOTOR_PWM;
     Vision_MotorResult = 0;
+    Vision_MotorRecovering = 0;
+    recovery_attempted = recovery_push_pending = 0;
+    Vision_RecoveryTarget = 0;
     Vision_HomeConfirmed = 0;
     Vision_FaultMotor = Vision_FaultPhase = 0;
     Vision_FaultProgress = Vision_FaultTarget = 0;
@@ -244,38 +264,72 @@ static uint8_t position_step(uint32_t now)
     int32_t magnitude = stroke < 0 ? -stroke : stroke;
     int32_t progress = stroke < 0 ? -delta : delta;
     int32_t movement = (int32_t)((uint32_t)position - (uint32_t)last_position);
-    int32_t remaining = Vision_MotorPhase == 1 ? Vision_ExtendTarget - progress :
+    const uint8_t striking = Vision_MotorPhase == 1 || Vision_MotorPhase == 5;
+    int32_t remaining = striking ?
+        (Vision_MotorPhase == 5 ? Vision_RecoveryTarget : Vision_ExtendTarget) - progress :
         progress - Vision_RetractTarget;
     uint32_t pwm;
+    uint8_t error = 0;
     Vision_MotorProgress = progress;
     if (movement >= 2 || movement <= -2)
     {
         last_position = position;
         last_motion_ms = now;
     }
-    if (progress < -8) Vision_MotorResult = STATION_RESULT_ENCODER_DIRECTION;
-    if (progress > magnitude * 95 / 100 ||
+    if (progress < -(magnitude * (int32_t)ELBOW_ZERO_TOLERANCE_PERMILLE / 1000)) error = STATION_RESULT_ENCODER_DIRECTION;
+    if (Vision_MotorRecovering && Vision_MotorPhase == 3 &&
+        (stroke < 0 ? -movement : movement) > 8)
+        error = STATION_RESULT_ENCODER_DIRECTION;
+    if (Vision_MotorRecovering && Vision_MotorPhase == 5 &&
+        (stroke < 0 ? -movement : movement) < -8)
+        error = STATION_RESULT_ENCODER_DIRECTION;
+    if ((progress > magnitude * 95 / 100 &&
+         !(Vision_MotorRecovering && Vision_MotorPhase == 3 && progress <= magnitude)) ||
         (Vision_MotorPhase == 3 && progress < magnitude * (int32_t)ELBOW_RETURN_HARD_MARGIN_PERMILLE / 1000))
-        Vision_MotorResult = STATION_RESULT_ENCODER_LIMIT;
-    if (remaining <= 0 && !Vision_MotorResult) return 1;
+        error = STATION_RESULT_ENCODER_LIMIT;
+    if (remaining <= 0 && !error) return 1;
+    if (!error && Vision_MotorPhase == 5 && (uint32_t)(now-phase_started)>=ELBOW_RECOVERY_PUSH_MS)
+        return 1;
     /* A settled return inside the same tolerance used by the four-channel
      * return gate is complete. Stop PWM before attempting further motion. */
-    if (!Vision_MotorResult && Vision_MotorPhase == 3 &&
+    if (!error && Vision_MotorPhase == 3 &&
         remaining <= magnitude * (int32_t)ELBOW_RETURN_TOLERANCE_PERMILLE / 1000 &&
         (uint32_t)(now - last_motion_ms) >= ELBOW_POSITION_STALL_MS) return 1;
-    if (!Vision_MotorResult && (uint32_t)(now - phase_started) >= ELBOW_POSITION_TIMEOUT_MS)
-        Vision_MotorResult = STATION_RESULT_ENCODER_TIMEOUT;
-    if (!Vision_MotorResult && (uint32_t)(now - last_motion_ms) >= ELBOW_POSITION_STALL_MS)
-        Vision_MotorResult = STATION_RESULT_ENCODER_STALL;
-    if (Vision_MotorResult)
+    if (!error && (uint32_t)(now - phase_started) >= ELBOW_POSITION_TIMEOUT_MS)
+        error = STATION_RESULT_ENCODER_TIMEOUT;
+    const uint32_t stall_ms=Vision_MotorRecovering && Vision_MotorPhase==3?
+        ELBOW_RECOVERY_STALL_MS:ELBOW_POSITION_STALL_MS;
+    if (!error && (uint32_t)(now - last_motion_ms) >= stall_ms)
+        error = STATION_RESULT_ENCODER_STALL;
+    if (error)
     {
         Vision_FaultMotor = Vision_MotorRegion;
         Vision_FaultPhase = Vision_MotorPhase;
         Vision_FaultProgress = progress;
         Vision_FaultTarget = Vision_MotorPhase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
         Motor_Stop();
-        Vision_HomeConfirmed = 0;
-        Vision_MotorRegion = Vision_MotorPhase = 0;
+        Vision_MotorResult = error;
+        /* One bounded recovery requires a credible calibrated position.
+         * Invalid direction, timeout, or failed recovery revokes the zero. */
+        const uint8_t recoverable=error==STATION_RESULT_ENCODER_STALL ||
+            (error==STATION_RESULT_ENCODER_LIMIT && progress>Vision_ExtendTarget);
+        const uint8_t credible=(Vision_MotorPhase==1 && progress>=magnitude/2) ||
+            (Vision_MotorPhase==3 && progress>Vision_RetractTarget);
+        if (!recovery_attempted && credible && Vision_HomeConfirmed &&
+            progress <= magnitude && recoverable) {
+            Vision_MotorRecovering = 1;
+            recovery_attempted=1;
+            Vision_RecoveryTarget=progress+magnitude*(int32_t)ELBOW_RECOVERY_PUSH_PERMILLE/1000;
+            if(Vision_RecoveryTarget>Vision_ExtendTarget) Vision_RecoveryTarget=Vision_ExtendTarget;
+            recovery_push_pending=error==STATION_RESULT_ENCODER_STALL && Vision_RecoveryTarget>progress;
+            position_target_reached = 0;
+            Vision_MotorPhase = 2;
+            phase_started = now;
+        } else {
+            Vision_MotorRecovering = 0;
+            Vision_HomeConfirmed = 0;
+            Vision_MotorRegion = Vision_MotorPhase = 0;
+        }
         return 0;
     }
     pwm = Vision_MotorPhase == 1 ? ELBOW_POSITION_PWM : ELBOW_POSITION_RETURN_PWM;
@@ -283,10 +337,12 @@ static uint8_t position_step(uint32_t now)
         pwm = Vision_MotorPhase==1 && index==0u ? ELBOW_A_STRIKE_SLOW_PWM : ELBOW_POSITION_SLOW_PWM;
     if (Vision_MotorPhase == 3 && remaining <= magnitude * (int32_t)ELBOW_RETURN_HOME_ZONE_PERCENT / 100)
         pwm = ELBOW_RETURN_HOME_PWM;
+    if (Vision_MotorRecovering)
+        pwm=Vision_MotorPhase==5?ELBOW_RECOVERY_PUSH_PWM:ELBOW_RECOVERY_RETURN_PWM;
     if (pwm != motor_pwm)
     {
         motor_pwm = pwm;
-        Motor_Run(Vision_MotorRegion, Vision_MotorPhase == 1);
+        Motor_Run(Vision_MotorRegion, striking);
     }
     return 0;
 }
@@ -299,7 +355,7 @@ void Vision_Motor_EncoderTick(void)
     if (ELBOW_TEST_MODE != 2) return;
     key = __get_PRIMASK();
     __disable_irq();
-    if ((Vision_MotorPhase == 1 || Vision_MotorPhase == 3) && !position_target_reached)
+    if ((Vision_MotorPhase == 1 || Vision_MotorPhase == 3 || Vision_MotorPhase == 5) && !position_target_reached)
     {
         if (position_step(HAL_GetTick()))
         {
@@ -370,13 +426,43 @@ void Vision_Motor_Task(void)
     case 2: /* 换向前停止 PWM，等待设定的间隔，再开始返回。 */
         if ((uint32_t)(now - phase_started) >= VISION_REVERSE_PAUSE_MS)
         {
+            const uint32_t motor_key=__get_PRIMASK();
+            __disable_irq();
             position_target_reached = 0;
-            if (ELBOW_TEST_MODE == 2) motor_pwm = ELBOW_POSITION_RETURN_PWM;
-            Motor_Run(Vision_MotorRegion, 0);
             phase_started = now;
             last_motion_ms = now;
             last_position = Encoder_Position[Vision_MotorRegion - 1U];
+            if(recovery_push_pending) {
+                recovery_push_pending=0;
+                Vision_MotorPhase=5;
+                motor_pwm=ELBOW_RECOVERY_PUSH_PWM;
+                Vision_Motor_EncoderTick();
+                if(Vision_MotorPhase==5 && !position_target_reached)
+                    Motor_Run(Vision_MotorRegion,1);
+                __set_PRIMASK(motor_key);
+                break;
+            }
             Vision_MotorPhase = 3;
+            if (ELBOW_TEST_MODE == 2) {
+                const int32_t stroke=full_stroke[Vision_MotorRegion-1U];
+                const int32_t magnitude=stroke<0?-stroke:stroke;
+                const int32_t delta=(int32_t)((uint32_t)last_position-(uint32_t)motor_home[Vision_MotorRegion-1U]);
+                const int32_t progress=stroke<0?-delta:delta;
+                Vision_MotorProgress=progress;
+                if(progress>=-(magnitude*(int32_t)ELBOW_ZERO_TOLERANCE_PERMILLE/1000) && progress<=Vision_RetractTarget) {
+                    position_target_reached=1;
+                    Motor_Stop();
+                    __set_PRIMASK(motor_key);
+                    break;
+                }
+                motor_pwm=progress-Vision_RetractTarget<=magnitude*(int32_t)ELBOW_RETURN_HOME_ZONE_PERCENT/100?
+                    ELBOW_RETURN_HOME_PWM:ELBOW_POSITION_RETURN_PWM;
+                if(Vision_MotorRecovering) motor_pwm=ELBOW_RECOVERY_RETURN_PWM;
+            }
+            if(ELBOW_TEST_MODE==2) Vision_Motor_EncoderTick();
+            if(Vision_MotorPhase==3 && !position_target_reached)
+                Motor_Run(Vision_MotorRegion, 0);
+            __set_PRIMASK(motor_key);
         }
         break;
     case 3:
@@ -392,6 +478,10 @@ void Vision_Motor_Task(void)
                 Vision_ReturnTarget=Vision_RetractTarget;
                 ++Vision_ReturnSequence;
             }
+            if (Vision_MotorRecovering) {
+                Vision_MotorResult = 0;
+                Vision_MotorRecovering = 0;
+            }
             Vision_MotorRegion = 0;
             phase_started = now;
             Vision_MotorPhase = 4;
@@ -401,6 +491,14 @@ void Vision_Motor_Task(void)
         if ((uint32_t)(now - phase_started) >= VISION_RETRIGGER_DELAY_MS)
         {
             Vision_MotorPhase = 0;
+        }
+        break;
+    case 5: /* 单次短伸解卡后先撤销输出，再等待换向回缩。 */
+        if(position_target_reached) {
+            Motor_Stop();
+            position_target_reached=0;
+            phase_started=now;
+            Vision_MotorPhase=2;
         }
         break;
     default:
@@ -421,6 +519,7 @@ uint8_t Vision_Motor_Start(uint8_t region)
     Vision_MotorRegion = region_to_motor[region];
     position_target_reached = 0;
     Vision_MotorResult = 0;
+    recovery_attempted=recovery_push_pending=0;
     if (ELBOW_TEST_MODE == 2)
     {
         int32_t stroke = full_stroke[Vision_MotorRegion - 1U];
@@ -430,8 +529,8 @@ uint8_t Vision_Motor_Start(uint8_t region)
         int32_t progress = stroke < 0 ? -delta : delta;
         Vision_ExtendTarget = magnitude * (100U - ELBOW_EXTEND_MARGIN_PERCENT) / 100U;
         Vision_RetractTarget = magnitude * ELBOW_STROKE_MARGIN_PERCENT / 100U;
-        if(progress < -8 || progress > Vision_ExtendTarget) {
-            Vision_MotorResult=progress < -8 ? STATION_RESULT_ENCODER_DIRECTION : STATION_RESULT_ENCODER_LIMIT;
+        if(progress < -(magnitude * (int32_t)ELBOW_ZERO_TOLERANCE_PERMILLE / 1000) || progress > Vision_ExtendTarget) {
+            Vision_MotorResult=progress < -(magnitude * (int32_t)ELBOW_ZERO_TOLERANCE_PERMILLE / 1000) ? STATION_RESULT_ENCODER_DIRECTION : STATION_RESULT_ENCODER_LIMIT;
             Vision_FaultMotor=Vision_MotorRegion;Vision_FaultPhase=1;
             Vision_FaultProgress=progress;Vision_FaultTarget=Vision_ExtendTarget;
             Vision_HomeConfirmed=0;Vision_MotorRegion=0;
@@ -467,7 +566,7 @@ uint8_t Vision_Motor_VerifyReturned(void) {
         int32_t progress=full_stroke[index]<0?-delta:delta;
         int32_t target=magnitude*ELBOW_STROKE_MARGIN_PERCENT/100;
         /* The release gate uses the same bounded return tolerance as motion. */
-        if(progress < -8 || progress > target+magnitude*(int32_t)ELBOW_RETURN_TOLERANCE_PERMILLE/1000) {
+        if(progress < -(magnitude * (int32_t)ELBOW_ZERO_TOLERANCE_PERMILLE / 1000) || progress > target+magnitude*(int32_t)ELBOW_RETURN_TOLERANCE_PERMILLE/1000) {
             Vision_FaultMotor=index+1u;Vision_FaultPhase=3;
             Vision_FaultProgress=progress;Vision_FaultTarget=target;
             Vision_MotorResult=STATION_RESULT_RETURN_NOT_READY;
@@ -488,6 +587,7 @@ uint32_t Vision_Motor_RemainingMs(void)
     case 2: duration = VISION_REVERSE_PAUSE_MS; break;
     case 3: duration = VISION_CCW_MS; break;
     case 4: duration = VISION_RETRIGGER_DELAY_MS; break;
+    case 5: duration = ELBOW_RECOVERY_PUSH_MS; break;
     default: return 0;
     }
     elapsed = (uint32_t)(HAL_GetTick() - phase_started);

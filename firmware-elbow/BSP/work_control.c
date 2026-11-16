@@ -6,7 +6,8 @@
  * BOOT 握手 → IDLE 等树 → APPROACH 减速接近 → WAIT_STOP 等底盘停稳
  * → CHECK 新图像复检 → ACTING 执行一个区域 → CHECK 再次复检
  * → RELEASE 请求放行 → LEAVING 等当前树离开 → IDLE 等下一棵树。
- * 任何锁存故障进入 FAULT，需要复位控制器后重新握手。
+ * 故障保持底盘停车，受保护回收后可通过手动切换重新握手。
+ * 编码器位置不可信时，需要手动回收并重新登记零位。
  *
  * 判断依据是视觉区域、树偏移 dx 和底盘 CAN 应答。
  * 激光数据在 can_test.c 接收，当前用于 OLED 显示。
@@ -33,8 +34,11 @@ static uint8_t test_latched_region; /* 独立测试中已动作的区域，避�
 static uint8_t station_number;
 static uint8_t alignment_centered, alignment_reply;
 static uint8_t station_visual_trigger, station_departure_pending, station_started, station_realign_pending, station_realign_sequence;
-static uint32_t station_target_seen_ms;
+static uint32_t station_target_seen_ms, station_green_seen_ms;
+static uint32_t station_tree_seen_ms;
+static int32_t station_tree_dx;
 static int8_t station_travel_direction;
+static uint8_t station_tree_eligible;
 
 /* 切换作业阶段，同时清除不能跨阶段累计的无目标/离树计数。 */
 static void change_state(uint8_t state, uint32_t now)
@@ -44,10 +48,11 @@ static void change_state(uint8_t state, uint32_t now)
     empty_frames = empty_timing = departed_frames = 0;
 }
 
-/* 锁存故障原因。当前电机动作仍由 vision_motor.c 完成定时返回。 */
+/* 锁存故障，停止继续伸出并请求有位置保护的回收。 */
 static void fail(uint8_t reason, uint32_t now)
 {
     Vision_WorkResult = reason;
+    Vision_Motor_RequestReturn();
     change_state(VISION_WORK_FAULT, now);
 }
 
@@ -89,7 +94,10 @@ void Work_Control_Init(void)
     alignment_centered = 0;
     alignment_reply = STATION_TRACKING;
     station_visual_trigger=station_departure_pending=station_started=station_realign_pending=station_realign_sequence=0;
-    station_target_seen_ms=0;
+    station_target_seen_ms=station_green_seen_ms=0;
+    station_tree_eligible=0;
+    station_tree_seen_ms=0;
+    station_tree_dx=9999;
     memset(attempts, 0, sizeof(attempts));
 }
 
@@ -468,7 +476,9 @@ static void process_station(uint32_t now, uint32_t frame_count)
             alignment_centered = 0;
             alignment_reply = STATION_TRACKING;
             station_started=station_realign_pending=station_realign_sequence=0;
-            station_target_seen_ms=now;
+            station_target_seen_ms=station_green_seen_ms=now;
+            station_tree_eligible=0;
+            station_tree_dx=9999;
             station_visual_trigger=(command.result&STATION_VISUAL_TRIGGER_FLAG)!=0u;
             station_travel_direction=(command.result&STATION_VISUAL_REVERSE_FLAG)?-1:1;
             missing_timing=0;
@@ -559,39 +569,45 @@ static void process_station(uint32_t now, uint32_t frame_count)
         else if (!Vision_Online) fail(WORK_RESULT_VISION, now);
         else if(station_visual_trigger)
         {
-            uint8_t valid_target=Vision_TreeDX!=9999 && Vision_Region && !station_departure_pending &&
-                (Vision_WorkState!=VISION_WORK_IDLE || offset*station_travel_direction>=-WORK_STOP_DX);
-            if(new_frame)
+            if(new_frame && Vision_WorkState!=VISION_WORK_WAIT_STOP)
             {
-                if(!valid_target || offset < -STATION_VISUAL_SLOW_PX || offset > STATION_VISUAL_SLOW_PX)
-                {
-                    if(Vision_WorkState==VISION_WORK_APPROACH &&
-                       (uint32_t)(now-station_target_seen_ms)>=300u)
-                    {
-                        stable_region=stable_frames=0;
-                        change_state(VISION_WORK_IDLE,now);
-                    }
+                uint8_t valid_tree=Vision_TreeDX!=9999 && !station_departure_pending &&
+                    offset>=-STATION_VISUAL_SLOW_PX && offset<=STATION_VISUAL_SLOW_PX;
+                uint8_t green=Vision_Region!=0 && !station_departure_pending;
+                if((uint32_t)(now-station_tree_seen_ms)>WORK_VISUAL_ACQUIRE_HOLD_MS ||
+                   (!green && (uint32_t)(now-station_green_seen_ms)>=300u))
+                    station_tree_eligible=0;
+                if(valid_tree) {
+                    station_tree_seen_ms=now;
+                    station_tree_dx=offset;
+                    if(offset*station_travel_direction>=-WORK_STOP_DX) station_tree_eligible=1;
                 }
-                else if(Vision_WorkState!=VISION_WORK_WAIT_STOP)
-                {
-                    /* Acquire while slowing across the whole visual window.
-                     * Keep evidence over a brief gap, then let the chassis
-                     * brake and align before the final fruit confirmation. */
-                    if(!stable_frames ||
-                       (uint32_t)(now-station_target_seen_ms)>300u) {
+                /* Only acquisition may bridge adjacent Tree/Gmg frames.
+                 * Alignment and strikes continue using the live Tree dx. */
+                uint8_t recent_tree=station_tree_dx!=9999 && !station_departure_pending &&
+                    (uint32_t)(now-station_tree_seen_ms)<=300u;
+                if(valid_tree || green) {
+                    station_target_seen_ms=now;
+                    if(Vision_WorkState!=VISION_WORK_APPROACH) change_state(VISION_WORK_APPROACH,now);
+                } else if(Vision_WorkState==VISION_WORK_APPROACH &&
+                          (uint32_t)(now-station_target_seen_ms)>=300u) {
+                    change_state(VISION_WORK_IDLE,now);
+                }
+                if(green) {
+                    if(!stable_frames || (uint32_t)(now-station_green_seen_ms)>300u) {
                         stable_frames=0;
                         stable_since=now;
                     }
-                    /* During travel any green region confirms this tree.
-                     * The stopped CHECK stage independently selects the motor. */
                     stable_region=Vision_Region;
                     if(stable_frames<255u) ++stable_frames;
-                    station_target_seen_ms=now;
-                    if(stable_frames>=3u && (uint32_t)(now-stable_since)>=WORK_TARGET_STABLE_MS &&
-                       ((offset>=-WORK_SLOW_DX && offset<=WORK_SLOW_DX) ||
-                        offset*station_travel_direction<=0))
+                    station_green_seen_ms=now;
+                    if(recent_tree && station_tree_eligible && stable_frames>=3u &&
+                       (uint32_t)(now-stable_since)>=WORK_TARGET_STABLE_MS &&
+                       ((station_tree_dx>=-WORK_VISUAL_BRAKE_DX && station_tree_dx<=WORK_VISUAL_BRAKE_DX) ||
+                        station_tree_dx*station_travel_direction<=0))
                         change_state(VISION_WORK_WAIT_STOP,now);
-                    else if(Vision_WorkState!=VISION_WORK_APPROACH) change_state(VISION_WORK_APPROACH,now);
+                } else if((uint32_t)(now-station_green_seen_ms)>=300u) {
+                    stable_region=stable_frames=0;
                 }
             }
         }
@@ -675,7 +691,8 @@ static void process_station(uint32_t now, uint32_t frame_count)
     case VISION_WORK_RELEASE: response = STATION_DONE; break;
     case VISION_WORK_LEAVING: response = Vision_Online ? STATION_RELEASED : STATION_HELLO; break;
     case VISION_WORK_FAULT:
-        response = Vision_MotorPhase || Vision_MotorResult ? STATION_ABORTING : STATION_FAULT;
+        response = Vision_MotorPhase || Vision_MotorResult || !Vision_Motor_VerifyReturned() ?
+            STATION_ABORTING : STATION_FAULT;
         break;
     default: response = STATION_HELLO; break;
     }

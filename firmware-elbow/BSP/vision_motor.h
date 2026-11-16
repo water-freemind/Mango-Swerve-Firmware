@@ -29,7 +29,9 @@
  * 修改参数后需要重新编译和烧录。当前激光读数只参与显示。
  */
 #define WORK_DX_CENTER STATION_VISION_CENTER_DX // 调整相机位置后以0像素为对中目标。
-#define WORK_SLOW_DX 100                  // 模式2稳定目标进入±100像素即请求平滑停车，再由底盘视觉对中。
+#define WORK_SLOW_DX 100                  // 传统协同模式减速区间。
+#define WORK_VISUAL_BRAKE_DX 40           // 视觉接近到±40像素再平滑停车，停稳后用实时dx对中。
+#define WORK_VISUAL_ACQUIRE_HOLD_MS 1500U // Gmg持续存在时，短时保留已捕获树的接近资格。
 #define WORK_STOP_DX 30                   // 传统协同停车区间；模式2首次捕获时用此范围排除已驶过的树。
 #define WORK_LEAVE_DX 120                 // 树越过离树位置后，才允许触发下一棵树。
 #define WORK_LEAVE_DIRECTION (-1)         // -1 表示树离开时 dx 变小，+1 表示变大，按实车标定。
@@ -103,9 +105,12 @@ extern volatile uint32_t Vision_ByteCount;      // 累计收到并交给解析�
 extern volatile uint32_t Vision_BadFrameCount;  // 累计丢弃的格式错误帧/超长数据次数。
 
 extern volatile uint8_t Vision_MotorRegion;  // 本次动作锁定的电机：0 无，1=A、2=B、3=C、4=D。
-extern volatile uint8_t Vision_MotorPhase;   // 动作阶段：0 等待指令，1 打击，2 换向停顿，3 返回，4 打击后等待。
+extern volatile uint8_t Vision_MotorPhase;   // 0等待，1打击，2换向停顿，3返回，4轮次等待，5单次短伸解卡。
 extern volatile uint8_t Vision_MotorResult;  // 0 正常，12方向异常，13软限位，14无进展，15超时。
 extern volatile uint8_t Vision_HomeConfirmed;
+extern volatile uint8_t Vision_MotorRecovering;
+extern volatile int32_t Vision_RecoveryTarget;
+void Vision_Motor_RequestReturn(void);
 extern volatile uint8_t Vision_FaultMotor, Vision_FaultPhase;
 extern volatile int32_t Vision_FaultProgress, Vision_FaultTarget;
 extern volatile uint8_t Vision_ReturnMotor;

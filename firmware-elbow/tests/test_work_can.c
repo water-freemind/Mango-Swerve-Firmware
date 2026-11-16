@@ -109,7 +109,7 @@ static void emit_wheels(void) {
 }
 static void advance_encoders(unsigned period) {
     if (freeze_encoder || ELBOW_TEST_MODE != 2 || !Vision_MotorRegion ||
-        (Vision_MotorPhase != 1 && Vision_MotorPhase != 3)) return;
+        (Vision_MotorPhase != 1 && Vision_MotorPhase != 3 && Vision_MotorPhase != 5)) return;
     const int signs[4] = {1, 1, -1, -1};
     const unsigned pwm[4] = {timer.CCR1, timer.CCR2, timer.CCR3, timer.CCR4};
     unsigned index = Vision_MotorRegion - 1u;
@@ -807,17 +807,19 @@ static void test_station_visual_trigger(void) {
         reset_station(0);
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(800,0,0,1,1,0); /* Tree without green fruit. */
-        assert(!g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
-        run_station(800,1,9999,1,1,0); /* Green fruit without a tree. */
-        assert(!g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
+        reset_station(0);
+        assert(station_work_begin_visual(1,now_ms,!reverse));
+        run_station(800,1,9999,1,1,0); /* Gmg alone slows, but cannot park. */
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
         run_station(300,1,-160*direction,1,1,0); /* A target already behind the car. */
-        assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(300,1,160*direction,1,1,0);
         assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(100,0,80*direction,1,1,0);
         assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(300,0,80*direction,1,1,0);
-        assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(300,1,80*direction,1,1,0);
         run_station(100,1,20*direction,1,1,0);
         assert(g_station_work.stop_requested && starts==0);
@@ -833,7 +835,7 @@ static void test_station_visual_trigger(void) {
         run_station(600,1,0,1,1,0);
         assert(starts==1 && !g_station_work.stop_requested);
         run_station(400,1,-160*direction,1,1,0);
-        assert(!g_station_work.slow_requested && starts==1);
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==1);
         run_station(300,0,160*direction,1,1,0);
         assert(station_work_cancel_scan());
         run_station(300,0,160*direction,1,1,1);
@@ -847,7 +849,7 @@ static void test_station_visual_trigger(void) {
     assert(station_work_cancel_scan());
     run_station(300,1, STATION_VISION_STOP_PX,1,1,1);
     assert(g_station_work.phase==STATION_LINK_DONE && starts==0);
-    puts("VISUAL_SCAN_GATE_OK both_directions_tree_and_green_required_lost_green_releases_slow_old_tree_suppressed_scan_cancel_ack");
+    puts("VISUAL_SCAN_GATE_OK tree_or_gmg_slows_green_required_for_stop_passed_tree_no_work_scan_cancel_ack");
 }
 static void test_visual_acquisition_replay(void) {
     for(unsigned reverse=0;reverse<2u;++reverse) {
@@ -865,13 +867,75 @@ static void test_visual_acquisition_replay(void) {
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(100,1,80*direction,1,1,0);
         run_station(400,0,80*direction,1,1,0);
-        assert(!g_station_work.stop_requested && !g_station_work.slow_requested);
+        assert(!g_station_work.stop_requested && g_station_work.slow_requested);
         run_station(100,1,80*direction,1,1,0);
         assert(!g_station_work.stop_requested); /* Long gap discards previous evidence. */
     }
+    /* G6 replay: Gmg precedes a sparse Tree detection. */
+    reset_station(0);
+    assert(station_work_begin_visual(12,now_ms,true));
+    run_station(800,4,9999,1,1,0);
+    assert(g_station_work.slow_requested && !g_station_work.stop_requested);
+    run_station(100,0,-145,1,1,0);
+    run_station(200,1,9999,1,1,0);
+    run_station(100,1,-20,1,1,0);
+    run_station(200,1,9999,1,1,0);
+    assert(g_station_work.stop_requested && starts==0 && Vision_TreeDX==9999);
+    run_station(400,1,9999,1,1,1);
+    assert(starts==0); /* Retained dx never authorizes a strike. */
+
+    reset_station(0);
+    assert(station_work_begin_visual(12,now_ms,true));
+    run_station(50,0,20,1,1,0);
+    run_station(400,0,9999,1,1,0);
+    run_station(500,1,9999,1,1,0);
+    assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
+    for(unsigned reverse=0;reverse<2u;++reverse) {
+        const int direction=reverse?-1:1;
+        reset_station(0);
+        assert(station_work_begin_visual(11,now_ms,!reverse));
+        run_station(100,0,153*direction,1,1,0);
+        run_station(100,0,111*direction,1,1,0);
+        run_station(1000,1,9999,1,1,0);
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested);
+        run_station(100,1,-44*direction,1,1,0);
+        assert(g_station_work.stop_requested && starts==0);
+
+        reset_station(0);
+        assert(station_work_begin_visual(11,now_ms,!reverse));
+        run_station(300,1,120*direction,1,1,0);
+        run_station(300,1,80*direction,1,1,0);
+        assert(!g_station_work.stop_requested); /* Avoid the recorded +/-78 early stop. */
+        run_station(100,1,40*direction,1,1,0);
+        assert(g_station_work.stop_requested && starts==0);
+
+        reset_station(0);
+        assert(station_work_begin_visual(11,now_ms,!reverse));
+        run_station(100,0,111*direction,1,1,0);
+        run_station(1700,1,9999,1,1,0);
+        run_station(100,1,-44*direction,1,1,0);
+        assert(!g_station_work.stop_requested && starts==0);
+    }
+    puts("G6_SPARSE_TREE_REPLAY_OK both_directions_1s_tree_gap_continuous_gmg_parks_1500ms_expiry_no_80px_early_stop");
     puts("VISUAL_ACQUISITION_REPLAY_OK both_directions_brief_gap_passed_center_latched_stop_long_gap_reset");
 }
 static void test_station_empty_and_limits(void) {
+    reset_station(0);
+    request_station(1,4);
+    for(unsigned tick=0;tick<300u && Vision_MotorProgress<2700;++tick)
+        run_station(10,4,0,1,1,1);
+    assert(Vision_MotorPhase==1 && Vision_MotorProgress>=2700);
+    freeze_encoder=1;
+    run_station(350,4,0,1,1,1);
+    assert(Vision_MotorRecovering && g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold);
+    freeze_encoder=0;
+    run_station(3500,0,0,1,1,1);
+    assert(!Vision_MotorPhase && Vision_HomeConfirmed && !Vision_MotorResult);
+    assert(g_station_work.returned && g_station_work.phase==STATION_LINK_FAULT);
+    station_work_request_manual_recovery();
+    run_station(1000,0,0,1,1,1);
+    assert(station_work_ready() && !g_station_work.hold);
+    puts("FAULT_RETURN_MANUAL_RECOVERY_OK original_fault_held_during_unjam_return_then_manual_resync");
     test_visual_acquisition_replay();
     test_station_visual_trigger();
     test_station_realign_after_return();
@@ -887,6 +951,14 @@ static void test_station_empty_and_limits(void) {
     assert(g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold);
     assert(g_station_work.result==STATION_RESULT_RETURN_NOT_READY);
     puts("RETURN_RELEASE_GATE_OK final_encoder_snapshot_received_unretracted_other_motor_prevents_GO");
+    reset_station(0);
+    request_station(1,4); /* A acts while resting B has the recorded -22 drift. */
+    Encoder_Position[1]=-22;
+    run_station(600,4,0,1,1,1);
+    run_station(3000,0,0,1,1,1);
+    assert(starts==1 && Vision_HomeConfirmed && !Vision_MotorResult);
+    assert(g_station_work.phase==STATION_LINK_DONE && !g_station_work.hold);
+    puts("RESTING_ZERO_RELEASE_OK A_return_B_minus22_no_false_lock");
     test_station_manual_recovery();
     reset_station(0);
     request_station(1, 0);
