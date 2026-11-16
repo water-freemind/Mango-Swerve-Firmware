@@ -11,6 +11,7 @@ typedef struct {
     float finish_cross_tolerance; /* Optional endpoint-only lateral acceptance. */
     float overshoot_recovery; /* Metres past the endpoint allowed for a stopped, low-speed return; zero keeps strict faulting. */
     bool smooth_correction; /* Subtract correction deadbands before applying proportional gains. */
+    float lateral_min, wz_min; /* Optional correction floors, bounded by the existing caps. */
 } AutoMotionConfig;
 typedef struct { AutoVec2 start, end; float heading; } AutoSegment;
 typedef enum { AUTO_MOTION_IDLE, AUTO_MOTION_ALIGN, AUTO_MOTION_RUN,
@@ -39,8 +40,10 @@ typedef struct {
 typedef struct {
     AutoMotionConfig config; AutoSegment segment; AutoMotionOutput out;
     AutoVec2 tangent, normal, velocity_map;
+    AutoTwist launch_hint;
     float length, settled_s; uint32_t last_ms, prepare_ms;
     bool initialized, started, reversing, launching, endpoint_latched;
+    bool cross_correcting, yaw_correcting;
 } AutoMotion;
 bool auto_motion_begin(AutoMotion* motion,const AutoMotionConfig* config,AutoSegment segment,uint32_t now_ms);
 void auto_motion_cancel(AutoMotion* motion);

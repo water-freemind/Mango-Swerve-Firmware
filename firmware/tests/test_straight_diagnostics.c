@@ -12,6 +12,7 @@ uint32_t g_test_tick_ms;
 static uint32_t fake_us;
 static bool fake_online = true, fake_calibrated = true, fresh_flag;
 static bool fake_can_healthy, fake_laser_ready;
+static uint32_t fake_steer_failures, fake_drive_failures;
 static uint16_t fake_swd = 2000u, fake_vrb = 1500u;
 static uint16_t fake_swc = 1500u, fake_ry = 1500u, fake_lx = 1500u;
 static uint16_t fake_swb = 1500u, fake_rx = 1500u;
@@ -24,6 +25,7 @@ static unsigned prepare_calls;
 ChassisErrorCode chassis_prepare_velocity(float vx,float vy,float wz) { (void)vx;(void)vy;(void)wz;++prepare_calls;return CHASSIS_OK; }
 void chassis_reset_control_history(void) {}
 bool chassis_drive_output_allowed(void) { return fake_drive_gate; }
+ChassisSteeringDiagnostic chassis_get_steering_diagnostic(void) { return (ChassisSteeringDiagnostic){0}; }
 static DriveVelocity last_velocity;
 static unsigned sample_reads;
 static unsigned motor_stop_calls;
@@ -51,6 +53,8 @@ ASSEMBLY_STUB(assemble_can3)
 ASSEMBLY_STUB(assemble_chassis)
 ASSEMBLY_STUB(assemble_remote)
 bool work_link_init(void) { return true; }
+static bool fake_manual_override;
+void work_link_set_manual_override(bool manual_owner) { fake_manual_override=manual_owner; }
 static unsigned station_action_commands;
 Can3BusStatus can3_bus_register_endpoint(uint16_t id, Can3EndpointCallback callback, void* user) {
     (void)id; (void)callback; (void)user; return CAN3_BUS_OK;
@@ -129,8 +133,8 @@ static const BusMotorInterface fake_motor = {.get_spd = fake_speed, .get_pos = f
 const BusMotorInterface* steer_motor_instance = &fake_motor;
 const BusMotorInterface* drive_motor_instance = &fake_motor;
 bool can_get_diagnostics(FDCAN_HandleTypeDef* b, STM32HalCanDiagnostics* d) {
-    (void)b;
     memset(d, fake_can_healthy ? 0 : 0xff, sizeof(*d)); /* Otherwise stress counter widths in log formats. */
+    if(fake_can_healthy) d->tx_failed_count=b==CHASSIS_STEER_CAN?fake_steer_failures:fake_drive_failures;
     return true;
 }
 bool laser_get_snapshot(LaserSnapshot* s) {
@@ -260,6 +264,9 @@ static void check_manual_direct_scheduler(void) {
         fake_ry = 2000u;
         for(unsigned i = 0; i < 100; ++i) loop_at(now += 10u);
         assert(manual_velocity.vx == 1.5f && manual_target.vx == 1.5f);
+        const unsigned process_before=chassis_process_calls;
+        for(unsigned i=0;i<100u;i++) loop_at(now+=1u);
+        assert(chassis_process_calls-process_before==10u);
         assert(!chassis_yaw_hold_is_active() && manual_velocity.wz == 0);
         fake_drive_gate = false;
         for(unsigned i = 0; i < 20; ++i) {
@@ -588,7 +595,112 @@ static void check_map_mode_selection(void) {
     map_work_enabled=false;
     puts("MAP_NAV_MODE_UART_TEST_OK offline_peer_does_not_block_navigation_mode_change_gates_work_mode_checks_peer");
 }
+static void check_work_stop_noise(void) {
+    const uint32_t now=300000u;
+    fake_wheel_speed=0;work_stop_excursion=false;
+    g_station_work.phase=STATION_LINK_WORKING;
+    feedback(now);input(now);assert(work_stop_feedback);
+    fake_wheel_speed=.20f;
+    feedback(now+1u);input(now+1u);assert(work_stop_feedback);
+    feedback(now+120u);input(now+120u);assert(work_stop_feedback);
+    feedback(now+121u);input(now+121u);assert(!work_stop_feedback);
+    fake_wheel_speed=0;
+    feedback(now+122u);input(now+122u);assert(work_stop_feedback && !work_stop_excursion);
+    /* The observed strike impulse 0.327 rad/s is allowed for 60 ms. */
+    fake_wheel_speed=.327f;
+    for(unsigned step=1;step<=6;step++) {
+        feedback(now+122u+step*10u);input(now+122u+step*10u);
+        assert(work_stop_feedback);
+    }
+    fake_wheel_speed=0;
+    feedback(now+192u);input(now+192u);assert(work_stop_feedback);
+    /* A faster sub-hard-limit excursion exhausts the 2 mm budget first. */
+    fake_wheel_speed=.8f;
+    feedback(now+202u);input(now+202u);assert(work_stop_feedback);
+    feedback(now+252u);input(now+252u);assert(!work_stop_feedback);
+    fake_wheel_speed=0;
+    feedback(now+262u);input(now+262u);assert(work_stop_feedback);
+    fake_wheel_speed=WORK_STOP_HARD_WHEEL_RAD_S+.01f;
+    feedback(now+272u);input(now+272u);assert(!work_stop_feedback);
+    fake_wheel_speed=.20f;
+    feedback(now+282u);motor_ms[4]=now-101u;input(now+282u);assert(!work_stop_feedback);
+    fake_wheel_speed=NAN;
+    feedback(now+292u);input(now+292u);assert(!work_stop_feedback);
+    fake_wheel_speed=0;g_station_work.phase=STATION_LINK_SYNC;
+    feedback(now+302u);input(now+302u);
+    puts("WORK_STOP_NOISE_OK recorded_0p327_impulse_120ms_bound_2mm_travel_hard_speed_stale_nonfinite_stop");
+}
+static void check_can_manual_recovery(void) {
+    const unsigned now=200000u;
+    fake_can_healthy=fake_online=fake_calibrated=true;
+    fake_swc=2000u;fake_swd=2000u;fake_vrb=1250u;
+    fake_ry=fake_rx=fake_lx=1500u;fake_wheel_speed=0;
+    fake_steer_failures=fake_drive_failures=0;
+    acknowledged_steer_failures=acknowledged_drive_failures=0;
+    rx_fault=tx_fault=false;
+    feedback(now);fake_us=now*1000u;update_imu_sample();
+    StraightInput in=input(now);
+    fake_steer_failures=1;
+    assert(!can_healthy());
+    blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now,in);
+    assert(can_healthy() && control_source.release_seen);
+    fake_steer_failures=2;
+    fake_vrb=1500u;
+    in=input(now+100u);blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now+100u,in);
+    assert(!can_healthy());
+    fake_swd=1000u;
+    feedback(now+100u);fake_us=(now+100u)*1000u;update_imu_sample();
+    in=input(now+100u);blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now+200u,in);
+    assert(can_healthy() && fake_steer_failures==2u && !tx_fault);
+    test.phase=ST_FAULT;full_map.phase=MAP_FAULT;
+    control_source=(DriveSource){.mode=DRIVE_SOURCE_MANUAL};
+    update_control_source(now+100u,in);
+    assert(control_source.release_seen && !control_source.manual_armed);
+    fake_swd=2000u;
+    fake_vrb=1250u;
+    fake_calibrated=false;
+    in=input(now+100u);update_control_source(now+100u,in);
+    assert(control_source.manual_armed && test.phase==ST_FAULT && full_map.phase==MAP_FAULT);
+    assert(fake_manual_override);
+    fake_calibrated=true;
+    fake_wheel_speed=.10f;
+    in=input(now+100u);
+    assert(!in.stationary && work_stop_feedback);
+    fake_wheel_speed=WORK_STOP_CONTINUE_WHEEL_RAD_S+.01f;
+    in=input(now+100u);
+    assert(!in.stationary && !work_stop_feedback);
+    fake_steer_failures=3;
+    assert(!can_healthy());
+    fake_swd=1000u;fake_can_healthy=false;
+    in=input(now+200u);blockers|=BLOCK_CAN;
+    acknowledge_can_recovery(now+200u,in);
+    assert(!can_healthy());
+    puts("CAN_MANUAL_RECOVERY_OK manual_takeover_zero_output_ack_IMU_independent_VRB_gate_bus_fault_blocks");
+    puts("WORK_STOP_HYSTERESIS_OK strict_start_continuation_noise_band_all_wheels_bound");
+}
 int main(void) {
+    /* Recorded HOST offsets 1473/1523/1527 must not revoke permission. */
+    g_test_tick_ms=100u;
+    fake_ry=1473u; fake_rx=1527u;
+    blockers=0; assert(remote_permit() && !(blockers&BLOCK_RC_STICK));
+    fake_ry=1523u;
+    blockers=0; assert(remote_permit());
+    fake_ry=1560u;
+    blockers=0; assert(remote_permit());
+    g_test_tick_ms=199u; blockers=0; assert(remote_permit());
+    g_test_tick_ms=200u; blockers=0;
+    assert(!remote_permit() && (blockers&BLOCK_RC_STICK));
+    fake_ry=1530u; blockers=0; assert(remote_permit());
+    fake_ry=1620u; blockers=0; assert(!remote_permit());
+    fake_swc=2000u; fake_vrb=1000u; fake_rx=fake_ry=1500u;
+    blockers=0; assert(remote_permit()); /* Manual switch takes effect immediately. */
+    fake_swc=1500u; fake_swd=1000u;
+    blockers=0; assert(!remote_permit() && (blockers&BLOCK_RC_SWITCH));
+    fake_swd=2000u; fake_vrb=1500u;
+    puts("HOST_STICK_REPLAY_OK neutral_noise_debounce_large_move_immediate_manual_SWD_immediate");
     map_work_enabled=false;
     test.phase = ST_IDLE;
     test.target_m = 4.0f;
@@ -769,6 +881,8 @@ int main(void) {
     check_map_laser_filter();
     check_map_logging_budget();
     check_map_mode_selection();
+    check_can_manual_recovery();
+    check_work_stop_noise();
     puts("STRAIGHT_DIAGNOSTICS_TEST_OK (cached samples, calibration gate, stale data, drift wrap, log bounds)");
     puts("DRIVE_ISOLATION_TEST_OK (actual UART dispatch, manual VRB stop/cache clear/re-arm, manual stick-only rotation, HOST ignores VRB and retains heading hold, old commands and STOP)");
     puts("ROUND_HEADING_ADAPTER_TEST_OK (ROUND/WALL scheduler WAIT stops outputs but preserves nonzero heading; BACK corrects yaw; STOP disables)");

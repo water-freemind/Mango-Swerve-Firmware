@@ -36,6 +36,9 @@ typedef struct {
     bool approaching, north_confirmed, left_observed;
     uint8_t confirmations;
     uint32_t sample_ms, first_ms, left_sample_ms;
+    uint32_t recovery_sample_ms, recovery_first_ms;
+    uint8_t recovery_samples;
+    float recovery_front_m, recovery_m;
 } MapEntryGuidance;
 
 typedef struct {
@@ -63,8 +66,19 @@ typedef struct {
     LaserSnapshot laser;
     bool work_enabled, work_online, work_ready, work_done, work_failed;
     bool work_slow, work_wait, work_active;
-    uint8_t work_station;
+    uint8_t work_station, work_result;
+    bool work_align, work_alignment_fresh, work_centered;
+    int8_t work_align_direction;
+    uint32_t work_align_frame;
 } FullMapInput;
+
+typedef struct {
+    bool active, ready;
+    uint8_t station, steps;
+    int8_t direction;
+    uint32_t started_ms, frame;
+    float nominal_x, target_x;
+} MapTreeAlignment;
 typedef struct {
     float x;
     bool configured;
@@ -80,6 +94,7 @@ typedef struct {
     MapFarRayHandover far_handover[2]; /* Left/right only; bounded extra handover, no invented samples. */
     MapNearRecovery near_recovery;
     MapEndpointFeedback endpoint;
+    MapTreeAlignment tree_alignment;
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;
@@ -94,9 +109,17 @@ typedef struct {
     AutoMotionError motion_error;
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */
     uint16_t trees_done;
+    uint16_t trees_unresolved; /* Visited tree stations still reporting fruit after the retry limit. */
+    bool aisle_entry_qualified;
+    bool visual_work, visual_stop, work_request_pending, work_scan_ending;
+    uint8_t visual_segment, row_work_count;
+    uint32_t work_count, unresolved_work_count;
+    float visual_stop_x;
     uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
     bool tree_hold, tree_hold_stable;
     uint32_t tree_hold_ms;
+    bool work_pose_excursion;
+    uint32_t work_pose_excursion_ms;
 } FullMapTest;
 /* Station vehicle-center X in metres from the west map boundary. No guessed defaults. */
 bool full_map_set_tree_x(FullMapTest* map,unsigned row,unsigned number,float x);

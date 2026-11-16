@@ -1,0 +1,317 @@
+version: "4.1"
+name: elbow
+type: ARM
+deviceName: STM32F407VE
+packDir: null
+srcDirs:
+  - Core
+  - BSP
+virtualFolder:
+  name: <virtual_root>
+  files: []
+  folders:
+    - name: HAL
+      files:
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_can.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_cortex.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_dma_ex.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_exti.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ex.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_flash_ramfunc.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_gpio.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_pwr_ex.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_rcc_ex.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_tim_ex.c
+        - path: Drivers/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_uart.c
+      folders: []
+dependenceList: []
+outDir: build
+miscInfo:
+  uid: f9c81e42320945aea8427d58c8e6b292
+targets:
+  FullMapWork:
+    cppPreprocessAttrs:
+      defineList:
+        - USE_HAL_DRIVER
+        - STM32F407xx
+        - ELBOW_TEST_MODE=2
+      incList:
+        - Core/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+        - Drivers/CMSIS/Device/ST/STM32F4xx/Include
+        - Drivers/CMSIS/Include
+        - BSP
+        - BSP/OLED
+      libList: []
+    excludeList: []
+    settings: {}
+    toolchain: GCC
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 5
+          afterBuildTasks: []
+          asm-compiler:
+            ASM_FLAGS: ""
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            C_FLAGS: -Wno-missing-braces
+            language-c: c11
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-debug
+            warnings: all-warnings
+          global:
+            $float-abi-type: hard
+            arm-thumb-mode: thumb
+            not-use-syscalls: true
+            output-debug-info: enable
+            use-newlib-nano: true
+          linker:
+            LD_FLAGS: -Wl,-z,noexecstack
+            $toolName: auto
+            output-format: elf
+            remove-unused-input-sections: true
+            use-float-printf: true
+        scatterFilePath: STM32F407VETX_FLASH.ld
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: cmsis-dap
+        target: stm32f4x
+    uploader: OpenOCD
+  VisionTest:
+    cppPreprocessAttrs:
+      defineList:
+        - USE_HAL_DRIVER
+        - STM32F407xx
+        - ELBOW_TEST_MODE=1
+      incList:
+        - Core/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+        - Drivers/CMSIS/Device/ST/STM32F4xx/Include
+        - Drivers/CMSIS/Include
+        - BSP
+        - BSP/OLED
+      libList: []
+    excludeList: []
+    settings: {}
+    toolchain: GCC
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 5
+          afterBuildTasks: []
+          asm-compiler:
+            ASM_FLAGS: ""
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            C_FLAGS: -Wno-missing-braces
+            language-c: c11
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-debug
+            warnings: all-warnings
+          global:
+            $float-abi-type: hard
+            arm-thumb-mode: thumb
+            not-use-syscalls: true
+            output-debug-info: enable
+            use-newlib-nano: true
+          linker:
+            LD_FLAGS: -Wl,-z,noexecstack
+            $toolName: auto
+            output-format: elf
+            remove-unused-input-sections: true
+            use-float-printf: true
+        scatterFilePath: STM32F407VETX_FLASH.ld
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: cmsis-dap
+        target: stm32f4x
+    uploader: OpenOCD
+  LegacyWork:
+    cppPreprocessAttrs:
+      defineList:
+        - USE_HAL_DRIVER
+        - STM32F407xx
+        - ELBOW_TEST_MODE=0
+      incList:
+        - Core/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+        - Drivers/CMSIS/Device/ST/STM32F4xx/Include
+        - Drivers/CMSIS/Include
+        - BSP
+        - BSP/OLED
+      libList: []
+    excludeList: []
+    settings: {}
+    toolchain: GCC
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 5
+          afterBuildTasks: []
+          asm-compiler:
+            ASM_FLAGS: ""
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            C_FLAGS: -Wno-missing-braces
+            language-c: c11
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-debug
+            warnings: all-warnings
+          global:
+            $float-abi-type: hard
+            arm-thumb-mode: thumb
+            not-use-syscalls: true
+            output-debug-info: enable
+            use-newlib-nano: true
+          linker:
+            LD_FLAGS: -Wl,-z,noexecstack
+            $toolName: auto
+            output-format: elf
+            remove-unused-input-sections: true
+            use-float-printf: true
+        scatterFilePath: STM32F407VETX_FLASH.ld
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: cmsis-dap
+        target: stm32f4x
+    uploader: OpenOCD
+  ManualEncoder:
+    cppPreprocessAttrs:
+      defineList:
+        - USE_HAL_DRIVER
+        - STM32F407xx
+        - ELBOW_TEST_MODE=3
+      incList:
+        - Core/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc
+        - Drivers/STM32F4xx_HAL_Driver/Inc/Legacy
+        - Drivers/CMSIS/Device/ST/STM32F4xx/Include
+        - Drivers/CMSIS/Include
+        - BSP
+        - BSP/OLED
+      libList: []
+    excludeList: []
+    settings: {}
+    toolchain: GCC
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M4
+        floatingPointHardware: single
+        options:
+          version: 5
+          afterBuildTasks: []
+          asm-compiler:
+            ASM_FLAGS: ""
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            C_FLAGS: -Wno-missing-braces
+            language-c: c11
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-debug
+            warnings: all-warnings
+          global:
+            $float-abi-type: hard
+            arm-thumb-mode: thumb
+            not-use-syscalls: true
+            output-debug-info: enable
+            use-newlib-nano: true
+          linker:
+            LD_FLAGS: -Wl,-z,noexecstack
+            $toolName: auto
+            output-format: elf
+            remove-unused-input-sections: true
+            use-float-printf: true
+        scatterFilePath: STM32F407VETX_FLASH.ld
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: "null"
+          vendor: "null"
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: cmsis-dap
+        target: stm32f4x
+    uploader: OpenOCD

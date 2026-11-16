@@ -4,6 +4,16 @@
 
 static bool positive(float x) { return isfinite(x) && x>0; }
 static float clamp(float x,float limit) { return fmaxf(-limit,fminf(limit,x)); }
+static float correction(float error,float tolerance,float gain,float minimum,float maximum,bool smooth,bool* active) {
+    if(minimum>0) {
+        if(fabsf(error)<=tolerance) *active=false;
+        else if(fabsf(error)>=2*tolerance) *active=true;
+        if(!*active) return 0;
+    }
+    if(fabsf(error)<=tolerance) return 0;
+    const float demand=gain*(fabsf(error)-(smooth?tolerance:0));
+    return copysignf(fminf(maximum,fmaxf(minimum,demand)),error);
+}
 static bool finite_twist(AutoTwist t) { return isfinite(t.vx)&&isfinite(t.vy)&&isfinite(t.wz); }
 static AutoVec2 allowed_translation(AutoVec2 body,uint8_t blocked) {
     if((blocked&1u) && body.y>0) body.y=0;
@@ -21,6 +31,8 @@ bool auto_motion_begin(AutoMotion* m,const AutoMotionConfig* c,AutoSegment s,uin
        !positive(c->cross_kp)||!positive(c->yaw_kp)||!positive(c->wz_max)||!positive(c->angular_accel)||
        !positive(c->position_tolerance)||!positive(c->cross_tolerance)||!positive(c->yaw_tolerance)||
        !positive(c->cross_abort)||!positive(c->yaw_abort)||!positive(c->settle_s)||
+       !isfinite(c->lateral_min)||c->lateral_min<0||c->lateral_min>c->lateral_max||
+       !isfinite(c->wz_min)||c->wz_min<0||c->wz_min>c->wz_max||
        !isfinite(c->stop_latency_s)||c->stop_latency_s<0||c->stop_latency_s>2||
        !isfinite(c->finish_yaw_tolerance)||c->finish_yaw_tolerance<0||
        !isfinite(c->finish_cross_tolerance)||c->finish_cross_tolerance<0||
@@ -104,16 +116,11 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(remaining<0) along=-fminf(along,.05f);
     if(fabsf(remaining)<=stop_tolerance) along=0;
     if(in.hold_along) along=0;
-    float cross_error=m->out.cross_error,heading_error=m->out.heading_error;
-    if(m->config.smooth_correction) {
-        cross_error=copysignf(fmaxf(0,fabsf(cross_error)-m->config.cross_tolerance),cross_error);
-        heading_error=copysignf(fmaxf(0,fabsf(heading_error)-m->config.yaw_tolerance),heading_error);
-    }
-    float lateral=clamp(-m->config.cross_kp*cross_error,m->config.lateral_max);
+    float lateral=correction(-m->out.cross_error,m->config.cross_tolerance,m->config.cross_kp,
+        m->config.lateral_min,m->config.lateral_max,m->config.smooth_correction,&m->cross_correcting);
     if(in.limit_cross) lateral=fmaxf(-in.cross_negative_limit,fminf(in.cross_positive_limit,lateral));
-    if(fabsf(m->out.cross_error)<=m->config.cross_tolerance) lateral=0;
-    float wz=clamp(m->config.yaw_kp*heading_error,m->config.wz_max);
-    if(fabsf(m->out.heading_error)<=m->config.yaw_tolerance) wz=0;
+    float wz=correction(m->out.heading_error,m->config.yaw_tolerance,m->config.yaw_kp,
+        m->config.wz_min,m->config.wz_max,m->config.smooth_correction,&m->yaw_correcting);
     /* A centering hold must keep correcting to cross_tolerance even inside
      * the wider endpoint acceptance window. Completion waits for release. */
     const bool position_reached=!in.hold_along && fabsf(remaining)<=stop_tolerance &&
@@ -139,11 +146,15 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     const AutoVec2 requested_body=auto_rotate(target,-in.pose.pose.yaw);
     const AutoTwist requested_hint={requested_body.x,requested_body.y,wz};
     const AutoTwist prepared=m->out.steering_hint;
+    const AutoVec2 prepared_map=auto_rotate((AutoVec2){prepared.vx,prepared.vy},in.pose.pose.yaw);
+    const float prepared_cross=prepared_map.x*m->normal.x+prepared_map.y*m->normal.y;
     const bool prepared_translation=prepared.vx!=0 || prepared.vy!=0;
     const bool prepared_valid=m->config.smooth_correction && m->out.phase==AUTO_MOTION_ALIGN &&
         (prepared_translation || prepared.wz!=0);
     const bool compatible=prepared_translation==(target.x!=0 || target.y!=0) &&
         requested_body.x*prepared.vx+requested_body.y*prepared.vy>=0 && wz*prepared.wz>=0 &&
+        (wz!=0 || prepared.wz==0) &&
+        (prepared_cross*lateral>=0 || fabsf(prepared_cross)<.005f || fabsf(lateral)<.005f) &&
         (in.aligned ||
          (allowed_translation((AutoVec2){prepared.vx,prepared.vy},in.blocked_directions).x==prepared.vx &&
           allowed_translation((AutoVec2){prepared.vx,prepared.vy},in.blocked_directions).y==prepared.vy));
@@ -162,17 +173,51 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     /* A stationary goal needs no new wheel direction. Closed alignment still
      * enforces zero drive while allowing the ordinary settle timer to finish. */
     if(!in.aligned) {m->velocity_map=(AutoVec2){0};m->out.command=(AutoTwist){0};}
-    if(prepared_valid && !zero_target) {
+    const AutoVec2 launch_map=auto_rotate((AutoVec2){m->launch_hint.vx,m->launch_hint.vy},in.pose.pose.yaw);
+    const float launch_cross=launch_map.x*m->normal.x+launch_map.y*m->normal.y;
+    const bool keep_launch=m->config.smooth_correction && m->launching && !zero_target &&
+        fabsf(remaining)>m->config.position_tolerance &&
+        hypotf(m->velocity_map.x,m->velocity_map.y)<.05f &&
+        !in.hold_along && !m->reversing && !in.stop_requested &&
+        (launch_cross*lateral>=0 || fabsf(launch_cross)<.005f || fabsf(lateral)<.005f) &&
+        m->launch_hint.wz*wz>=0 && (wz!=0 || m->launch_hint.wz==0) &&
+        !(fabsf(launch_cross)<.00001f && fabsf(lateral)>.005f);
+    if(prepared_valid && !zero_target && fabsf(remaining)<=m->config.position_tolerance) {
         const float norm=hypotf(prepared.vx,prepared.vy);
         const float scale=norm>m->config.vmax?m->config.vmax/norm:1;
         target=auto_rotate(allowed_translation((AutoVec2){prepared.vx*scale,prepared.vy*scale},in.blocked_directions),in.pose.pose.yaw);
-        /* A latched hint never grants the older speed or endpoint demand. */
         const float pa=target.x*m->tangent.x+target.y*m->tangent.y;
         const float pc=target.x*m->normal.x+target.y*m->normal.y;
         const float ca=pa*along<0?0:clamp(pa,fabsf(along));
         const float cc=pc*lateral<0?0:clamp(pc,fabsf(lateral));
         target.x=ca*m->tangent.x+cc*m->normal.x;target.y=ca*m->tangent.y+cc*m->normal.y;
         wz=prepared.wz*wz<0?0:copysignf(fminf(fabsf(prepared.wz*scale),fabsf(wz)),wz);
+    } else if((prepared_valid || keep_launch) && !zero_target) {
+        AutoTwist reference=prepared_valid?prepared:m->launch_hint;
+        const AutoVec2 allowed=allowed_translation((AutoVec2){reference.vx,reference.vy},in.blocked_directions);
+        reference.vx=allowed.x;reference.vy=allowed.y;
+        const float norm=hypotf(reference.vx,reference.vy);
+        float scale=norm>m->config.vmax?m->config.vmax/norm:1;
+        target=auto_rotate((AutoVec2){reference.vx,reference.vy},in.pose.pose.yaw);
+        /* A common scale keeps every wheel's prepared direction during the
+         * complete launch. Separately clipping path/cross/yaw changes that
+         * direction immediately and repeatedly closes the steering gate. */
+        const float pa=target.x*m->tangent.x+target.y*m->tangent.y;
+        const float pc=target.x*m->normal.x+target.y*m->normal.y;
+        if(fabsf(pa)>.00001f) scale=fminf(scale,pa*along<0?0:fabsf(along/pa));
+        float cross_limit=fminf(m->config.lateral_max,
+            fabsf(lateral)+m->config.cross_kp*m->config.cross_tolerance);
+        if(in.limit_cross) cross_limit=fminf(cross_limit,pc<0?in.cross_negative_limit:in.cross_positive_limit);
+        if(fabsf(pc)>.00001f) scale=fminf(scale,cross_limit/fabsf(pc));
+        if(fabsf(reference.wz)>.00001f) scale=fminf(scale,fminf(m->config.wz_max,fabsf(wz))/fabsf(reference.wz));
+        if(scale<=.000001f) {
+            zero(m);m->out.phase=AUTO_MOTION_ALIGN;
+            m->out.steering_hint=requested_hint;
+            m->out.settle_blockers=256u;
+            return m->out;
+        }
+        target.x*=scale;target.y*=scale;wz=reference.wz*scale;
+        m->launch_hint=reference;
     }
     m->out.steering_hint=(AutoTwist){0};
     m->out.phase=in.stop_requested?AUTO_MOTION_HOLD:AUTO_MOTION_RUN;
@@ -188,7 +233,10 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
      * Once moving, yaw feedback must not weaken the translational braking
      * ramp, nor may a speed change freeze the independent angular ramp. */
     if(prepared_valid || (hypotf(m->velocity_map.x,m->velocity_map.y)<.00001f &&
-                         fabsf(m->out.command.wz)<.00001f)) m->launching=true;
+                         fabsf(m->out.command.wz)<.00001f)) {
+        m->launching=true;
+        if(!prepared_valid) m->launch_hint=requested_hint;
+    }
     if(m->launching) {
         scale=angular_scale=fminf(scale,angular_scale);
         if(scale>=1) m->launching=false;

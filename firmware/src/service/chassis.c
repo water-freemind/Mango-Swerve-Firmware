@@ -1010,6 +1010,15 @@ const SteerWheelControl* chassis_get_control(void) {
 bool chassis_is_ready(void) {
     return s_chassis.initialized && s_chassis.steer_motor_ready && s_chassis.drive_motor_ready;
 }
+ChassisSteeringDiagnostic chassis_get_steering_diagnostic(void) {
+    ChassisSteeringDiagnostic diagnostic={0};
+    diagnostic.valid=chassis_is_ready();
+    for(unsigned i=0;i<CHASSIS_MODULE_COUNT;++i) {
+        diagnostic.target_rad[i]=s_module_cmd[i].steer_target_abs_angle;
+        diagnostic.error_rad[i]=s_module_cmd[i].steer_target_abs_angle-s_module_fb[i].steer_abs_angle;
+    }
+    return diagnostic;
+}
 
 /**
  * @brief 将底盘状态码转换为静态字符串

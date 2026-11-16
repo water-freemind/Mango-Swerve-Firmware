@@ -12,6 +12,7 @@ char str[32];                  /* OLED 单行文本缓冲，先格式化文字�
 char uart_rx[32];              /* 串口接收缓冲，解析时使用实际长度，不依赖字符串结束符。 */
 /* 中断更新、主循环读取的测速数据。转速单位为 RPM，负号表示编码方向。 */
 volatile int32_t Encoder_Count[4] = {0};
+volatile int32_t Encoder_Position[4] = {0}; /* A～D 累计计数，供行程测量和回位控制。 */
 volatile int32_t Speed[4] = {0};
 static uint32_t Encoder_Previous[4] = {0};
 /* 每圈编码器四倍频计数，当前每路为 384，需按编码器与减速比标定。 */
@@ -154,6 +155,7 @@ void OLED_Display(void)
         {
         case STATION_SYNC: car_state = Vision_WorkState == VISION_WORK_IDLE && Vision_Online ? "READY" : "SYNC"; break;
         case STATION_APPROACH: car_state = "APPROACH"; break;
+        case STATION_ALIGN: car_state = "ALIGN"; break;
         case STATION_START: car_state = "STOPPED"; break;
         case STATION_RELEASE: car_state = "RELEASED"; break;
         case STATION_ABORT: car_state = "ABORT"; break;
@@ -168,6 +170,7 @@ void OLED_Display(void)
     case VISION_WORK_IDLE: job_state = "IDLE"; break;
     case VISION_WORK_APPROACH: job_state = "APPROACH"; break;
     case VISION_WORK_WAIT_STOP: job_state = "WAIT_STOP"; break;
+    case VISION_WORK_ALIGN: job_state = "ALIGN"; break;
     case VISION_WORK_CHECK: job_state = "CHECK"; break;
     case VISION_WORK_ACTING: job_state = "ACTING"; break;
     case VISION_WORK_RELEASE: job_state = "RELEASE"; break;
@@ -192,7 +195,9 @@ void OLED_Display(void)
             (unsigned long)(remaining_tenths / 10U),
             (unsigned long)(remaining_tenths % 10U), pwm);
     OLED_ShowString(0, 8, str, OLED_6X8);
-    if (ELBOW_TEST_MODE == 1)
+    if (ELBOW_TEST_MODE == 3)
+        snprintf(str, sizeof(str), "MODE:ENCODER");
+    else if (ELBOW_TEST_MODE == 1)
         snprintf(str, sizeof(str), "MODE:VISION TEST");
     else
         snprintf(str, sizeof(str), "CAR:%s CAN:%s", car_state, online ? "ON" : "OFF");
@@ -336,9 +341,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
             if (difference & 0x8000U) delta -= 65536LL;
         }
         Encoder_Count[i] = (int32_t)delta;
+        Encoder_Position[i] = (int32_t)((uint32_t)Encoder_Position[i] + (uint32_t)(int32_t)delta);
         /* RPM = 10 ms 内计数增量 / 每圈计数 × 100 × 60。 */
         Speed[i] = (int32_t)(delta * 6000 / Encoder_CountsPerRev[i]);
     }
+    Vision_Motor_EncoderTick();
 }
 
 

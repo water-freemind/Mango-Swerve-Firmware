@@ -43,7 +43,30 @@ public static class MangoStraightConsole {
             {"ORIGIN_FRONT_ANCHORED","入口起点登记成功"},
             {"ARM_NOT_READY","尚未满足准备条件；请先登记起点，检查SWC、SWD及停稳状态"},
             {"ARMED","全图已准备，请点击开始"},{"RUNNING","任务运行中"},
-            {"WORK_PEER_NOT_READY","疏果端尚未就绪；单独跑图请选择NAV模式"},
+            {"WORK_PEER_NOT_READY","疏果端未就绪，请先确认四路手动收回零位，再检查视觉在线"},
+            {"WORK_ATTEMPTS_EXHAUSTED","当前树同一区域已达到四次作业上限，复检仍有目标，保持停车"},
+            {"WORK_TREE_TIMEOUT","当前树作业超时，保持停车"},
+            {"WORK_VISION_OFFLINE","疏果视觉连续离线，保持停车"},
+            {"WORK_ALIGNMENT_LOST","疏果复检发现树位偏离对中区间，保持停车"},
+            {"WORK_CAN_TIMEOUT","疏果端CAN通信超时，保持停车"},
+            {"WORK_ENCODER_OR_FEEDBACK","肘击编码器或底盘停稳反馈异常，保持停车"},
+            {"WORK_STOP_FEEDBACK","底盘作业停稳反馈异常，保持停车"},
+            {"WORK_ENCODER_DIRECTION","肘击编码器方向异常，检查故障通道与行程读数"},
+            {"WORK_ENCODER_LIMIT","肘击编码器超出安全行程，保持停车"},
+            {"WORK_ENCODER_STALL","肘击动作期间编码器连续300毫秒无进展，保持停车"},
+            {"WORK_ENCODER_TIMEOUT","肘击动作超过6秒，保持停车"},
+            {"WORK_RETURN_NOT_READY","肘击机构未回到回收目标，查看通道与编码器读数"},
+            {"TREE_VISION_BRAKE","识别到树和绿色芒果，正在停车对中"},
+            {"VISION_SCAN_END","本垄扫描结束，确认疏果端空闲后换垄"},
+            {"WORK_PEER_FAULT","疏果端故障，请查看作业结果码"},
+            {"WORK_CANCELLED","作业任务已取消，请查看 TEST_WORK_CANCEL 中的遥控许可和跑图状态"},
+            {"WORK_POSE_SETTLING","作业保持停车，正在确认短时定位偏差"},
+            {"VRB_RELEASED","VRB尚未压到使能位置，请保持VRB≤1250"},
+            {"SWD_REARM","请松杆回中，将SWD拨到1000再拨回2000"},
+            {"STICKS_NOT_CENTERED","请先松杆回中，再手动接管"},
+            {"WHEELS_MOVING","正在等待车辆停稳后手动接管"},
+            {"REMOTE_PERMIT","请检查SWA=1000、SWD=2000、VRA>1200"},
+            {"HARDWARE","底盘电机或IMU反馈尚未就绪"},
             {"RANGE_PAUSE","测距保护暂停，正在等待有效数据和停稳恢复"},
             {"NEAR_RECOVERY_WAIT","近距恢复：保持停止，等待安全退让条件"},
             {"NEAR_RECOVERY_ALIGN","近距恢复：零驱动对齐退让方向"},
@@ -55,6 +78,8 @@ public static class MangoStraightConsole {
             {"POSE_OBSERVATION_PAUSE","定位观测不足，暂停等待有效观测"},
             {"ENTRY_NORTH_PAUSE","即将到G7，等待远端围栏定位确认"},
             {"RESUMED","保护条件恢复，继续行驶"},{"ROUTE_COMPLETE","全图路线已完成"},
+            {"TREE_ATTEMPTS_CONTINUE","已达到四次作业上限，记录未打落树位并继续行驶"},
+            {"ROUTE_COMPLETE_WITH_UNRESOLVED","全图路线已完成，仍有果子未打落，请查看未完成树位记录"},
             {"MAP_ENVELOPE","估计车体超出地图通行包络，任务已停止"},
             {"MOTION_FAULT","运动控制检测到偏差或过点异常，任务已停止"},
             {"MODE_NAV_SELECTED","已选择单独跑图模式"},{"MODE_WORK_SELECTED","已选择联合疏果模式"},
@@ -63,7 +88,7 @@ public static class MangoStraightConsole {
             {"NEED_ORIGIN","请回入口对准后登记起点"},
             {"CONTROL_MODE_CHANGED","控制来源已切换，原任务结束"},
             {"RC_OFFLINE","遥控未在线，请检查遥控器和接收机"},
-            {"RC_SWITCH","遥控开关未放行；准备完成后检查SWC中位和SWD运行位"},
+            {"RC_SWITCH","遥控开关未放行，请检查SWC=1500、SWD=2000并保持摇杆回中"},
             {"HOST_NOT_SELECTED","当前未选择上位机控制，SWC应在中位1500"},
             {"NONE","正常"},{"IDLE","空闲"},
             {"CLICK_MAP_ARM_FIRST_OR_NOT_READY","请先点击准备全图并等待准备成功，再点击开始"},
@@ -109,6 +134,12 @@ public static class MangoStraightConsole {
         if(line.Contains("TEST_MAP_POSE ") && Field(line,"motion_phase")!="?")
             return "[运动指令] 前后="+Field(line,"vx")+"；横向="+Field(line,"vy")+"；旋转="+Field(line,"wz")+
                 "；阶段="+Field(line,"motion_phase")+"；预测位="+Field(line,"predicted");
+        if(line.Contains("TEST_CONTROL ") && Field(line,"source")=="MANUAL") {
+            if(Field(line,"manual_armed")=="1") return "[遥控] 手动已使能";
+            string wait=Field(line,"manual_wait");
+            if(reasons.TryGetValue(wait,out description)) return "[遥控] "+description+" ["+wait+"]";
+            return "[遥控] 手动待使能，VRB="+Field(line,"vrb_ok")+"，SWD确认="+Field(line,"release_seen");
+        }
         if(line.Contains("TEST_MAP_AISLE ") && Field(line,"active")!="?")
             return "[纠偏] 前后配对="+Field(line,"active")+"；误差毫米="+Field(line,"error_mm")+
                 "；轮向到位="+Field(line,"align")+"；速度上限="+Field(line,"limit")+
@@ -143,7 +174,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT|WORK_VISION|WORK_ENCODER|WORK_STOP)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.UTF8.GetBytes(ChineseStatus(plain) + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -325,7 +356,7 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
-        if (category == "WORK" || category == "WORK_EVENT") return true;
+        if (category == "WORK" || category == "WORK_EVENT" || category == "WORK_VISION" || category == "WORK_ENCODER" || category == "WORK_STOP") return true;
         if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "MAP_TREE_EVENT" || category == "MAP_CONTROL_FAULT" || category == "PREDICT") return true;
         if (category == "MAP_STATUS" || category == "MAP_POSE" || category == "MAP_AISLE" || category == "MAP_TREE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
@@ -382,7 +413,7 @@ public sealed class VofaTestSession {
             mapArmed = mapAck.Groups[1].Value == "1" && mapAck.Groups[2].Value == "ARMED" &&
                 now - mapArmTime <= 1000 && UInt32.TryParse(mapAck.Groups[3].Value, out mapToken);
             mapArmTime = now;
-            report(mapArmed ? "map_arm_ready=1 next=UI_MAP_GO expires_ms=4000" : "rejected=MAP_ARM_ACK");
+            report(mapArmed ? "map_arm_ready=1 next=UI_MAP_GO expires_ms=30000" : "rejected=MAP_ARM_ACK");
         }
         Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
         if (planStatus.Success) {
@@ -463,6 +494,10 @@ public sealed class VofaTestSession {
         if (command == "UI STOP") { tx("STOP"); Clear(); mapArmed = mapAwaitingArm = false; report("stop_requested=1"); return true; }
         if (command.StartsWith("UI MAP ", StringComparison.Ordinal)) {
             string action = command.Substring(7);
+            if (action == "ELBOW HOME") {
+                if (!stopped || now - lastStatus > 500) { report("rejected=ORIGIN_NEEDS_STOPPED_FEEDBACK"); return false; }
+                tx("MAP ELBOW HOME"); return true;
+            }
             if (action == "STATUS" || action == "STOP" || action == "WORK STATUS" || action == "WORK RESET") {
                 tx("MAP " + action); if (action == "STOP") mapArmed = mapAwaitingArm = false;
                 if (action == "WORK RESET") mapArmed = mapAwaitingArm = false;
@@ -475,7 +510,7 @@ public sealed class VofaTestSession {
                 report("rejected=MAP_NEEDS_HOST_AND_NO_STRAIGHT_SESSION"); return false;
             }
             if (action == "GO") {
-                if (!mapArmed || now - mapArmTime > 4000 || !healthy || !stopped) { report("rejected=CLICK_MAP_ARM_FIRST_OR_NOT_READY"); return false; }
+                if (!mapArmed || now - mapArmTime > 30000 || !healthy || !stopped) { report("rejected=CLICK_MAP_ARM_FIRST_OR_NOT_READY"); return false; }
                 tx("MAP GO " + mapToken.ToString(CultureInfo.InvariantCulture)); mapArmed = false; return true;
             }
             if (action == "RESUME") { tx("MAP RESUME"); return true; }
@@ -490,7 +525,15 @@ public sealed class VofaTestSession {
                 tx("MAP " + action); return true;
             }
             if (action == "ARM ALL") {
-                if (!healthy || mapAwaitingArm) return false;
+                if (!healthy) {
+                    string status;
+                    cache.TryGetValue("TEST_STATUS", out status);
+                    Match blocked = Regex.Match(status ?? "", @"\bblocked=([^\s]+)");
+                    string reason = blocked.Success && blocked.Groups[1].Value != "NONE" ? blocked.Groups[1].Value : "ARM_NOT_READY";
+                    report("rejected=" + reason + " action=MAP_ARM_ALL");
+                    return false;
+                }
+                if (mapAwaitingArm) { report("rejected=MAP_ARM_ACK_PENDING"); return false; }
                 mapAwaitingArm = true; mapArmTime = now; mapArmSelection = action; tx("MAP " + action); return true;
             }
             report("rejected=UNKNOWN_MAP_COMMAND"); return false;

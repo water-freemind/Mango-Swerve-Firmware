@@ -8,3 +8,6 @@ MDK-ARM/*.bak
 *.htm
 tests/work_can_*/
 tests/oled_*/
+
+build/
+.vscode/

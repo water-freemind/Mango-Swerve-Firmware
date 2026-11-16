@@ -295,6 +295,22 @@ static void stable_preparation_feedback_test(void) {
     o=auto_motion_step(&m,in);assert(o.command.wz==0);
     puts("STABLE_PREPARATION_FEEDBACK_OK unchanged_feasible_hint_until_alignment_new_speed_cap_and_blocked_ray_obeyed");
 }
+static void corner_launch_shape_test(void) {
+    AutoMotion m;AutoMotionConfig c=config();
+    c.vmax=.5f;c.lateral_max=.1f;c.cross_kp=3.2f;c.smooth_correction=true;
+    assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+    AutoMotionInput in=input((AutoPose){.2f,.03f,.04f},10);
+    in.aligned=false;auto_motion_step(&m,in);
+    const AutoTwist reference=m.out.steering_hint;
+    for(unsigned now=20;now<=160;now+=10) {
+        in=input((AutoPose){.2f,.02f,.025f},now);in.along_speed_limit=.05f;
+        const AutoMotionOutput o=auto_motion_step(&m,in);
+        assert(o.phase==AUTO_MOTION_RUN && o.command.vx>0);
+        assert(fabsf(o.command.vx*reference.vy-o.command.vy*reference.vx)<.000001f);
+        assert(fabsf(o.command.vx*reference.wz-o.command.wz*reference.vx)<.000001f);
+    }
+    puts("CORNER_LAUNCH_SHAPE_OK changed_cross_yaw_speed_cap_whole_launch_preserves_prepared_wheel_shape");
+}
 static void endpoint_hysteresis_and_diagnostics_test(void) {
     AutoMotion m;AutoMotionConfig c=config();c.position_tolerance=.02f;c.settle_s=.4f;c.smooth_correction=true;
     const AutoSegment seg={{0,0},{1,0},0};assert(auto_motion_begin(&m,&c,seg,0));
@@ -330,9 +346,60 @@ static void cross_component_braking_limit_test(void) {
     }
     puts("MAP_CROSS_COMPONENT_LIMIT_OK normal_component_clamped_without_stopping_along_travel");
 }
+static void correction_floor_test(void) {
+    AutoMotion m;AutoMotionConfig c=config();
+    c.smooth_correction=true;c.lateral_min=.020f;c.wz_min=.040f;
+    const AutoSegment line={{0,0},{1,0},0};
+    assert(auto_motion_begin(&m,&c,line,0));
+    for(unsigned now=10;now<=1500;now+=10) {
+        AutoMotionInput in=input((AutoPose){.5f,.011f,.021f},now);
+        auto_motion_step(&m,in);
+    }
+    assert(m.out.command.vy<=-.01999f && m.out.command.wz<=-.03999f);
+    AutoMotionInput in=input((AutoPose){.5f,.004f,.009f},1510);auto_motion_step(&m,in);
+    for(unsigned now=1520;now<=2000;now+=10) {
+        in=input((AutoPose){.5f,now%20?.006f:.009f,.015f},now);auto_motion_step(&m,in);
+    }
+    assert(m.velocity_map.y==0 && m.out.command.wz==0);
+    for(unsigned now=2010;now<=2500;now+=10) {
+        in=input((AutoPose){.5f,.011f,.021f},now);
+        in.limit_cross=true;in.cross_negative_limit=.007f;in.cross_positive_limit=0;
+        auto_motion_step(&m,in);
+    }
+    assert(m.velocity_map.y>=-.00701f && m.velocity_map.y<0);
+    in.now_ms=in.pose.stamp_ms=2510;in.hard_stop=true;
+    assert(auto_motion_step(&m,in).phase==AUTO_MOTION_FAULT && m.out.command.vy==0);
+    c.lateral_min=c.lateral_max+.001f;
+    assert(!auto_motion_begin(&m,&c,line,0));
+    puts("CORRECTION_FLOOR_OK minimum_output_hysteresis_directional_caps_hard_stop_config_validation");
+}
+static void stationary_friction_correction_test(void) {
+    for(unsigned use_floor=0;use_floor<2u;++use_floor) {
+        AutoMotion m;AutoMotionConfig c=config();
+        c.smooth_correction=true;c.finish_cross_tolerance=.02f;
+        c.lateral_min=use_floor?.020f:0;
+        assert(auto_motion_begin(&m,&c,(AutoSegment){{0,0},{1,0},0},0));
+        AutoPose actual={1,.025f,0};AutoTwist measured={0};
+        for(unsigned now=10;now<=2500;now+=10) {
+            AutoMotionInput in=input(actual,now);in.measured=measured;
+            in.stationary=hypotf(measured.vx,measured.vy)<.01f;
+            const AutoMotionOutput out=auto_motion_step(&m,in);
+            assert(out.phase!=AUTO_MOTION_FAULT);
+            measured.vy=fabsf(out.command.vy)>=.018f?out.command.vy:0;
+            actual.y+=measured.vy*.01f;
+            if(out.phase==AUTO_MOTION_DONE) break;
+        }
+        if(use_floor) assert(m.out.phase==AUTO_MOTION_DONE && fabsf(actual.y)<=.02f);
+        else assert(m.out.phase==AUTO_MOTION_RUN && actual.y==.025f);
+    }
+    puts("STATIONARY_FRICTION_CORRECTION_OK proportional_stalls_25mm_floor_reaches_20mm_inside_2500ms");
+}
 int main(void) {
+    stationary_friction_correction_test();
+    correction_floor_test();
     endpoint_hysteresis_and_diagnostics_test();cross_component_braking_limit_test();
     stable_preparation_feedback_test();
+    corner_launch_shape_test();
     tiny_approach_launch_test();
     along_margin_keeps_cross_authority_test();
     independent_braking_and_heading_test();

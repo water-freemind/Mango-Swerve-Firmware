@@ -24,6 +24,14 @@
             "problemMatcher": "$gcc"
         },
         {
+            "label": "Elbow Firmware Build",
+            "type": "process",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/firmware-elbow/build-local.ps1", "-Mode", "${input:elbowBuildMode}"],
+            "group": "build",
+            "problemMatcher": "$gcc"
+        },
+        {
             "label": "Firmware Probe SWD",
             "type": "process",
             "command": "powershell.exe",
@@ -32,6 +40,13 @@
         }
     ],
     "inputs": [
+        {
+            "id": "elbowBuildMode",
+            "type": "pickString",
+            "description": "Elbow firmware mode",
+            "options": ["FullMapWork", "VisionTest", "LegacyWork", "ManualEncoder"],
+            "default": "FullMapWork"
+        },
         {
             "id": "firmwareSerialPort",
             "type": "promptString",

@@ -67,7 +67,7 @@ bool field_pose_step_route(FieldPose* s,AutoTwist v,float yaw,bool healthy,const
         if(!l->frame_fresh||!(l->valid_mask&bit)||!(l->updated_mask&bit)||age>LASER_FRAME_TIMEOUT_MS||
            ((s->seen_mask&bit)&&stamp==s->used_stamp[ch])) continue;
         s->seen_mask|=bit;s->used_stamp[ch]=stamp;
-        if(!l->accepted_mm[ch]||l->accepted_mm[ch]>7500u||fabsf(v.wz)>.1f) {s->rejected_mask|=bit;continue;}
+        if(!l->accepted_mm[ch]||l->accepted_mm[ch]>7500u) {s->rejected_mask|=bit;continue;}
         AutoPlane plane;float expected;
         bool associated=field_pose_ray(prior,ch,&plane,&expected);
         if(route) {
@@ -86,32 +86,42 @@ bool field_pose_step_route(FieldPose* s,AutoTwist v,float yaw,bool healthy,const
             }
         }
         if(!associated) continue;
+        const float a=prior.yaw+laser_yaw(ch);
+        const float incidence=plane.normal.x*cosf(a)+plane.normal.y*sinf(a);
+        /* A short, nearly normal side-wall ray remains usable during heading
+         * correction when its age bounds rotational displacement below 10mm. */
+        const float rotation_error=(expected+.04098f)*fabsf(v.wz)*age*.001f;
+        const bool short_side_wall=ch<2u && expected<.6f && fabsf(plane.normal.x)>.9f &&
+            incidence>.95f && fabsf(v.wz)<=.35f && rotation_error<=.01f;
+        if(fabsf(v.wz)>.1f && !short_side_wall) {s->rejected_mask|=bit;continue;}
+        const float normal_speed=fabsf(plane.normal.x*velocity.x+plane.normal.y*velocity.y);
+        const float tangent_speed=fabsf(-plane.normal.y*velocity.x+plane.normal.x*velocity.y);
+        const bool wall_following=expected<.6f && tangent_speed>.03f &&
+            tangent_speed>2*normal_speed && normal_speed<.05f;
         if((s->checkpoint_mask&bit) && s->checkpoint_surface[ch]==plane.surface_id &&
            fabsf((float)l->accepted_mm[ch]-s->checkpoint_mm[ch])<=5.0f) {
             const AutoVec2 old=s->checkpoint_position[ch];
             const float travel=plane.normal.x*(s->wheel_position.x-old.x)+plane.normal.y*(s->wheel_position.y-old.y);
-            const float normal_speed=fabsf(plane.normal.x*velocity.x+plane.normal.y*velocity.y);
-            const float tangent_speed=fabsf(-plane.normal.y*velocity.x+plane.normal.x*velocity.y);
             /* While travelling along a nearby wall, a small normal correction
              * can balance unmeasured tyre slip and leave a genuinely constant
              * wall range. That alone is not a frozen-sensor observation. Pure
              * approach/sideways motion and dominant closing retain the original
              * 30mm check, along with independent timestamp expiry. */
-            const bool wall_following=expected<.6f && tangent_speed>.03f &&
-                tangent_speed>2*normal_speed && normal_speed<.05f;
             if(fabsf(travel)>.03f && !wall_following) {s->rejected_mask|=bit;continue;}
         } else {
             s->checkpoint_mask|=bit;s->checkpoint_surface[ch]=plane.surface_id;
             s->checkpoint_mm[ch]=l->accepted_mm[ch];s->checkpoint_position[ch]=s->wheel_position;
         }
-        const float a=prior.yaw+laser_yaw(ch);
-        const float incidence=plane.normal.x*cosf(a)+plane.normal.y*sinf(a);
         /* Project a delayed range with measured translation, not commanded speed.
          * Large rotations are rejected above; this is a bounded small-delay model. */
         const float corrected=l->accepted_mm[ch]*.001f-
             (plane.normal.x*velocity.x+plane.normal.y*velocity.y)*age*.001f/incidence;
         const float residual=corrected-expected;
         if(corrected<=0||fabsf(residual)>.15f) {s->rejected_mask|=bit;continue;}
+        /* Accepted countersteering along a real wall can accumulate wheel slip.
+         * Anchor that accepted sample before stopping, so old slip does not
+         * permanently reject the same wall during pause recovery. */
+        if(wall_following) s->checkpoint_position[ch]=s->wheel_position;
         const float correction=-residual*incidence;
         /* The nearby fence must not be averaged equally with a much longer
          * opposite ray whose angular footprint/reflecting surface is less

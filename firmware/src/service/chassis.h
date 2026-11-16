@@ -299,6 +299,12 @@ const SteerWheelControl* chassis_get_control(void);
 /* Mode 6 only: last successful process allowed drive output through the real
  * steering gate. A new command, stop, brake, init or failed process clears it. */
 bool chassis_drive_output_allowed(void);
+typedef struct {
+    float target_rad[4], error_rad[4];
+    bool valid;
+} ChassisSteeringDiagnostic;
+/* Read the resolved equivalent wheel targets without updating control state. */
+ChassisSteeringDiagnostic chassis_get_steering_diagnostic(void);
 /* Pre-position steering using a twist direction, while every drive target is
  * forced to zero even after alignment. A normal set_velocity/stop clears it. */
 ChassisErrorCode chassis_prepare_velocity(float vx,float vy,float wz);

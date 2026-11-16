@@ -349,6 +349,60 @@ static void shift_wall_gap_steering_plant_test(int side,float speed) {
     }
     assert(0);
 }
+static void g1_entry_steering_plant_test(bool work) {
+    setup();plant_feedback=true;memset(plant_drive,0,sizeof plant_drive);
+    ChassisConfig cc=config();cc.model.length=cc.model.width=.265729869f;
+    assert(chassis.init(&cc)==chassis.OK);
+    SteerWheel plant;assert(swheel.init(&plant,cc.model)==swheel.OK);
+    FullMapTest m;full_map_init(&m,tick);
+    AutoPose actual={.203f,.225f,88.53f*.017453293f};
+    assert(field_pose_register(&m.localization,(AutoPose){actual.x,.207f,actual.yaw},
+        actual.yaw-1.570796327f,tick));
+    m.segment=14;m.phase=MAP_ARMED;m.token=1;m.arm_ms=tick;m.speed=.50f;
+    FullMapInput in={.now=tick,.healthy=true,.odom_ok=true,.stationary=true,
+        .imu_yaw=actual.yaw-1.570796327f,.laser=plant_scan(&m.route,actual,tick),
+        .work_enabled=work,.work_online=true,.work_ready=true,.work_station=1};
+    assert(full_map_command(&m,"MAP GO 1",in));
+    bool pair_seen=false;unsigned reclosed=0;bool previous_gate=false;
+    for(unsigned step=1;step<=1800u;++step) {
+        tick+=10;const float drive_sign[4]={1,-1,-1,1};
+        for(unsigned i=0;i<4;++i) {
+            const float steering=(angle[i]-raw[i])*.12f;
+            raw[i]+=fmaxf(-steer_limit[i]*.01f,fminf(steer_limit[i]*.01f,steering));
+            plant_drive[i]+=(velocity[i]-plant_drive[i])*.20f;
+            plant.state.cur_wheels[i]=(WheelModule){drive_sign[i]*plant_drive[i],raw[i]};
+        }
+        assert(swheel.fk(&plant)==swheel.OK);
+        in.wheel=(AutoTwist){plant.state.cur_vx,-plant.state.cur_vy,-plant.state.cur_wz};
+        const AutoVec2 delta=auto_rotate((AutoVec2){in.wheel.vx*.01f,in.wheel.vy*.01f},actual.yaw);
+        actual.x+=delta.x;actual.y+=delta.y;actual.yaw+=in.wheel.wz*.01f;
+        in.now=tick;in.imu_yaw=actual.yaw-1.570796327f;
+        in.stationary=hypotf(in.wheel.vx,in.wheel.vy)<.01f && fabsf(in.wheel.wz)<.02f;
+        in.aligned=chassis_drive_output_allowed();
+        if(step%10u==0u) in.laser=plant_scan(&m.route,actual,tick);
+        else for(unsigned i=0;i<4u;++i) if(in.laser.sample_age_ms[i]!=UINT32_MAX) in.laser.sample_age_ms[i]+=10u;
+        full_map_step(&m,in);
+        if(m.phase==MAP_FAULT) fprintf(stderr,"G1_ENTRY_FAULT work=%u reason=%s pos=%.4f,%.4f yaw=%.2f\n",
+            work,m.reason,actual.x,actual.y,actual.yaw*57.29578f);
+        assert(m.phase!=MAP_FAULT);
+        pair_seen|=m.aisle_correction.active;
+        if(!pair_seen) assert(m.motion.config.vmax<=.15001f);
+        const bool prepare=m.motion.out.phase==AUTO_MOTION_ALIGN;
+        const AutoTwist v=prepare?m.hint:m.command;
+        assert((prepare?chassis_prepare_velocity(v.vx,v.vy,v.wz):chassis.set_velocity(v.vx,v.vy,v.wz))==chassis.OK);
+        assert(chassis.process()==chassis.OK);
+        const bool gate=chassis_drive_output_allowed();
+        if(previous_gate && !gate) ++reclosed;
+        previous_gate=gate;
+        if(actual.x>=1.0f) {
+            assert(pair_seen && reclosed<=4u && fabsf(actual.y-.2f)<.025f);
+            printf("G1_ENTRY_CHASSIS_PLANT work=%u time_s=%.2f gate_reclosures=%u y=%.4f yaw=%.2f\n",
+                work,step*.01,reclosed,actual.y,actual.yaw*57.29578f);
+            return;
+        }
+    }
+    assert(0);
+}
 static void endpoint_motion_alignment_test(void) {
     setup();ChassisConfig cc=config();cc.model.length=cc.model.width=.16f;
     assert(chassis.init(&cc)==chassis.OK);assert(chassis.process()==chassis.OK);
@@ -398,6 +452,7 @@ static void endpoint_motion_alignment_test(void) {
 #endif
 int main(void) {
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+    g1_entry_steering_plant_test(false);g1_entry_steering_plant_test(true);
     shift_wall_gap_steering_plant_test(1,.30f);
     shift_wall_gap_steering_plant_test(-1,.30f);
     shift_wall_gap_steering_plant_test(1,.50f);

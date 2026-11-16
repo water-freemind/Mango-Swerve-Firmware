@@ -8,6 +8,7 @@
 
 WorkLinkStatus g_work_link;
 static bool initialized, seen_peer, sync_started, stopped_timing;
+static bool manual_override;
 static volatile bool pending;
 static bool reply_dirty;
 static volatile WorkCanPacket inbox;
@@ -56,6 +57,7 @@ static void receive_wheel(FDCAN_HandleTypeDef* bus,
 bool work_link_init(void) {
     uint32_t i;
     memset(&g_work_link, 0, sizeof(g_work_link));
+    manual_override=false;
     for(i = 0u; i < 4u; ++i) {
         wheel_ms[i] = 0u;
         wheel_rpm[i] = 0;
@@ -216,8 +218,9 @@ void work_link_process(uint32_t now_ms, bool chassis_ready) {
 
 bool work_link_hold(void) {
     return !initialized || (WORK_LINK_ENABLED && g_work_link.hold) ||
-        (WORK_STATION_ENABLED && g_station_work.hold);
+        (WORK_STATION_ENABLED && !manual_override && g_station_work.hold);
 }
+void work_link_set_manual_override(bool manual_owner) { manual_override=manual_owner; }
 
 void work_link_limit_velocity(float* vx, float* vy, float* wz) {
     float speed;
