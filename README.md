@@ -4,6 +4,10 @@
 
 **详细操作、硬件连接、协议、标定与验证记录统一维护在 [项目指南](docs/PROJECT_GUIDE.md)。**
 
+## 构建入口
+
+底盘使用 `firmware/build-local.ps1`，肘击器使用 `firmware-elbow/build-local.ps1`，均为ARM GCC、PowerShell和EIDE工程。肘击器默认构建FullMapWork，输出 `firmware-elbow/build/FullMapWork/elbow.hex`。具体模式及镜像检查见[肘击器构建说明](firmware-elbow/README.md#构建与仿真)。
+
 ## 当前状态
 
 **2026-11-15 视觉触发联调修复通过PR交付。** WORK沿垄扫描，识别到Tree和绿色芒果后连续减速、停车作业，巡航最高0.50m/s、视觉接近0.10m/s。对中接受范围为dx=0±30像素，超过±45像素才重新调整，找正目标范围为首次停车点±180mm。NAV沿用固定点测试。相机连续2秒无合法帧才判离线。
