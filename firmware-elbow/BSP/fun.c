@@ -12,7 +12,7 @@ char str[32];                  /* OLED 单行文本缓冲，先格式化文字�
 char uart_rx[32];              /* 串口接收缓冲，解析时使用实际长度，不依赖字符串结束符。 */
 /* 中断更新、主循环读取的测速数据。转速单位为 RPM，负号表示编码方向。 */
 volatile int32_t Encoder_Count[4] = {0};
-volatile int32_t Encoder_Position[4] = {0}; /* A～D 累计计数，供行程测量和回位控制。 */
+volatile int32_t Encoder_Position[4] = {0}; /* A～D 累计计数，供测速和手动行程读数。 */
 volatile int32_t Speed[4] = {0};
 static uint32_t Encoder_Previous[4] = {0};
 /* 每圈编码器四倍频计数，当前每路为 384，需按编码器与减速比标定。 */
@@ -251,10 +251,11 @@ void UART_SendStatus(void)
     {
         last_uart = now;
         length = snprintf(uart_tx, sizeof(uart_tx),
-            "A:%ld RPM B:%ld RPM C:%ld RPM D:%ld RPM | WORK:%u TASK:%lu RESULT:%u VIS:%u REGION:%u DX:%ld | CAN2 WORK %s TX:%lu RX:%lu ERR:%lu S:%u | OLED:%u OE:%lu NACK:%lu\r\n",
+            "A:%ld RPM B:%ld RPM C:%ld RPM D:%ld RPM | WORK:%u TASK:%lu RESULT:%u VIS:%u REGION:%u DX:%ld | STROKE:%lums CNT:%ld | CAN2 WORK %s TX:%lu RX:%lu ERR:%lu S:%u | OLED:%u OE:%lu NACK:%lu\r\n",
             (long)rpm[0], (long)rpm[1], (long)rpm[2], (long)rpm[3],
             Vision_WorkState, (unsigned long)Vision_WorkTask, Vision_WorkResult,
             Vision_Online, Vision_Region, (long)Vision_TreeDX,
+            (unsigned long)Vision_StrokeLastMs, (long)Vision_StrokeLastCounts,
             CAN_Test_State == 1 ? "OK" : (CAN_Test_State == 0 ? "WAIT" : "FAIL"),
             (unsigned long)CAN_Test_TxCount, (unsigned long)CAN_Test_RxCount,
             (unsigned long)CAN_Test_ErrorCount, CAN_Test_State,
@@ -345,7 +346,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
         /* RPM = 10 ms 内计数增量 / 每圈计数 × 100 × 60。 */
         Speed[i] = (int32_t)(delta * 6000 / Encoder_CountsPerRev[i]);
     }
-    Vision_Motor_EncoderTick();
+    /* 编码器只更新测速和累计计数；定时动作不在中断里改 PWM。 */
 }
 
 

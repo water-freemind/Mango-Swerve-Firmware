@@ -2,7 +2,6 @@
 #define VISION_MOTOR_H
 
 #include "main.h"
-#include "elbow_stroke_config.h"
 #include "work_can_protocol.h"
 
 /* ==================== 运行模式：先改这一处 ====================
@@ -18,7 +17,7 @@
 #if ELBOW_TEST_MODE != 0 && ELBOW_TEST_MODE != 1 && ELBOW_TEST_MODE != 2 && ELBOW_TEST_MODE != 3
 #error "ELBOW_TEST_MODE must be 0, 1, 2 or 3"
 #endif
-/* 2 为底盘定点作业，使用版本2协议，由底盘任务号和树位号触发。 */
+/* 2 为底盘定点作业，使用版本5协议，由底盘任务号和树位号触发。 */
 /* 3 为手动编码器测量模式，四路PWM始终为0，手动移动机构采集行程。 */
 
 /* ==================== 肘击触发条件的参数入口 ====================
@@ -41,8 +40,9 @@
 #define WORK_NO_TARGET_MS 500U            // 树仍在停车区间内，连续无目标至少 500 ms 才正常放行。
 #define WORK_NO_TARGET_FRAMES 3U          // 无目标确认还需要至少 3 帧新图像。
 #define WORK_MAX_ATTEMPTS_PER_REGION 2U   // 同一棵树每个区域最多执行 2 次。
-#define WORK_STATION_MAX_ATTEMPTS_PER_REGION 4U // 定点联合作业复检后最多执行4次。
-#define WORK_TREE_TIMEOUT_MS 60000U       // 编码器限位作业允许逐区域完整伸出、回收及复检。
+#define WORK_STATION_MAX_ATTEMPTS_PER_REGION 4U // 定点联合作业同一区域最多执行4次。
+#define WORK_STATION_MAX_ATTEMPTS_PER_TREE 4U   // 定点联合作业一棵树累计最多打击4次，打不下来就前往下一个工作区。
+#define WORK_TREE_TIMEOUT_MS 60000U       // 定点作业允许逐区域完整打击、返回及复检。
 #define WORK_STOP_TIMEOUT_MS 2000U        // 请求停车后 2 秒未收到 STOPPED，进入故障。
 #define WORK_VISION_WAIT_MS 2000U         // 停稳复检时连续 2 秒无有效树信息，进入视觉故障。
 #define WORK_LEAVE_MISSING_MS 600U        // 已观察到车辆运动且视觉在线，连续无树 600 ms 后允许下一棵。
@@ -70,16 +70,31 @@ uint8_t Vision_Motor_VerifyReturned(void);
  *
  * 检测到目标后的动作顺序：
  * 打击 → 换向停顿 → 返回 → 打击后等待 → 接收下一条指令。
+ * 动作由毫秒计时控制，和 elbow-controller 里已验证的版本一致：
+ * 100% 占空比、打击和返回各 600 ms，没有编码器位置闭环和软限位。
  * 实际机械方向取决于接线，方向调整在各区域的独立控制函数中完成。
  * 这里是按时间控制，逆转相同时间不保证机构精确回到原位。
  */
-#define VISION_MOTOR_PWM 10U            // 动作测试参数；手动编码器测量模式的实际PWM为0。
+#define VISION_MOTOR_PWM 100U           // 打击和返回共用占空比；手动编码器测量模式的实际PWM为0。
                                      // 当前 TIM1 的 ARR=99，因此这里的数值对应百分比。
-                                     // 占空比调大通常会提高驱动力/转速，不代表固定转速。
-#define VISION_CW_MS 600U            // 打击阶段运行时间，当前 600 毫秒，即 0.6 秒；改 1000U 就是 1 秒。
-#define VISION_CCW_MS 600U           // 返回阶段运行时间，当前 600 毫秒，即 0.6 秒；改 2000U 就是 2 秒。
-#define VISION_REVERSE_PAUSE_MS 50U  // 换向前先停止输出，当前停 50 毫秒，即 0.05 秒，再开始返回。
+                                     // TB6612 由 10V 供电，100 就是满占空比、约 10V 加到电机上。
+#define VISION_CW_MS 500U            // 打击阶段运行时间，当前 500 毫秒，即 0.5 秒。
+#define VISION_CCW_MS 500U           // 返回阶段运行时间，当前 500 毫秒，即 0.5 秒。
+#define VISION_REVERSE_PAUSE_MS 10U  // 换向前先停止输出，当前停 10 毫秒，再开始返回。
 #define VISION_RETRIGGER_DELAY_MS 50U // 一轮结束后等待，当前 50 毫秒，即 0.05 秒，再接收新区域指令。
+
+/* ==================== 行程结束检测（可选，默认关闭） ====================
+ * 默认 ELBOW_STROKE_END_MS = 0，与 elbow-controller 的纯定时行为完全一致：
+ * 打击/返回各跑满 VISION_CW_MS / VISION_CCW_MS，不看编码器。
+ * 只有在机构顶死、堵转发热时，才把它改成 200 之类：编码器计数连续这么久
+ * 没有变化就认为已经到头（或卡住），提前结束本段。它只负责提前停止，
+ * 不做位置换算；编码器没接线时判定不会成立，仍按时间走满。
+ */
+#ifndef ELBOW_STROKE_END_MS
+#define ELBOW_STROKE_END_MS 0U        // 0 = 纯定时（默认）；200 = 顶到限位后提前收尾。
+#endif
+#define ELBOW_STROKE_MIN_MS 150U      // 起步这段时间内不做判定，避开电机启动死区。
+#define ELBOW_STROKE_MIN_COUNTS 8     // 至少变化这么多计数才认为真的动过。
 
 /* ==================== 修改电机方向的位置 ====================
  * 打开同目录 vision_motor.c，找到对应区域的独立控制函数。
@@ -105,27 +120,19 @@ extern volatile uint32_t Vision_ByteCount;      // 累计收到并交给解析�
 extern volatile uint32_t Vision_BadFrameCount;  // 累计丢弃的格式错误帧/超长数据次数。
 
 extern volatile uint8_t Vision_MotorRegion;  // 本次动作锁定的电机：0 无，1=A、2=B、3=C、4=D。
-extern volatile uint8_t Vision_MotorPhase;   // 0等待，1打击，2换向停顿，3返回，4轮次等待，5单次短伸解卡。
-extern volatile uint8_t Vision_MotorResult;  // 0 正常，12方向异常，13软限位，14无进展，15超时。
-extern volatile uint8_t Vision_HomeConfirmed;
-extern volatile uint8_t Vision_MotorRecovering;
-extern volatile int32_t Vision_RecoveryTarget;
+extern volatile uint8_t Vision_MotorPhase;   // 0等待，1打击，2换向停顿，3返回，4轮次等待。
+extern volatile uint8_t Vision_MotorResult;  // 定时方案不再产生编码器异常，保持 0。
+extern volatile uint32_t Vision_StrokeLastMs;    // 最近一段打击/返回实际用了多少毫秒，供串口标定。
+extern volatile int32_t Vision_StrokeLastCounts; // 最近一段打击/返回编码器走了多少计数。
+extern volatile uint8_t Vision_HomeConfirmed; // 定时方案上电即为1，仅保留原握手判断。
 void Vision_Motor_RequestReturn(void);
-extern volatile uint8_t Vision_FaultMotor, Vision_FaultPhase;
-extern volatile int32_t Vision_FaultProgress, Vision_FaultTarget;
-extern volatile uint8_t Vision_ReturnMotor;
-extern volatile int32_t Vision_ReturnProgress, Vision_ReturnTarget;
-extern volatile uint32_t Vision_ReturnSequence;
-extern volatile int32_t Vision_MotorProgress;
-extern volatile int32_t Vision_ExtendTarget, Vision_RetractTarget;
-uint8_t Vision_Motor_ConfirmHome(void); /* 操作者确认四路完全收回后记录增量编码器零位。 */
+uint8_t Vision_Motor_ConfirmHome(void); /* 底盘 HOME 确认时记录，定时方案不需要编码器零位。 */
 
-/* A～D 累计编码器计数，手动测量模式下输出保持为零。 */
+/* A～D 累计编码器计数，只用于测速和手动测量模式下输出。 */
 extern volatile int32_t Encoder_Position[4];
 
 void Vision_Motor_Init(void);                // 上电初始化，清除旧状态并停止全部电机输出。
 void Vision_Motor_Task(void);                // 主循环反复调用，负责触发动作、计时和换向。
-void Vision_Motor_EncoderTick(void);         // 编码器10ms采样后立即更新PWM和到点停车。
 uint32_t Vision_Motor_RemainingMs(void);     // 读取当前阶段还剩多少毫秒，用于 OLED 倒计时。
 uint8_t Vision_Motor_IsArmed(void);          // 是否允许开始新动作；完成后按设定间隔等待，再接收新指令。
 void Vision_Motor_Receive(const uint8_t *data, uint16_t size); // 串口回调送入数据，支持一帧拆成多次接收。
