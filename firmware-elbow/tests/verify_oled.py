@@ -1,5 +1,7 @@
 """Exercise the production OLED display with simulated chassis replies."""
 from pathlib import Path
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -179,8 +181,10 @@ int main(void) {
 }
 '''
 
-with tempfile.TemporaryDirectory(prefix="oled_", dir=root / "tests") as directory:
-    work = Path(directory)
+# A plain temp directory keeps host builds independent of the checkout ACLs.
+work = Path(tempfile.gettempdir()) / ("oled_" + str(os.getpid()))
+work.mkdir(parents=True, exist_ok=True)
+try:
     test_source = work / "oled_test.c"
     test_source.write_text(harness + display + checks, encoding="utf-8")
     executable = work / "verify.exe"
@@ -192,5 +196,7 @@ with tempfile.TemporaryDirectory(prefix="oled_", dir=root / "tests") as director
             "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)], check=True)
+finally:
+    shutil.rmtree(work, ignore_errors=True)
 
 subprocess.run([sys.executable, str(root / "tests/verify_oled_budget.py")], check=True)

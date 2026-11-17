@@ -6,12 +6,12 @@
  * BOOT 握手 → IDLE 等树 → APPROACH 减速接近 → WAIT_STOP 等底盘停稳
  * → CHECK 新图像复检 → ACTING 执行一个区域 → CHECK 再次复检
  * → RELEASE 请求放行 → LEAVING 等当前树离开 → IDLE 等下一棵树。
- * 故障保持底盘停车，受保护回收后可通过手动切换重新握手。
- * 编码器位置不可信时，需要手动回收并重新登记零位。
+ * 故障保持底盘停车，先按定时完成受保护返回，再通过手动切换重新握手。
+ * 动作本身只用毫秒计时（打击、换向停顿、返回），不需要编码器零位。
  *
  * 判断依据是视觉区域、树偏移 dx 和底盘 CAN 应答。
  * 激光数据在 can_test.c 接收，当前用于 OLED 显示。
- * 修改区间、等待时间和动作次数，请查看 vision_motor.h。
+ * 修改区间、等待时间和动作时间，请查看 vision_motor.h。
  */
 #include "work_control.h"
 #include "work_can.h"
@@ -22,6 +22,9 @@ volatile uint8_t Vision_WorkState, Vision_WorkResult; /* 当前作业阶段、�
 volatile uint32_t Vision_WorkTask; /* 每遇到一棵新树加 1，用于匹配本次底盘应答。 */
 /* syncing 握手已开始，paired 握手已完成；attempts[1..4] 记录本棵树各区域次数。 */
 static uint8_t syncing, paired, attempts[5], stable_region, stable_frames;
+/* 本棵树累计打击次数；达到 WORK_STATION_MAX_ATTEMPTS_PER_TREE 就放弃本树，
+ * 由 RELEASE/DONE 交给底盘前往下一个工作区。 */
+static uint8_t tree_attempts;
 /* stable_region/stable_frames 记录同一区域的连续视觉结果。
  * empty_frames 统计无目标新帧，departed_frames 统计越过离树位置的新帧。
  * 各 timing 标志表示对应计时已经开始，避免时间戳为 0 时含义不明确。
@@ -99,6 +102,7 @@ void Work_Control_Init(void)
     station_tree_seen_ms=0;
     station_tree_dx=9999;
     memset(attempts, 0, sizeof(attempts));
+    tree_attempts = 0;
 }
 
 /* 开始停稳后/返回后的图像复检。
@@ -203,9 +207,10 @@ static void process_check(uint32_t now, uint32_t frame_count,
         if (stable_frames < 3 || (uint32_t)(now - stable_since) < WORK_TARGET_STABLE_MS) return;
         const uint8_t max_attempts = ELBOW_TEST_MODE == 2 ?
             WORK_STATION_MAX_ATTEMPTS_PER_REGION : WORK_MAX_ATTEMPTS_PER_REGION;
-        if (attempts[Vision_Region] >= max_attempts)
+        if (attempts[Vision_Region] >= max_attempts ||
+            (ELBOW_TEST_MODE == 2 && tree_attempts >= WORK_STATION_MAX_ATTEMPTS_PER_TREE))
         {
-            /* 正常回收后复检仍有目标，达到本模式次数上限才结束。 */
+            /* 正常回收后复检仍有目标，达到本棵树上限就结束并前往下一个工作区。 */
             Vision_WorkResult = WORK_RESULT_ATTEMPTS;
             change_state(VISION_WORK_RELEASE, now);
             return;
@@ -214,6 +219,7 @@ static void process_check(uint32_t now, uint32_t frame_count,
         {
             /* 机构空闲时才会启动成功；成功后锁定该区域并增加实际动作次数。 */
             attempts[Vision_Region]++;
+            tree_attempts++;
             change_state(VISION_WORK_ACTING, now);
         }
         return;
@@ -357,6 +363,7 @@ static void process_link(uint32_t now, uint32_t frame_count)
             Vision_WorkTask++;
             Vision_WorkResult = WORK_RESULT_OK;
             memset(attempts, 0, sizeof(attempts));
+    tree_attempts = 0;
             change_state(VISION_WORK_APPROACH, now);
         }
         break;
@@ -472,6 +479,7 @@ static void process_station(uint32_t now, uint32_t frame_count)
             station_number = command.region;
             Vision_WorkResult = WORK_RESULT_OK;
             memset(attempts, 0, sizeof(attempts));
+    tree_attempts = 0;
             stable_region = stable_frames = 0;
             alignment_centered = 0;
             alignment_reply = STATION_TRACKING;

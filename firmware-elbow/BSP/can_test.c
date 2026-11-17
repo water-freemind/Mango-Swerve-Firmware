@@ -17,9 +17,6 @@ static WorkCanPacket request, reply; /* request 是待发送请求，reply 是�
  */
 static uint8_t ready, have_reply, dirty, tx_pending;
 static uint32_t last_tx, last_rx, mailbox, pending_since;
-static uint32_t last_encoder_tx;
-static uint8_t last_encoder_result;
-static uint32_t last_return_tx;
 static uint32_t last_visual_frame;
 static uint8_t last_visual_state, last_visual_online;
 static uint16_t laser_mm[4]; /* 左、右、后、前的原始毫米值，主循环收帧后更新。 */
@@ -33,52 +30,6 @@ static void record_error(uint8_t state)
     CAN_Test_ErrorCount++;
     CAN_Test_LastHalError = HAL_CAN_GetError(&hcan2);
 }
-static void send_encoder_diagnostic(uint32_t now)
-{
-    CAN_TxHeaderTypeDef header = {0};
-    WorkCanPacket packet;
-    uint8_t data[8], motor, phase, result;
-    int32_t progress, target;
-    uint32_t key, encoder_mailbox, return_sequence;
-    uint8_t final_return, fault_snapshot;
-    if (ELBOW_TEST_MODE != 2 || HAL_CAN_GetTxMailboxesFreeLevel(&hcan2) < 2U) return;
-    key = __get_PRIMASK();
-    __disable_irq();
-    result = Vision_MotorResult;
-    fault_snapshot=result && (!Vision_MotorRecovering || result!=last_encoder_result);
-    motor = fault_snapshot ? Vision_FaultMotor : Vision_MotorRegion;
-    phase = fault_snapshot ? Vision_FaultPhase : Vision_MotorPhase;
-    progress = fault_snapshot ? Vision_FaultProgress : Vision_MotorProgress;
-    target = fault_snapshot ? Vision_FaultTarget : phase == 1 ? Vision_ExtendTarget : Vision_RetractTarget;
-    if(phase==5) {phase=1;target=Vision_RecoveryTarget;}
-    return_sequence=Vision_ReturnSequence;
-    final_return=!result && return_sequence!=last_return_tx;
-    if(final_return) {
-        motor=Vision_ReturnMotor;phase=3;
-        progress=Vision_ReturnProgress;target=Vision_ReturnTarget;
-    }
-    __set_PRIMASK(key);
-    if (!motor || (phase != 1 && phase != 3) ||
-        (!final_return && (uint32_t)(now - last_encoder_tx) < WORK_CAN_PERIOD_MS && result == last_encoder_result)) return;
-    if (progress > 32767) progress = 32767;
-    if (progress < -32768) progress = -32768;
-    packet.task = (uint32_t)(uint16_t)progress | ((uint32_t)(uint16_t)target << 16);
-    packet.state = STATION_ENCODER_DIAG;
-    packet.region = (uint8_t)(motor | (phase << 3) | (final_return?STATION_ENCODER_RETURN_FLAG:0u));
-    packet.result = result;
-    station_can_encode(data, packet);
-    header.StdId = WORK_CAN_REQUEST_ID;
-    header.IDE = CAN_ID_STD; header.RTR = CAN_RTR_DATA; header.DLC = 8;
-    header.TransmitGlobalTime = DISABLE;
-    if (HAL_CAN_AddTxMessage(&hcan2, &header, data, &encoder_mailbox) == HAL_OK)
-    {
-        last_encoder_tx = now;
-        last_encoder_result = result;
-        if(final_return) last_return_tx=return_sequence;
-        CAN_Test_TxCount++;
-    }
-}
-
 static void send_visual_diagnostic(void)
 {
     CAN_TxHeaderTypeDef header = {0};
@@ -110,8 +61,6 @@ void CAN_Test_Init(void)
     ready = have_reply = tx_pending = 0;
     dirty = 1;
     last_tx = last_rx = 0;
-    last_encoder_tx = 0; last_encoder_result = 0;
-    last_return_tx=0;
     last_visual_frame=UINT32_MAX;
     last_visual_state=last_visual_online=0;
     CAN_Test_TxCount = CAN_Test_RxCount = CAN_Test_ErrorCount = 0;
@@ -289,8 +238,8 @@ void CAN_Test_Task(void)
     /* 状态变化后立即安排发送；状态未变时每 100 ms 重发，作为业务心跳。
      * 邮箱未空时返回主循环，不在这里阻塞等待。
      */
-    /* 独立测试保留激光/状态接收，收帧后返回，不向底盘发布作业请求。 */
-    send_encoder_diagnostic(now);
+    /* 独立测试保留激光/状态接收，收帧后返回，不向底盘发布作业请求。
+     * 定时方案不再发送编码器位置诊断，只保留视觉状态诊断。 */
     send_visual_diagnostic();
     if (ELBOW_TEST_MODE == 0 || ELBOW_TEST_MODE == 2)
     {

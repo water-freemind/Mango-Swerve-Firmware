@@ -1,5 +1,6 @@
 """Compile and exercise both production CAN endpoints and the action controller."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -11,18 +12,21 @@ if not (chassis / "src/service").is_dir():
 compiler = shutil.which("gcc")
 if compiler is None:
     raise RuntimeError("MinGW gcc is required")
-assert (root / "BSP/work_can_protocol.h").read_text() == (
+assert (root / "BSP/work_can_protocol.h").read_text(encoding="utf-8") == (
     chassis / "src/service/work_can_protocol.h"
-).read_text(), "The two protocol headers differ"
+).read_text(encoding="utf-8"), "The two protocol headers differ"
 
-can_source = (root / "Core/Src/can.c").read_text()
-ioc = (root / "RED_Demo.ioc").read_text()
+can_source = (root / "Core/Src/can.c").read_text(encoding="utf-8")
+ioc = (root / "RED_Demo.ioc").read_text(encoding="utf-8")
 for expected in ("CAN_MODE_NORMAL", "CAN_BS1_5TQ", "CAN_BS2_2TQ"):
     assert expected in can_source and expected in ioc
 assert "CAN2.CalculateBaudRate=1000000" in ioc
 
-with tempfile.TemporaryDirectory(prefix="work_can_", dir=root / "tests") as directory:
-    executable = Path(directory) / "test_work_can.exe"
+# A plain temp directory keeps host builds independent of the checkout ACLs.
+work = Path(tempfile.gettempdir()) / ("work_can_" + str(os.getpid()))
+work.mkdir(parents=True, exist_ok=True)
+try:
+    executable = work / "test_work_can.exe"
     includes = [
         root / "tests/work_fakes", root / "BSP", chassis / "tests/fakes", chassis / "tests",
         chassis / "src/service", chassis / "src/platform", chassis / "src/app",
@@ -41,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix="work_can_", dir=root / "tests") as dire
         ], check=True)
         subprocess.run([str(executable)], check=True)
 
-    route_executable = Path(directory) / "test_station_route.exe"
+    route_executable = work / "test_station_route.exe"
     route_sources = [root / "tests/test_station_route.c", *sources[1:]] + [
         chassis / "src/service" / name for name in (
             "full_map_test.c", "field_pose.c", "auto_route.c", "auto_motion.c",
@@ -53,3 +57,5 @@ with tempfile.TemporaryDirectory(prefix="work_can_", dir=root / "tests") as dire
         *[str(path) for path in route_sources], "-lm", "-o", str(route_executable)
     ], check=True)
     subprocess.run([str(route_executable)], check=True)
+finally:
+    shutil.rmtree(work, ignore_errors=True)

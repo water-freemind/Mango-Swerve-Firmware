@@ -20,7 +20,6 @@ FDCAN_GlobalTypeDef g_fake_can_regs[3];
 static uint32_t now_ms, last_camera, last_tx_time;
 static unsigned pins_c, pins_d, starts, last_phase;
 static int raw_rpm, wheel_enabled, drop_requests, drop_replies, drop_go;
-static int freeze_encoder;
 static Can3EndpointCallback request_callback;
 static STM32HalCanRxCallback wheel_callback;
 static uint8_t reply_queue[32][8];
@@ -107,15 +106,24 @@ static void emit_wheels(void) {
         wheel_callback(&hfdcan2, &header, data, NULL);
     }
 }
+/* 模拟编码器：占空比越大计数变化越快，走到机械限位后计数不再变化。
+ * 生产固件只用它判断“已经走到头”，所以这里必须模拟出限位后的停顿。 */
 static void advance_encoders(unsigned period) {
-    if (freeze_encoder || ELBOW_TEST_MODE != 2 || !Vision_MotorRegion ||
-        (Vision_MotorPhase != 1 && Vision_MotorPhase != 3 && Vision_MotorPhase != 5)) return;
     const int signs[4] = {1, 1, -1, -1};
+    const int limits[4] = {3822, 3866, 3866, 3858}; /* 2026-11-14 手推量程 */
+    unsigned index;
+    int32_t step, progress;
     const unsigned pwm[4] = {timer.CCR1, timer.CCR2, timer.CCR3, timer.CCR4};
-    unsigned index = Vision_MotorRegion - 1u;
-    int increment = (int)(pwm[index] * period / 5u) * signs[index];
-    if (Vision_MotorPhase == 3) increment = -increment;
-    Encoder_Position[index] = (int32_t)((uint32_t)Encoder_Position[index] + (uint32_t)increment);
+    if(ELBOW_TEST_MODE == 3 || !Vision_MotorRegion ||
+        (Vision_MotorPhase != 1 && Vision_MotorPhase != 3)) return;
+    index = Vision_MotorRegion - 1u;
+    step = (int32_t)(pwm[index] * period / 5u) * signs[index];
+    if(Vision_MotorPhase == 3) step = -step;
+    /* 换算到 0..limit 的行程进度，两端都当作机械限位。 */
+    progress = signs[index] * (int32_t)((uint32_t)Encoder_Position[index] + (uint32_t)step);
+    if(progress < 0) progress = 0;
+    if(progress > limits[index]) progress = limits[index];
+    Encoder_Position[index] = signs[index] * progress;
 }
 static void run(unsigned duration, unsigned region, int dx, int camera) {
     unsigned t;
@@ -189,10 +197,12 @@ static void test_full_tree(void) {
     reset_at(0);
     start_action();
     first_task = Vision_WorkTask;
-    run(VISION_CW_MS + VISION_REVERSE_PAUSE_MS + 30, 2, 20, 1);
+    /* 编码器走到机械限位后计数停走，打击阶段提前结束；等它进入换向停顿再确认方向。 */
+    for(i = 0; i < 1000 && Vision_MotorPhase == 1; i++) run(10, 2, 20, 1);
+    run(VISION_REVERSE_PAUSE_MS + 20U, 2, 20, 1);
     assert(Vision_MotorRegion == 2 && Vision_MotorPhase == 3);
     assert(!(pins_c & GPIO_PIN_2) && (pins_c & GPIO_PIN_3));
-    for(i = 0; i < 250 && starts < 2; i++) run(10, 2, 20, 1);
+    for(i = 0; i < 400 && starts < 2; i++) run(10, 2, 20, 1);
     assert(starts == 2 && Vision_MotorRegion == 4);
     assert(timer.CCR4 == VISION_MOTOR_PWM && timer.CCR2 == 0);
     assert(!(pins_d & GPIO_PIN_3) && (pins_d & GPIO_PIN_5));
@@ -422,7 +432,6 @@ static void run_station(unsigned duration, unsigned region, int dx, int camera,
     run_station_period(duration, region, dx, camera, healthy, stationary, 10u);
 }
 static void reset_station(uint32_t tick) {
-    freeze_encoder = 0;
     now_ms = tick;
     last_camera = tick - 100u;
     queue_read = queue_write = starts = last_phase = 0u;
@@ -482,7 +491,7 @@ static void test_station_inflight_ready(void) {
            g_station_work.result == WORK_RESULT_LINK);
     puts("STATION_INFLIGHT_READY_OK idle_reply_no_refresh acknowledged_reset_and_timeout_faults");
 }
-static void test_alignment_hysteresis_and_encoder_fault(void) {
+static void test_alignment_hysteresis(void) {
     reset_station(0);
     g_station_work.slow_requested=g_station_work.stop_requested=true;
     g_station_work.aligned=g_station_work.align_seen=true;
@@ -518,17 +527,16 @@ static void test_alignment_hysteresis_and_encoder_fault(void) {
     run_station(100, 1, -31, 1, 1, 1);
     assert(g_station_work.align_direction == -1);
     assert(!station_work_confirm_home(true));
+    /* 定时方案没有编码器故障分支：对齐完成后直接按时间打击并放行。 */
     reset_station(0);
     request_station(1, 1);
-    freeze_encoder = 1;
-    run_station(1000, 1, 0, 1, 1, 1);
-    assert(Vision_MotorResult && !Vision_HomeConfirmed && !Vision_MotorPhase);
-    assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.hold && !g_station_work.returned);
-    assert(!station_work_reset(true));
-    assert(station_work_confirm_home(true));
-    run_station(400, 0, 0, 1, 1, 1);
-    assert(station_work_ready() && Vision_HomeConfirmed && !g_station_work.hold);
-    puts("ALIGNMENT_ENCODER_FAULT_OK 15_30px_hysteresis_fresh_source_required_stall_hold_manual_home_recovery");
+    for(unsigned i = 0; i < 1000 && g_station_work.phase != STATION_LINK_DONE; ++i)
+        run_station(10, 1, 0, 1, 1, 1);
+    assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
+    assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION);
+    assert(!Vision_MotorPhase && Vision_HomeConfirmed && !Vision_MotorResult);
+    assert(Vision_Motor_VerifyReturned());
+    puts("ALIGNMENT_TIMED_OK 10_30px_hysteresis_fresh_source_required_timed_strikes_release");
 }
 
 static void test_station_sequence(void) {
@@ -591,15 +599,15 @@ static void test_station_stable_start(void) {
     assert(station_work_align(now_ms,true));
     run_station(500,1,0,1,1,1);
     assert(station_work_start(now_ms,true));
-    run_station(500,1,-26,1,1,1);
+    run_station(500,1,-21,1,1,1);
     assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
-    run_station(500,1,16,1,1,1);
+    run_station(500,1,11,1,1,1);
     assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
-    run_station(500,1,15,1,1,1);
+    run_station(500,1,10,1,1,1);
     assert(station_work_start(now_ms,true));
-    run_station(500,1,15,1,1,1);
+    run_station(500,1,10,1,1,1);
     assert(starts==1);
-    puts("STRIKE_DX_GATE_OK minus_26_plus_16_block_plus_15_allows");
+    puts("STRIKE_DX_GATE_OK minus_21_plus_11_block_plus_10_allows");
     reset_station(UINT32_MAX-300u);
     assert(STATION_VISION_CENTER_DX==0 && WORK_DX_CENTER==0);
     assert(station_work_begin(1,now_ms));
@@ -774,15 +782,11 @@ static void test_station_manual_recovery(void) {
     request_station(2, 2);
     run_station(600, 2, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts==2u && g_station_work.hold);
-    reset_station(0);
-    request_station(1, 1);
-    freeze_encoder=1;
-    run_station(600, 1, STATION_VISION_STOP_PX, 1, 1, 1);
-    assert(g_station_work.phase==STATION_LINK_FAULT && !Vision_HomeConfirmed);
-    station_work_request_manual_recovery();
-    run_station(1000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
-    assert(!station_work_ready() && !Vision_HomeConfirmed && starts==1u);
-    puts("STATION_MANUAL_RECOVERY_OK cancel_wait_return_stationary_resync_next_task_encoder_home_still_required");
+    /* 定时方案不需要再登记编码器零位，返回结束即可继续下一棵。 */
+    run_station(2500, 0, 0, 1, 1, 1);
+    assert(!Vision_MotorPhase && Vision_HomeConfirmed && !Vision_MotorResult);
+    assert(Vision_Motor_VerifyReturned() && station_work_ready());
+    puts("STATION_MANUAL_RECOVERY_OK cancel_wait_return_stationary_resync_next_task_no_encoder_home");
 }
 static void test_station_visual_trigger(void) {
     uint8_t bytes[8];WorkCanPacket packet={0,STATION_READY,0,0},decoded;
@@ -920,62 +924,47 @@ static void test_visual_acquisition_replay(void) {
     puts("VISUAL_ACQUISITION_REPLAY_OK both_directions_brief_gap_passed_center_latched_stop_long_gap_reset");
 }
 static void test_station_empty_and_limits(void) {
-    reset_station(0);
-    request_station(1,4);
-    for(unsigned tick=0;tick<300u && Vision_MotorProgress<2700;++tick)
-        run_station(10,4,0,1,1,1);
-    assert(Vision_MotorPhase==1 && Vision_MotorProgress>=2700);
-    freeze_encoder=1;
-    run_station(350,4,0,1,1,1);
-    assert(Vision_MotorRecovering && g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold);
-    freeze_encoder=0;
-    run_station(3500,0,0,1,1,1);
-    assert(!Vision_MotorPhase && Vision_HomeConfirmed && !Vision_MotorResult);
-    assert(g_station_work.returned && g_station_work.phase==STATION_LINK_FAULT);
-    station_work_request_manual_recovery();
-    run_station(1000,0,0,1,1,1);
-    assert(station_work_ready() && !g_station_work.hold);
-    puts("FAULT_RETURN_MANUAL_RECOVERY_OK original_fault_held_during_unjam_return_then_manual_resync");
+    /* 定时方案没有编码器故障分支，先跑视觉获取/对中/返回对中/手动恢复四组回放。 */
     test_visual_acquisition_replay();
     test_station_visual_trigger();
     test_station_realign_after_return();
-    reset_station(0);
-    request_station(1,1);
-    run_station(600,1,0,1,1,1);
-    for(unsigned i=0;i<300u && Vision_MotorPhase;i++) run_station(10,0,0,1,1,1);
-    assert(!Vision_MotorPhase && g_station_work.hold);
-    assert(g_station_work.return_count>0 && g_station_work.return_motor==2u);
-    assert(g_station_work.return_progress<=g_station_work.return_target);
-    Encoder_Position[0]=377; /* Recorded A return formerly accepted at the 10% target. */
-    run_station(1000,0,0,1,1,1);
-    assert(g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold);
-    assert(g_station_work.result==STATION_RESULT_RETURN_NOT_READY);
-    puts("RETURN_RELEASE_GATE_OK final_encoder_snapshot_received_unretracted_other_motor_prevents_GO");
-    reset_station(0);
-    request_station(1,4); /* A acts while resting B has the recorded -22 drift. */
-    Encoder_Position[1]=-22;
-    run_station(600,4,0,1,1,1);
-    run_station(3000,0,0,1,1,1);
-    assert(starts==1 && Vision_HomeConfirmed && !Vision_MotorResult);
-    assert(g_station_work.phase==STATION_LINK_DONE && !g_station_work.hold);
-    puts("RESTING_ZERO_RELEASE_OK A_return_B_minus22_no_false_lock");
     test_station_manual_recovery();
+    /* 无目标树位：直接完成，不产生打击。 */
     reset_station(0);
     request_station(1, 0);
     run_station(1500, 0, 0, 1, 1, 1);
     assert(g_station_work.phase == STATION_LINK_DONE && starts == 0);
+    puts("STATION_EMPTY_STOP_OK no_target_finishes_without_strike");
+    /* 同一区域连续 4 次定时打击后按次数上限放行，返回结束即放行。 */
     reset_station(0);
     request_station(2, 1);
-    run_station(6000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
+    run_station(12000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION && g_station_work.phase == STATION_LINK_DONE);
     assert(Vision_WorkResult == WORK_RESULT_ATTEMPTS && !g_station_work.hold);
     assert(g_station_work.result == WORK_RESULT_ATTEMPTS && g_station_work.returned && !Vision_MotorPhase);
+    assert(Vision_Motor_VerifyReturned() && Vision_HomeConfirmed && !Vision_MotorResult);
     run_station(1000, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION);
     request_station(3, 2);
     run_station(600, 2, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION+1u && g_station_work.hold);
     puts("STATION_ATTEMPTS_CONTINUE_OK four_attempts_return_release_result_retained_no_fifth_next_tree_starts");
+}
+
+static void test_station_tree_attempt_cap(void) {
+    unsigned cur = 1u, seen = 0u, i;
+    reset_station(0);
+    request_station(1, 1);
+    /* 每打一次就换到另一个区域，累计 4 次仍应结束本树并交给底盘前往下一个工作区。 */
+    for (i = 0; i < 2000u && g_station_work.phase != STATION_LINK_DONE; ++i) {
+        run_station(10, cur, 0, 1, 1, 1);
+        if (starts != seen) { seen = starts; cur = cur == 1u ? 2u : 1u; }
+    }
+    assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_TREE);
+    assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
+    assert(g_station_work.result == WORK_RESULT_ATTEMPTS);
+    assert(!Vision_MotorPhase && Vision_Motor_VerifyReturned());
+    puts("STATION_TREE_ATTEMPT_CAP_OK four_total_strikes_then_release_next_work_area");
 }
 
 static void test_station_four_regions_scheduled(void) {
@@ -1060,7 +1049,7 @@ int main(void) {
         test_manual_fault_override();
         test_encoder_diagnostic_mailbox();
         test_station_inflight_ready();
-        test_alignment_hysteresis_and_encoder_fault();
+        test_alignment_hysteresis();
         test_station_sequence();
         test_station_stable_start();
         test_station_faults();
@@ -1068,6 +1057,7 @@ int main(void) {
         test_station_empty_and_limits();
         test_station_laser_without_camera();
         test_station_transient_camera_off();
+        test_station_tree_attempt_cap();
         test_station_four_regions_scheduled();
     } else if (ELBOW_TEST_MODE == 1) {
         test_standalone();

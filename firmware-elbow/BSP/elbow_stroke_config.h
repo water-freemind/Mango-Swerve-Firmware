@@ -1,35 +1,15 @@
 #ifndef ELBOW_STROKE_CONFIG_H
 #define ELBOW_STROKE_CONFIG_H
 
-/* 2026-11-14 手推测量。正负号表示从回收端向伸出端的编码器方向。
- * 区域1=B、区域2=D、区域3=C、区域4=A。计数均为硬件四倍频累计值。
+/* 已停用：2026-11-16 起肘击改为纯毫秒定时（vision_motor.h 的 VISION_CW_MS /
+ * VISION_CCW_MS），不再使用编码器行程闭环、软限位和回位核验。
+ * 本文件不再被任何源文件包含，只作为 2026-11-14 手推量程的测量记录保留。
+ * 行程为硬件四倍频累计计数，正负号表示从回收端向伸出端的编码器方向。
+ * 区域1=B、区域2=D、区域3=C、区域4=A。
  */
 #define ELBOW_STROKE_A_COUNTS 3822
 #define ELBOW_STROKE_B_COUNTS 3866
 #define ELBOW_STROKE_C_COUNTS (-3866)
 #define ELBOW_STROKE_D_COUNTS (-3858)
-
-/* 回收目标距手动零位2%，放行上限2.5%，低于0.5%停止反转。
- * 伸出端保留15%。回收软限位需在实车上确认机构已安全收纳。 */
-#define ELBOW_STROKE_MARGIN_PERCENT 2U
-#define ELBOW_RETURN_TOLERANCE_PERMILLE 5U
-/* 静止零位允许满行程1%的负向计数偏移。 */
-#define ELBOW_ZERO_TOLERANCE_PERMILLE 10U
-#define ELBOW_RETURN_HARD_MARGIN_PERMILLE 5U
-#define ELBOW_EXTEND_MARGIN_PERCENT 15U
-#define ELBOW_POSITION_PWM 100U
-#define ELBOW_POSITION_RETURN_PWM 40U
-#define ELBOW_POSITION_SLOW_PWM 35U
-#define ELBOW_RETURN_HOME_PWM 10U
-#define ELBOW_RETURN_HOME_ZONE_PERCENT 5U
-#define ELBOW_A_STRIKE_SLOW_PWM 45U
-#define ELBOW_POSITION_SLOW_ZONE_PERCENT 20U
-#define ELBOW_POSITION_TIMEOUT_MS 6000U
-#define ELBOW_POSITION_STALL_MS 300U
-#define ELBOW_RECOVERY_PUSH_PWM 20U
-#define ELBOW_RECOVERY_PUSH_MS 80U
-#define ELBOW_RECOVERY_PUSH_PERMILLE 10U
-#define ELBOW_RECOVERY_RETURN_PWM 10U
-#define ELBOW_RECOVERY_STALL_MS 80U
 
 #endif

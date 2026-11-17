@@ -1,6 +1,8 @@
 """Count the real I2C driver delays with a successful simulated OLED bus."""
 from pathlib import Path
+import os
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -80,10 +82,15 @@ int main(void) {
         max_page,elapsed_us);
 }
 '''
-with tempfile.TemporaryDirectory(prefix="oled_budget_", dir=root / "tests") as directory:
-    c = Path(directory) / "budget.c"
-    exe = Path(directory) / "budget.exe"
+# A plain temp directory keeps host builds independent of the checkout ACLs.
+work = Path(tempfile.gettempdir()) / ("oled_budget_" + str(os.getpid()))
+work.mkdir(parents=True, exist_ok=True)
+try:
+    c = work / "budget.c"
+    exe = work / "budget.exe"
     c.write_text(prefix + body + checks, encoding="utf-8")
     subprocess.run(["gcc", "-std=c11", "-Wall", "-Wextra", "-Werror",
                     str(c), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
+finally:
+    shutil.rmtree(work, ignore_errors=True)

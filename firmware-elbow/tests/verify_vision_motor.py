@@ -1,5 +1,7 @@
 """Verify production UART callbacks, parser, GPIO directions and action timing."""
 from pathlib import Path
+import os
+import shutil
 import subprocess
 import tempfile
 
@@ -24,8 +26,10 @@ callbacks = "\n".join(production_function(name) for name in (
     "Vision_UART_Arm", "HAL_UARTEx_RxEventCallback",
     "HAL_UART_ErrorCallback", "Vision_UART_Task"))
 
-with tempfile.TemporaryDirectory(prefix="vision_motor_", dir=root / "tests") as directory:
-    work = Path(directory)
+# A plain temp directory keeps host builds independent of the checkout ACLs.
+work = Path(tempfile.gettempdir()) / ("vision_motor_" + str(os.getpid()))
+work.mkdir(parents=True, exist_ok=True)
+try:
     callback_file = work / "uart_callbacks.c"
     callback_file.write_text('#include "vision_motor.h"\n' + callbacks, encoding="utf-8")
     executable = work / "verify.exe"
@@ -38,3 +42,15 @@ with tempfile.TemporaryDirectory(prefix="vision_motor_", dir=root / "tests") as 
             str(callback_file), "-o", str(executable),
         ], check=True)
         subprocess.run([str(executable)], check=True)
+    # 可选行程结束检测（默认 0 = 纯定时）单独编一次，保证这段代码仍有覆盖。
+    subprocess.run([
+        "gcc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DELBOW_TEST_MODE=2",
+        "-DELBOW_STROKE_END_MS=200",
+        "-I" + str(root / "tests/work_fakes"), "-I" + str(root / "BSP"),
+        "-I" + str(chassis / "tests/fakes"),
+        str(root / "BSP/vision_motor.c"), str(root / "tests/test_vision_motor.c"),
+        str(callback_file), "-o", str(executable),
+    ], check=True)
+    subprocess.run([str(executable)], check=True)
+finally:
+    shutil.rmtree(work, ignore_errors=True)
