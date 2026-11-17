@@ -37,6 +37,7 @@
 #define WORK_TARGET_STABLE_MS 200U        // 同一区域目标至少持续 200 ms，代码另要求至少 3 帧。
 #define WORK_SETTLE_MS 300U               // 返回计时结束后至少等 300 ms，再用新图像复检。
 #define WORK_FRESH_VISION_MS 200U         // 首次收到停稳确认后至少等 200 ms，再取新帧。
+#define WORK_INITIAL_NO_TARGET_MS 2000U // 首次击打前给视觉2秒复检，仍无目标则记录SKIPPED。
 #define WORK_NO_TARGET_MS 500U            // 树仍在停车区间内，连续无目标至少 500 ms 才正常放行。
 #define WORK_NO_TARGET_FRAMES 3U          // 无目标确认还需要至少 3 帧新图像。
 #define WORK_MAX_ATTEMPTS_PER_REGION 2U   // 同一棵树每个区域最多执行 2 次。
@@ -71,15 +72,15 @@ uint8_t Vision_Motor_VerifyReturned(void);
  * 检测到目标后的动作顺序：
  * 打击 → 换向停顿 → 返回 → 打击后等待 → 接收下一条指令。
  * 动作由毫秒计时控制，和 elbow-controller 里已验证的版本一致：
- * 100% 占空比、打击和返回各 500 ms，没有编码器位置闭环和软限位。
+ * 100% 占空比、打击和返回各650ms，没有编码器位置闭环和软限位。
  * 实际机械方向取决于接线，方向调整在各区域的独立控制函数中完成。
  * 这里是按时间控制，逆转相同时间不保证机构精确回到原位。
  */
 #define VISION_MOTOR_PWM 100U           // 打击和返回共用占空比；手动编码器测量模式的实际PWM为0。
                                      // 当前 TIM1 的 ARR=99，因此这里的数值对应百分比。
                                      // TB6612 由 10V 供电，100 就是满占空比、约 10V 加到电机上。
-#define VISION_CW_MS 500U            // 打击阶段运行时间，当前 500 毫秒，即 0.5 秒。
-#define VISION_CCW_MS 500U           // 返回阶段运行时间，当前 500 毫秒，即 0.5 秒。
+#define VISION_CW_MS 650U            // 打击阶段运行时间，当前 650 毫秒，即 0.65 秒。
+#define VISION_CCW_MS 650U           // 返回阶段运行时间，当前 650 毫秒，即 0.65 秒。
 #define VISION_REVERSE_PAUSE_MS 10U  // 换向前先停止输出，当前停 10 毫秒，再开始返回。
 #define VISION_RETRIGGER_DELAY_MS 50U // 一轮结束后等待，当前 50 毫秒，即 0.05 秒，再接收新区域指令。
 

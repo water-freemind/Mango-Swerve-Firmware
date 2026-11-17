@@ -324,6 +324,24 @@ static FullMapInput setup_aisle(FullMapTest* m,unsigned segment,float x) {
     in.laser=ridge_scan(p,0);
     return in;
 }
+static void ridge_end_fence_y_rejection_test(void) {
+    for(unsigned seg=4;seg<=12;seg+=4) {
+        FullMapTest m;FullMapInput in=setup_aisle(&m,seg,2.80f);
+        const AutoPose actual=m.localization.pose.pose;
+        /* Replay a consistent 40mm south-biased pair of distant fence rays.
+         * No wheel motion: that pair must not move Y at an open ridge end. */
+        AutoPose biased=actual;biased.y-=.04f;
+        for(unsigned now=10;now<=1800;now+=10) {
+            in.now=now;in.laser=scan(biased,now);
+            full_map_step(&m,in);
+            assert(m.phase==MAP_RUNNING);
+            assert(fabsf(m.localization.pose.pose.y-actual.y)<.0001f);
+            assert(!(m.localization.used_mask&12u));
+            assert(!m.aisle_correction.active);
+        }
+    }
+    puts("RIDGE_END_Y_AUTHORITY_OK G6_G4_G2_far_fences_cannot_pull_Y_40mm_stationary");
+}
 static void g7_ridge_exit_test(void) {
     FullMapTest m;FullMapInput in=setup_aisle(&m,2,2.5f);
     AutoPose actual={2.5f,4.4f,1.570796327f};AutoTwist v={0};
@@ -421,6 +439,19 @@ static void g7_steering_feedback_test(void) {
         gate=reached;
     }
     assert(0);
+}
+static void skipped_tree_result_test(void) {
+    FullMapTest map;FullMapInput input=setup_aisle(&map,4,.675f);
+    map.target_tree=11;map.motion.segment.end=(AutoVec2){.675f,3.7f};
+    map.tree_hold=map.tree_hold_stable=true;
+    input.work_enabled=input.work_online=input.work_done=true;
+    input.work_station=11;input.work_result=WORK_RESULT_SKIPPED;
+    input.now=10;input.laser=ridge_scan(map.localization.pose.pose,input.now);
+    full_map_step(&map,input);
+    assert(map.phase==MAP_RUNNING && !map.tree_hold);
+    assert(map.trees_unresolved==(1u<<10));
+    assert(!strcmp(map.reason,"TREE_NO_TARGET_CONTINUE"));
+    puts("SKIPPED_TREE_OK explicit_unresolved_record_continue_without_false_success");
 }
 static void work_failure_reason_test(void) {
     FullMapTest map;
@@ -1984,6 +2015,7 @@ int main(void) {
     visual_realign_timer_test();
     entry_heading_correction_observation_test();
     g7_steering_feedback_test();
+    skipped_tree_result_test();
     work_failure_reason_test();
     entry_rear_start_test();
     origin_fresh_cached_front_test();
@@ -2033,6 +2065,7 @@ int main(void) {
     station_work_gate_test();
     work_slow_distance_test();
     localization_tests();command_tests();protection_tests();range_threshold_tests();endpoint_acceptance_tests();
+    ridge_end_fence_y_rejection_test();
     g7_ridge_exit_test();aisle_correction_tests();
     aisle_closed_loop_test();
     tree_config_and_pause_tests();

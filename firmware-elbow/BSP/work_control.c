@@ -36,6 +36,7 @@ static uint32_t check_since, check_delay, moving_since, missing_since, last_fram
 static uint8_t test_latched_region; /* 独立测试中已动作的区域，避免同一目标连续打击。 */
 static uint8_t station_number;
 static uint8_t alignment_centered, alignment_reply;
+static uint32_t alignment_last_valid_ms;
 static uint8_t station_visual_trigger, station_departure_pending, station_started, station_realign_pending, station_realign_sequence;
 static uint32_t station_target_seen_ms, station_green_seen_ms;
 static uint32_t station_tree_seen_ms;
@@ -48,6 +49,7 @@ static void change_state(uint8_t state, uint32_t now)
 {
     Vision_WorkState = state;
     state_since = now;
+    if (state == VISION_WORK_ALIGN) alignment_last_valid_ms = now;
     empty_frames = empty_timing = departed_frames = 0;
 }
 
@@ -224,12 +226,17 @@ static void process_check(uint32_t now, uint32_t frame_count,
         }
         return;
     }
-    /* 树有效、位置合格、区域为 0，连续至少 500 ms 且至少 3 帧才正常放行。 */
+    /* 树有效、位置合格、区域为0：首次击打前等2秒复检；已击打后等500ms。
+     * 两者均需至少3个新帧，未击打放行明确标记SKIPPED。 */
     if (!empty_timing) { empty_timing = 1; empty_since = now; }
     if (empty_frames < 255) empty_frames++;
+    const uint32_t empty_wait = ELBOW_TEST_MODE == 2 && !tree_attempts ?
+        WORK_INITIAL_NO_TARGET_MS : WORK_NO_TARGET_MS;
     if (empty_frames >= WORK_NO_TARGET_FRAMES &&
-        (uint32_t)(now - empty_since) >= WORK_NO_TARGET_MS)
+        (uint32_t)(now - empty_since) >= empty_wait) {
+        if (ELBOW_TEST_MODE == 2 && !tree_attempts) Vision_WorkResult = WORK_RESULT_SKIPPED;
         change_state(VISION_WORK_RELEASE, now);
+    }
 }
 
 /* 放行后屏蔽同一棵树的重复触发。
@@ -659,14 +666,21 @@ static void process_station(uint32_t now, uint32_t frame_count)
         {
             if (Vision_TreeDX == 9999)
             {
-                alignment_centered = stable_frames = 0;
+                /* A brief detector dropout must not erase every centered sample.
+                 * Never advertise CENTERED or accept START on a missing tree. */
+                if ((uint32_t)(now - alignment_last_valid_ms) > STATION_VISION_MAX_AGE_MS)
+                    alignment_centered = stable_frames = 0;
                 alignment_reply = STATION_TRACKING;
             }
             else
             {
+                if ((uint32_t)(now - alignment_last_valid_ms) > STATION_VISION_MAX_AGE_MS)
+                    alignment_centered = stable_frames = 0;
+                alignment_last_valid_ms = now;
                 int32_t error = offset < 0 ? -offset : offset;
-                if (error <= STATION_VISION_STOP_PX) alignment_centered = 1;
-                else if (error > STATION_VISION_RESTART_PX) alignment_centered = 0;
+                /* ALIGN and START must agree: a latched 11..30px candidate
+                 * used to report CENTERED but immediately reject START. */
+                alignment_centered = error <= STATION_VISION_STOP_PX;
                 if (alignment_centered)
                 {
                     if (!stable_frames) stable_since = now;

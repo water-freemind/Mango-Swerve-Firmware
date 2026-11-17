@@ -832,7 +832,16 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     const bool paired_aisle=m->segment<AUTO_ROUTE_COUNT &&
         m->route.segment[m->segment].kind==AUTO_ROUTE_SURVEY && m->route.segment[m->segment].row!=0u;
     const AutoRoute* pose_route=paired_aisle || entry_leg ? NULL:&m->route;
-    if(m->localization.registered && !field_pose_step_route(&m->localization,in.wheel,in.imu_yaw,in.odom_ok,&observation,in.now,pose_route)) {
+    LaserSnapshot pose_observation=observation;
+    if(paired_aisle) {
+        /* At ridge ends the north/south rays switch between distant fences
+         * and ridge faces. They must not pull Y before the confirmed opposing
+         * ridge pair takes authority. Keep raw/observation for range guards
+         * and correct_aisle_position; odometry propagates Y across this gap. */
+        pose_observation.valid_mask&=(uint8_t)~12u;
+        pose_observation.updated_mask&=(uint8_t)~12u;
+    }
+    if(m->localization.registered && !field_pose_step_route(&m->localization,in.wheel,in.imu_yaw,in.odom_ok,&pose_observation,in.now,pose_route)) {
         if(full_map_active(m)) full_map_stop(m,"ODOMETRY_INVALID",true);
     }
     if(entry_leg && (m->localization.used_mask&(1u<<AUTO_LEFT))) {
@@ -1195,7 +1204,8 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
                 return;
             }
         } else if(in.now-m->tree_hold_ms<2000u) return;
-        const bool unresolved=in.work_enabled && in.work_result==WORK_RESULT_ATTEMPTS;
+        const bool unresolved=in.work_enabled &&
+            (in.work_result==WORK_RESULT_ATTEMPTS || in.work_result==WORK_RESULT_SKIPPED);
         if(unresolved) m->trees_unresolved|=(uint16_t)(1u<<(m->target_tree-1u));
         m->trees_done|=(uint16_t)(1u<<(m->target_tree-1u));
         if(m->visual_work) {
@@ -1206,7 +1216,8 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         }
         m->tree_hold=m->tree_hold_stable=false;
         if(!begin(m,in.now)) full_map_stop(m,"TREE_NEXT_FAILED",false);
-        else m->reason=unresolved?"TREE_ATTEMPTS_CONTINUE":"TREE_NEXT";
+        else m->reason=in.work_enabled && in.work_result==WORK_RESULT_SKIPPED?
+            "TREE_NO_TARGET_CONTINUE":unresolved?"TREE_ATTEMPTS_CONTINUE":"TREE_NEXT";
         return;
     }
     uint8_t travel_rays=0;
