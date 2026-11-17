@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-17",
+  "source_merge_commit": "fb7f91a9cf1898a87764d4a2687feac059937244",
+  "panel_commit": "17d1b16f52dd10a1ad267ceb1c674b19cd6bbad9",
+  "protocol": 5,
+  "boards": [
+    {
+      "board": "H723",
+      "mode": "FullMapWork",
+      "image": "firmware/build/FullMapWork/robot.hex",
+      "sha256": "09067e905e47a4e246e2ecf3bb8b59f58104d70a6a3fb9ba50477247d450867a",
+      "dap_serial": "332107140234",
+      "flash_log": "firmware/build/verify-20261117/pr22-h723-flash.log",
+      "flash_log_sha256": "d9e1ae1c3192fb7a61c9fc36073974b0becd31b97ca8383c9f97f230f209d58c",
+      "backup": "firmware/build/verify-20261117/before-pr22-h723.bin",
+      "backup_bytes": 1048576,
+      "backup_sha256": "ed3aca8a7f62d5ea28a25c4b6f7facef15f1a4d378c6205fa3e9ecf668856f32",
+      "program_verified": true
+    },
+    {
+      "board": "F407",
+      "mode": "FullMapWork",
+      "image": "firmware-elbow/build/FullMapWork/elbow.hex",
+      "sha256": "c5f9c21a8f461f3b0469fabdf11fdb5bbc466dc7425a3612a1c0658f51688c63",
+      "dap_serial": "134244206173",
+      "flash_log": "firmware/build/verify-20261117/pr22-f407-flash.log",
+      "flash_log_sha256": "6b6e1654ab193a4c3fc98de9a3a1eec6fbd4798a2f92f45727ac53d7b40004eb",
+      "backup": "firmware/build/verify-20261117/before-pr22-f407.bin",
+      "backup_bytes": 524288,
+      "backup_sha256": "d1f50a7f9b727e8e6c7a53d27acc035949a4893c178fbfb68c51e48b859c72a0",
+      "program_verified": true
+    }
+  ],
+  "panel": {
+    "source": "firmware/vofa/vofa+.cmds.json",
+    "sha256": "1fc8ead0df45999e9754ff2f82f8cd9e3bc4c057612f957b2fb070aa6ffef4dd",
+    "groups": 7,
+    "commands": 33
+  },
+  "hardware_validation": "program_verify_and_static_telemetry_only; no motion or strike acceptance"
+}

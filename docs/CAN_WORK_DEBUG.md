@@ -2,7 +2,7 @@
 
 2026-11-15 当前源码采用视觉触发联合模式，配套 CAN 协议版本5。下面带日期的部署记录保留对应历史版本信息。
 
-> 当前维护入口：[项目指南](PROJECT_GUIDE.md)、[肘击器编码器控制与上电准备](../firmware-elbow/README.md#当前击打控制与上电准备)。历史回退、部署摘要见[历史记录](PROJECT_HISTORY.md)。2026-11-17两板FullMapWork已通过ARM GCC构建，本次未烧录。
+> 当前维护入口：[项目指南](PROJECT_GUIDE.md)、[肘击器定时控制与上电准备](../firmware-elbow/README.md#当前击打控制与上电准备)。历史回退、部署摘要见[历史记录](PROJECT_HISTORY.md)。2026-11-17两板定时版FullMapWork已烧录校验；当前模式、33条命令及测试边界见[版本与测试索引](VERSION_MATRIX.md)。
 
 <a id="navigation-only-mode"></a>
 ## 单独跑图与联合疏果模式
