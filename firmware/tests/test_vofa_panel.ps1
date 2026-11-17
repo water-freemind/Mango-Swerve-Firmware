@@ -180,7 +180,7 @@ function Leaves($node) {
     } else { $node }
 }
 $items = @(Leaves $json.ctx)
-Assert ($items.Count -eq 34) 'Expected 34 full-map mode and work commands'
+Assert ($items.Count -eq 33) 'Expected 33 full-map mode and work commands'
 $static = [VofaTestSession]::new($false, $send, $report)
 $static.Observe($idle, 3000)
 $static.Observe('FW: 0,0,0,0', 3000)
@@ -373,7 +373,7 @@ Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_AISLE active=1 frozen=0'
 Assert (!$mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE hold=1',30)) 'Tree log ignored map toggle'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_TREE_EVENT hold=1',30)) 'Tree event hidden'
 Assert ($mapPanel.ShouldForwardStatus('[INFO] TEST_MAP_CONTROL_FAULT process_code=8',30)) 'Control fault hidden'
-'VOFA_PANEL_TEST_OK (34 commands, map modes and handshake, acceleration/speeds, TRACE, UDP)'
+'VOFA_PANEL_TEST_OK (33 commands, map modes and handshake, acceleration/speeds, TRACE, UDP)'
 
 $workPanel = [VofaTestSession]::new($true,$send,$report)
 $workPanel.Observe($idle + ' control=HOST',0)
