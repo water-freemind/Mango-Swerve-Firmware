@@ -1,0 +1,18 @@
+{
+  "date": "2026-11-17",
+  "status": "built_not_flashed_DAP_absent",
+  "mode": "FullMapWork",
+  "strike_ms": 650,
+  "return_ms": 650,
+  "initial_no_target_ms": 2000,
+  "boards": {
+    "H723": {
+      "path": "firmware/build/FullMapWork/robot.hex",
+      "sha256": "7cc3bb277c3ce39f722f9c2972a9f20624a8fad5a0e6ce36b50415923fb18dc2"
+    },
+    "F407": {
+      "path": "firmware-elbow/build/FullMapWork/elbow.hex",
+      "sha256": "07e3c5b828378e97df7ec976340d9265fb5bbe619e4b1a6ab5e65c5e269160ca"
+    }
+  }
+}

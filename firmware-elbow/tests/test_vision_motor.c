@@ -63,9 +63,9 @@ int main(void) {
     unsigned region;
     const unsigned motors[] = {0, 2, 4, 3, 1};
     uint32_t frames;
-    /* 与 elbow-controller 一致的纯定时：打击 500 ms、换向停 10 ms、返回 500 ms、100% 占空比。 */
+    /* 与 elbow-controller 一致的纯定时：打击 650 ms、换向停 10 ms、返回 650 ms、100% 占空比。 */
     assert(VISION_MOTOR_PWM == 100U);
-    assert(VISION_CW_MS == 500U && VISION_CCW_MS == 500U);
+    assert(VISION_CW_MS == 650U && VISION_CCW_MS == 650U);
     if (ELBOW_TEST_MODE == 3)
     {
         Vision_Motor_Init();
@@ -88,7 +88,7 @@ int main(void) {
         puts("MANUAL_ENCODER_MODE_OK all_outputs_zero_visual_and_api_cannot_start_counts_preserved");
         return 0;
     }
-    /* 四个区域按时间动作：打击 600 ms → 停 50 ms → 返回 600 ms → 等 50 ms。
+    /* 四个区域按时间动作：打击 650 ms → 停 10 ms → 返回 650 ms → 等 50 ms。
      * 全程使用毫秒差计时，并把系统计数回绕点作为起点。 */
     for (region = 1; region <= 4; region++) {
         Vision_Motor_Init();
@@ -115,7 +115,7 @@ int main(void) {
         tick += VISION_RETRIGGER_DELAY_MS; Vision_Motor_Task();
         assert(Vision_MotorPhase == 0 && Vision_Motor_VerifyReturned());
     }
-    puts("TIMED_STRIKE_OK four_regions_100pct_500ms_pause_10ms_pure_timing_wrap");
+    puts("TIMED_STRIKE_OK four_regions_100pct_650ms_pause_10ms_pure_timing_wrap");
     /* 每次只有一路 PWM，其它三路保持 0；换向停顿期间四路全停。 */
     Vision_Motor_Init(); tick = 1000;
     assert(Vision_Motor_Start(4));

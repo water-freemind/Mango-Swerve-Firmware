@@ -521,7 +521,7 @@ static void test_alignment_hysteresis(void) {
     run_station(500, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.aligned && !g_station_work.align_direction);
     run_station(200, 1, 30, 1, 1, 1);
-    assert(g_station_work.aligned && !g_station_work.align_direction);
+    assert(!g_station_work.aligned && g_station_work.align_direction == 1);
     run_station(100, 1, 31, 1, 1, 1);
     assert(!g_station_work.aligned && g_station_work.align_direction == 1);
     run_station(100, 1, -31, 1, 1, 1);
@@ -536,7 +536,7 @@ static void test_alignment_hysteresis(void) {
     assert(starts == WORK_STATION_MAX_ATTEMPTS_PER_REGION);
     assert(!Vision_MotorPhase && Vision_HomeConfirmed && !Vision_MotorResult);
     assert(Vision_Motor_VerifyReturned());
-    puts("ALIGNMENT_TIMED_OK 10_30px_hysteresis_fresh_source_required_timed_strikes_release");
+    puts("ALIGNMENT_TIMED_OK 10px_alignment_START_agree_fresh_source_required_timed_strikes_release");
 }
 
 static void test_station_sequence(void) {
@@ -621,6 +621,37 @@ static void test_station_stable_start(void) {
     run_station(20,1,0,1,1,1);
     assert(station_work_start(now_ms,true));
     puts("STATION_STABLE_START_OK dx_zero_200ms_continuous_stop_restarts_after_noise_tick_wrap");
+}
+static void test_alignment_detector_dropouts(void) {
+    reset_station(0);
+    assert(station_work_begin(1,now_ms));
+    run_station(100,1,-6,1,1,1);
+    assert(station_work_align(now_ms,true));
+    /* Replay centered dx interleaved with missing Tree, at camera-like intervals. */
+    for(unsigned i=0;i<3u;++i) {
+        run_station(100,0,-6,1,1,1);
+        run_station(100,0,9999,1,1,1);
+        assert(!g_station_work.aligned && !station_work_start(now_ms,true) && !starts);
+    }
+    run_station(100,0,-6,1,1,1);
+    assert(g_station_work.aligned && !starts);
+    run_station(400,0,9999,1,1,1);
+    run_station(100,0,-6,1,1,1);
+    assert(!g_station_work.aligned && !station_work_start(now_ms,true));
+    run_station(350,0,-6,1,1,1);
+    assert(g_station_work.aligned && !starts);
+    run_station(100,0,11,1,1,1);
+    assert(!g_station_work.aligned && g_station_work.align_direction==1);
+    assert(!station_work_start(now_ms,true));
+    run_station(400,0,-10,1,1,1);
+    assert(g_station_work.aligned);
+    run_station(100,0,-11,1,1,1);
+    assert(!g_station_work.aligned && g_station_work.align_direction==-1);
+    run_station(400,0,10,1,1,1);
+    assert(g_station_work.aligned && station_work_start(now_ms,true));
+    run_station(500,1,10,1,1,1);
+    assert(starts==1 && g_station_work.phase==STATION_LINK_WORKING);
+    puts("ALIGN_DROPOUT_OK intermittent_center_samples_progress_missing_START_blocked_long_loss_reset_11px_direction_and_10px_START");
 }
 static void test_station_faults(void) {
     unsigned before;
@@ -929,12 +960,21 @@ static void test_station_empty_and_limits(void) {
     test_station_visual_trigger();
     test_station_realign_after_return();
     test_station_manual_recovery();
-    /* 无目标树位：直接完成，不产生打击。 */
+    /* 首次无目标复检2秒；迟到目标能启动，始终无目标则SKIPPED放行。 */
     reset_station(0);
     request_station(1, 0);
     run_station(1500, 0, 0, 1, 1, 1);
+    assert(g_station_work.phase == STATION_LINK_WORKING && starts == 0);
+    run_station(1500, 0, 0, 1, 1, 1);
     assert(g_station_work.phase == STATION_LINK_DONE && starts == 0);
-    puts("STATION_EMPTY_STOP_OK no_target_finishes_without_strike");
+    assert(g_station_work.result==WORK_RESULT_SKIPPED && Vision_WorkResult==WORK_RESULT_SKIPPED);
+    reset_station(0);
+    request_station(1,0);
+    run_station(1500,0,0,1,1,1);
+    assert(starts==0 && g_station_work.hold);
+    run_station(500,1,0,1,1,1);
+    assert(starts==1 && g_station_work.phase==STATION_LINK_WORKING);
+    puts("STATION_EMPTY_STOP_OK delayed_target_1500ms_strikes_empty_2s_SKIPPED_without_strike");
     /* 同一区域连续 4 次定时打击后按次数上限放行，返回结束即放行。 */
     reset_station(0);
     request_station(2, 1);
@@ -1052,6 +1092,7 @@ int main(void) {
         test_alignment_hysteresis();
         test_station_sequence();
         test_station_stable_start();
+        test_alignment_detector_dropouts();
         test_station_faults();
         test_station_replay_and_release_gate();
         test_station_empty_and_limits();

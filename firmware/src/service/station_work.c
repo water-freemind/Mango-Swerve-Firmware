@@ -265,7 +265,8 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
         } else if(packet.state == STATION_DONE &&
                   (g_station_work.phase == STATION_LINK_WORKING ||
                    g_station_work.phase == STATION_LINK_RELEASE)) {
-            if(packet.result != WORK_RESULT_OK && packet.result != WORK_RESULT_ATTEMPTS)
+            if(packet.result != WORK_RESULT_OK && packet.result != WORK_RESULT_ATTEMPTS &&
+               packet.result != WORK_RESULT_SKIPPED)
                 station_work_abort(packet.result);
             else {
                 g_station_work.result = packet.result;
