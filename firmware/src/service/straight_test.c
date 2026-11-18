@@ -5,9 +5,35 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define STRAFE_DISTANCE_M 0.25f
+#define STRAFE_SPEED_MPS 0.10f
+#define STRAFE_START_CLEARANCE_MM 500u
+#define ROW_TEST_DISTANCE_M 0.10f
+#define ROW_TEST_SPEED_MPS 0.05f
+#define ROW_TEST_SIDE_CLEARANCE_MM 350u
+#define ROW_TEST_ORTHOGONAL_RESERVE_MM 10u
+
 const char* straight_plan_name(StraightPlan plan) {
-    static const char* const names[] = {"FWD", "ROUND", "WALL", "APPROACH"};
-    return (unsigned)plan < 4u ? names[plan] : "INVALID";
+    static const char* const names[] = {"FWD", "ROUND", "WALL", "APPROACH", "LEFT", "RIGHT", "ROWLEFT", "ROWRIGHT"};
+    return (unsigned)plan < sizeof(names)/sizeof(names[0]) ? names[plan] : "INVALID";
+}
+bool straight_plan_lateral(StraightPlan plan) {
+    return plan == ST_PLAN_LEFT || plan == ST_PLAN_RIGHT || straight_plan_row(plan);
+}
+bool straight_plan_row(StraightPlan plan) {
+    return plan == ST_PLAN_ROWLEFT || plan == ST_PLAN_ROWRIGHT;
+}
+static bool lateral_left(StraightPlan plan) {
+    return plan == ST_PLAN_LEFT || plan == ST_PLAN_ROWLEFT;
+}
+static bool lateral_start_clear(StraightPlan plan, uint16_t body_edge, StraightInput in) {
+    if(!straight_plan_lateral(plan)) return true;
+    const bool row = straight_plan_row(plan);
+    const unsigned cross = row ? body_edge + STRAIGHT_TEST_COLLISION_MARGIN_MM +
+        ROW_TEST_ORTHOGONAL_RESERVE_MM : 250u;
+    return (lateral_left(plan) ? in.left_mm : in.right_mm) >=
+        (row ? ROW_TEST_SIDE_CLEARANCE_MM : STRAFE_START_CLEARANCE_MM) &&
+        in.front_mm >= cross && in.rear_mm >= cross;
 }
 const char* straight_leg_name(StraightLeg leg) {
     static const char* const names[] = {"OUT", "WAIT", "BACK"};
@@ -73,6 +99,16 @@ static bool arm_selection(const char* line, StraightPlan* plan, float* target) {
     *target = STRAIGHT_TEST_TARGET_M;
     if(!strcmp(line, "ARM")) { *plan = ST_PLAN_FWD; return true; }
     if(!strcmp(line, "ARM APPROACH")) { *plan = ST_PLAN_APPROACH; return true; }
+    if(!strcmp(line, "ARM LEFT") || !strcmp(line, "ARM RIGHT")) {
+        *plan = line[4] == 'L' ? ST_PLAN_LEFT : ST_PLAN_RIGHT;
+        *target = STRAFE_DISTANCE_M;
+        return true;
+    }
+    if(!strcmp(line, "ARM ROWLEFT") || !strcmp(line, "ARM ROWRIGHT")) {
+        *plan = line[7] == 'L' ? ST_PLAN_ROWLEFT : ST_PLAN_ROWRIGHT;
+        *target = ROW_TEST_DISTANCE_M;
+        return true;
+    }
     const char* suffix;
     if(!strncmp(line, "ARM ROUND", 9u)) { *plan = ST_PLAN_ROUND; suffix = line + 9u; }
     else if(!strncmp(line, "ARM WALL", 8u)) { *plan = ST_PLAN_WALL; suffix = line + 8u; }
@@ -156,6 +192,7 @@ bool straight_command(StraightTest* t, const char* line, uint32_t now, StraightI
         if(t->phase == ST_RUNNING || t->phase == ST_STOPPING || !in.healthy || !in.stationary) return false;
         if(plan != ST_PLAN_FWD && t->body_edge_mm == 0u) { t->result = "BODY_EDGE_UNSET"; return false; }
         if(!straight_laser_ready(plan, in)) { t->result = "LASER_NOT_READY"; return false; }
+        if(!lateral_start_clear(plan, t->body_edge_mm, in)) { t->result = "STRAFE_CLEARANCE"; return false; }
         const unsigned guard = t->body_edge_mm + STRAIGHT_TEST_COLLISION_MARGIN_MM;
         if(plan != ST_PLAN_FWD && (in.left_mm <= guard || in.right_mm <= guard || in.rear_mm <= guard || in.front_mm <= guard)) {
             t->result = "COLLISION_GUARD"; return false;
@@ -167,6 +204,7 @@ bool straight_command(StraightTest* t, const char* line, uint32_t now, StraightI
         t->phase = ST_ARMED; t->plan = plan; t->target_m = target; t->leg = ST_LEG_OUT;
         t->arm_ms = now;
         t->distance_m = t->speed_mps = t->lateral_mps = t->outbound_m = 0.0f;
+        t->cross_travel_m = 0.0f;
         t->right_ref_mm = t->right_filtered_mm = 0.0f;
         t->stopped_timing = false; t->result = "ARMED";
         t->guard_mask = 0u;
@@ -177,6 +215,7 @@ bool straight_command(StraightTest* t, const char* line, uint32_t now, StraightI
     }
     if(t->phase == ST_ARMED && (uint32_t)(now - t->arm_ms) <= 5000u &&
        in.healthy && in.stationary && straight_laser_ready(t->plan, in) &&
+       lateral_start_clear(t->plan, t->body_edge_mm, in) &&
        !collision_mask(t, in) &&
        (t->plan != ST_PLAN_APPROACH || in.front_mm > straight_front_target_mm(t) + STRAIGHT_TEST_FRONT_TOL_MM) &&
        token_command(line, "GO ", t->token)) {
@@ -205,6 +244,44 @@ static void wall_correction(StraightTest* t, StraightInput in, float dt) {
     const float delta = STRAIGHT_TEST_WALL_ACCEL_MPS2 * dt;
     t->lateral_mps += fmaxf(-delta, fminf(delta, target - t->lateral_mps));
 }
+static void lateral_step(StraightTest* t, uint32_t now, uint32_t elapsed, StraightInput in) {
+    const float direction = lateral_left(t->plan) ? 1.0f : -1.0f;
+    const bool row = straight_plan_row(t->plan);
+    const float dt = elapsed * 0.001f;
+    const float along = direction * in.vy_mps;
+    if(!in.healthy || elapsed > 50u || !isfinite(along) || !isfinite(in.vx_mps)) {
+        straight_fault(t, "STRAFE_FEEDBACK"); return;
+    }
+    const unsigned cross_stop = t->body_edge_mm + STRAIGHT_TEST_COLLISION_MARGIN_MM + 5u;
+    if(!straight_laser_ready(t->plan, in) || collision_mask(t, in) ||
+       (row && (in.front_mm <= cross_stop || in.rear_mm <= cross_stop))) {
+        straight_fault(t, "STRAFE_RANGE"); return;
+    }
+    t->distance_m += along * dt;
+    t->cross_travel_m += fabsf(in.vx_mps) * dt;
+    if(t->distance_m > t->target_m + (row ? .015f : .05f) ||
+       t->distance_m < -(row ? .008f : .03f) ||
+       t->cross_travel_m > (row ? .008f : .05f) ||
+       fabsf(along) > (row ? .075f : .16f) || fabsf(in.vx_mps) > (row ? .018f : .07f)) {
+        straight_fault(t, "STRAFE_TRACKING"); return;
+    }
+    if(t->phase == ST_STOPPING) {
+        if(in.stationary) {
+            if(!t->stopped_timing) { t->stopped_ms = now; t->stopped_timing = true; }
+            if(now - t->stopped_ms >= 200u) t->phase = ST_DONE;
+        } else t->stopped_timing = false;
+        if(t->phase == ST_STOPPING && now - t->turn_ms > 3000u)
+            straight_fault(t, "STOP_TIMEOUT");
+        return;
+    }
+    if(now - t->start_ms > 8000u) { straight_fault(t, "STRAFE_TIMEOUT"); return; }
+    const float remaining = t->target_m - t->distance_m;
+    if(remaining <= 0.005f) { stopping(t, now, "TARGET_REACHED"); return; }
+    const float cap = fminf(row ? ROW_TEST_SPEED_MPS : STRAFE_SPEED_MPS,
+        sqrtf(2.0f * STRAIGHT_TEST_BRAKE_DECEL_MPS2 * remaining));
+    const float accel = row ? .08f : STRAIGHT_TEST_ACCEL_MPS2;
+    t->lateral_mps = direction * fminf(cap, fabsf(t->lateral_mps) + accel * dt);
+}
 void straight_step(StraightTest* t, uint32_t now, StraightInput in) {
     const uint32_t elapsed = now - t->last_ms;
     const float dt = (float)elapsed * 0.001f;
@@ -213,6 +290,10 @@ void straight_step(StraightTest* t, uint32_t now, StraightInput in) {
      * GO. GO still checks the current frame and never starts on invalid data. */
     if(t->phase == ST_ARMED && (!in.healthy || now - t->arm_ms > 5000u))
         straight_fault(t, "ARM_EXPIRED_OR_NOT_READY");
+    if(straight_plan_lateral(t->plan) && (t->phase == ST_RUNNING || t->phase == ST_STOPPING)) {
+        lateral_step(t, now, elapsed, in);
+        return;
+    }
     if(t->phase == ST_RUNNING) {
         float target;
         if(!in.healthy || !isfinite(in.vx_mps) || !isfinite(in.vy_mps)) { straight_fault(t, "FEEDBACK_OR_PERMIT"); return; }

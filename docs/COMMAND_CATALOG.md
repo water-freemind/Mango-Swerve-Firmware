@@ -1,6 +1,6 @@
 # 当前命令组清单
 
-2026-11-17：权威源为 [vofa+.cmds.json](../firmware/vofa/vofa+.cmds.json)，7组33条。下表从源文件解码，修改命令源时须同步更新本表。安装时同步软件目录与LocalAppData实际加载目录，不能只覆盖软件旁的JSON。
+2026-11-18 更新。面板源为 [vofa+.cmds.json](../firmware/vofa/vofa+.cmds.json)，共 7 组 33 条。安装时同步软件目录和 LocalAppData 实际加载目录。
 
 当前面板配合H723 FullMapWork和版本5定时F407；NAV/WORK共用面板，由运行时模式选择。旧直线/往返、编码器零位登记等面板不再作为当前默认，历史命令请从对应Git版本提取并配套同版桥接与固件。
 
@@ -41,5 +41,7 @@
 | 06 波形与日志 | 恢复简洁状态（默认） | `UI LOG DEFAULT` |
 
 这些UI命令由桥接转换，不应把UI文本直接发往固件串口。Static启动器拒绝运动准备/开始；Motion允许操作，但不会自动开始。普通关闭VOFA或断开UDP不替代SWD/STOP。
+
+维护用横移命令及现场测试条件见[定距测试说明](work/full-map/20261118-field-navigation.md#现场复测)。这些命令由 Motion 桥接处理。
 
 安装、启动和测试顺序见[版本与测试索引](VERSION_MATRIX.md)。

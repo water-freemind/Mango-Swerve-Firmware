@@ -205,12 +205,17 @@ $tx.Clear()
 $extended = [VofaTestSession]::new($true,$send,$report)
 $extended.Observe($idle,0)
 Assert (!$extended.Command('UI ARM ROUND 4',1)) 'Legacy firmware accepted a four-meter round trip'
-foreach ($plan in @('ROUND','WALL','APPROACH')) {
-    foreach ($distance in $(if($plan -eq 'APPROACH'){@(1)}else{@(1,2,4)})) {
+foreach ($plan in @('ROUND','WALL','APPROACH','LEFT','RIGHT','ROWLEFT','ROWRIGHT')) {
+    foreach ($distance in $(switch ($plan) {
+        'APPROACH' {1}
+        {$_ -in @('LEFT','RIGHT')} {'0.25'}
+        {$_ -in @('ROWLEFT','ROWRIGHT')} {'0.10'}
+        default {1,2,4}
+    })) {
         $extended = [VofaTestSession]::new($true,$send,$report)
         $extended.Observe($idle,0)
         $extended.Observe('[INFO] TEST_PLAN proto=2 plan=FWD leg=OUT target_m=1.00 hb_required=0',0)
-        $suffix = if($plan -eq 'APPROACH'){$plan}else{"$plan $distance"}
+        $suffix = if($plan -in @('ROUND','WALL')){"$plan $distance"}else{$plan}
         Assert ($extended.Command("UI ARM $suffix",1)) 'New ARM rejected'
         Assert ($tx[-1] -eq "ARM $suffix") 'Wrong program or distance sent to firmware'
         # A delayed config ACK must not consume the outstanding ARM transaction.
@@ -286,6 +291,17 @@ $filters.Observe('[INFO] TEST_REMOTE t_ms=1000 SWD=2000 VRB=1500',1000)
 Assert ($filters.Command('UI LOG QUIET',1001)) 'Quiet preset rejected'
 Assert (!$filters.ShouldForwardStatus($idle,1002)) 'Quiet view forwards periodic status'
 Assert ($filters.ShouldForwardStatus('[INFO] TEST_ACK ok=1 phase=0 token=0',1002)) 'Quiet view hid command ACK'
+$vision = '[INFO] TEST_WORK_VISION t_ms=1002 frame=1 dx=9999 region=0 state=1 online=1 station=0 task=0 sample_ms=1001'
+Assert (!$filters.ShouldForwardStatus($vision,1002)) 'Quiet view leaked periodic vision data'
+Assert ($filters.ShouldForwardStatus('[INFO] TEST_MAP_ACK ok=0 phase=IDLE token=0 reason=ORIGIN_OUTSIDE_ENTRY_ZONE cmd=ORIGIN',1002)) 'Quiet view hid origin rejection'
+$workCancel = '[INFO] TEST_WORK_CANCEL t_ms=198478 blockers=0x20 source=HOST map_reason=TREE_WORK_WAIT RX=1561 RY=1700 LX=1500'
+Assert ($filters.ShouldForwardStatus($workCancel,1002)) 'Quiet view hid the work cancellation cause'
+Assert (([MangoStraightConsole]::ChineseStatus($workCancel)).Contains('[RC_STICK]')) 'Stick position was not identified as the cancellation cause'
+Assert ($filters.ShouldForwardStatus('[INFO] TEST_WORK enabled=1 ok=1 phase=0 task=0',1002)) 'Quiet view hid explicit work status'
+Assert ($filters.Command('UI LOG WORK ON',1002)) 'Work category enable rejected'
+Assert ($filters.ShouldForwardStatus($vision,1002)) 'Enabled work category hid vision data'
+Assert ($filters.Command('UI LOG WORK OFF',1002)) 'Work category disable rejected'
+Assert (!$filters.ShouldForwardStatus($vision,1002)) 'Disabled work category leaked vision data'
 Assert ($filters.Command('UI LOG CAN2 ON',1002)) 'Per-CAN visibility rejected'
 Assert ($filters.ShouldForwardStatus('[INFO] TEST_CAN bus=2 rx=1',1003)) 'CAN2 enable failed'
 Assert (!$filters.ShouldForwardStatus('[INFO] TEST_CAN bus=1 rx=1',1003)) 'CAN1 leaked through CAN2-only filter'

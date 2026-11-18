@@ -1,0 +1,36 @@
+{
+  "date": "2026-11-18",
+  "mode": "FullMapWork",
+  "field_deployment": {
+    "H723": {
+      "sha256": "272e6665fc9af2ba398ca9e25f80104c2aa7eb86d60e94cb315faf75611fec80",
+      "readback_verified": true,
+      "full_route_validated": false
+    },
+    "F407": {
+      "sha256": "80266b13f589fe6d4ce03c3f8e1595b8355c63e13aa2970b9bfd1f654a7f0185",
+      "readback_verified": true,
+      "strike_ms": 500,
+      "return_ms": 500
+    }
+  },
+  "integrated_candidate": {
+    "base_commit": "f9dfdb8ca7cb734a88a29991ba80877afa799674",
+    "flashed": false,
+    "H723": {
+      "sha256": "b104c983a65d68dd168e876ff8c80ef7c6849d5db52cd26d43df0d8db59b6a9f"
+    },
+    "F407": {
+      "sha256": "17a12aeb0fee4438d8c5c6a742720ddd8a41f6377a54414e5d0d909d862aff70",
+      "strike_ms": 650,
+      "return_ms": 650
+    },
+    "vofa_command_sha256": "b8d13bef0f773263285aef708589260067acd724b8be3b56e5bfd29e4866e625",
+    "simulation": {
+      "cruise_mps": 0.50,
+      "approach_mps": 0.30,
+      "completed_stations": 12,
+      "duration_ms": 174980
+    }
+  }
+}

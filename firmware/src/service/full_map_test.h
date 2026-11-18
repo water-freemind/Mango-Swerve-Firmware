@@ -68,6 +68,9 @@ typedef struct {
     bool work_slow, work_wait, work_active;
     uint8_t work_station, work_result;
     bool work_align, work_alignment_fresh, work_centered;
+    bool work_can_skip_alignment, work_target_missing;
+    bool work_target_fresh;
+    int16_t work_target_dx;
     int8_t work_align_direction;
     uint32_t work_align_frame;
 } FullMapInput;
@@ -78,6 +81,8 @@ typedef struct {
     int8_t direction;
     uint32_t started_ms, frame;
     float nominal_x, target_x;
+    bool target_missing, skip_pending;
+    uint32_t missing_since_ms;
 } MapTreeAlignment;
 typedef struct {
     float x;
@@ -109,12 +114,12 @@ typedef struct {
     AutoMotionError motion_error;
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */
     uint16_t trees_done;
-    uint16_t trees_unresolved; /* Visited tree stations still reporting fruit after the retry limit. */
+    uint16_t trees_unresolved; /* Stations skipped or still reporting fruit after the retry limit. */
     bool aisle_entry_qualified;
-    bool visual_work, visual_stop, work_request_pending, work_scan_ending;
+    bool visual_work, visual_stop, visual_braking, work_request_pending, work_scan_ending;
     uint8_t visual_segment, row_work_count;
     uint32_t work_count, unresolved_work_count;
-    float visual_stop_x;
+    float visual_stop_x, visual_approach_limit;
     uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
     bool tree_hold, tree_hold_stable;
     uint32_t tree_hold_ms;

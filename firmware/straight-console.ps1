@@ -79,6 +79,8 @@ public static class MangoStraightConsole {
             {"ENTRY_NORTH_PAUSE","即将到G7，等待远端围栏定位确认"},
             {"RESUMED","保护条件恢复，继续行驶"},{"ROUTE_COMPLETE","全图路线已完成"},
             {"TREE_ATTEMPTS_CONTINUE","已达到四次作业上限，记录未打落树位并继续行驶"},
+            {"TREE_VISION_SKIPPED","持续未识别到树，肘击端已确认回收，记录未完成并继续行驶"},
+            {"TREE_VISION_SKIP_ACK_TIMEOUT","丢树后未收到肘击端回收确认，车辆保持停止"},
             {"ROUTE_COMPLETE_WITH_UNRESOLVED","全图路线已完成，仍有果子未打落，请查看未完成树位记录"},
             {"MAP_ENVELOPE","估计车体超出地图通行包络，任务已停止"},
             {"MOTION_FAULT","运动控制检测到偏差或过点异常，任务已停止"},
@@ -108,6 +110,16 @@ public static class MangoStraightConsole {
         if(line.Contains("TEST_MAP_EVENT ") && reason!="?") {
             if(!reasons.TryGetValue(reason,out description)) description=reason;
             return "[全图事件] 段="+Field(line,"segment")+"；"+description+" ["+reason+"]";
+        }
+        if(line.Contains("TEST_MAP_TREE_EVENT ") && reason=="TREE_VISION_SKIPPED")
+            return "[全图事件] 段="+Field(line,"segment")+"；"+reasons[reason]+" ["+reason+"]";
+        if(line.Contains("TEST_WORK_CANCEL ")) {
+            string blockers=Field(line,"blockers");uint mask;
+            if(blockers.StartsWith("0x",StringComparison.OrdinalIgnoreCase) &&
+               UInt32.TryParse(blockers.Substring(2),NumberStyles.HexNumber,CultureInfo.InvariantCulture,out mask) &&
+               (mask&0x20)!=0)
+                return "[作业取消] 遥控摇杆离开中位 [RC_STICK]；RX="+Field(line,"RX")+
+                    "；RY="+Field(line,"RY")+"；LX="+Field(line,"LX");
         }
         if(line.Contains("TEST_MAP_STATUS ") && Field(line,"phase")!="?") {
             var phase=new Dictionary<string,string>{{"IDLE","空闲"},{"READY","已登记起点"},{"ARMED","已准备"},{"RUNNING","运行中"},{"PAUSED","暂停"},{"DONE","完成"},{"FAULT","停止"}};
@@ -174,7 +186,7 @@ public static class MangoStraightConsole {
         string plain = Regex.Replace(line, @"\x1b\[[0-9;]*m", "").TrimEnd('\r');
         // FireWater treats nonnumeric lines without a colon as ordinary text.
         // Keep a narrow status whitelist and do not create numeric-looking log frames.
-        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT|WORK_VISION|WORK_ENCODER|WORK_STOP)\b") ||
+        if (!Regex.IsMatch(plain, @"^\[(INFO|WARN|ERROR)\] TEST_(STATUS|ACK|READY|INIT_FAILED|HEALTH|CONTROL|RAMP|REMOTE|IMU|IMU_RAW|IMU_BIAS|MOTOR|CAN|LASER|LASER_VALID|WALL|PAUSE|PAUSE_RANGE|FAULT|FAULT_RANGE|TIMING|DRIFT|PLAN|RANGE|BRAKE|PANEL|TRACE|TRACE_META|TRACE_STATE|TRACE_END|MAP_[A-Z_]+|WORK|WORK_EVENT|WORK_VISION|WORK_ENCODER|WORK_STOP|WORK_CANCEL)\b") ||
             plain.IndexOf(':') >= 0) return false;
         byte[] bytes = Encoding.UTF8.GetBytes(ChineseStatus(plain) + "\n");
         udp.Send(bytes, bytes.Length, new IPEndPoint(IPAddress.Loopback, port));
@@ -326,7 +338,8 @@ public sealed class VofaTestSession {
     private long lastPlan = -10000, lastRange = -10000;
     private double firmwareTarget;
     private string selectedPlan = "FWD", observedPlan = "FWD";
-    private int selectedTarget = 1, phaseValue;
+    private double selectedTarget = 1;
+    private int phaseValue;
     private readonly Dictionary<string, int> ranges = new Dictionary<string, int>();
     private static readonly string[] logCategories = {"STATUS","HEALTH","REMOTE","MOTOR","CAN1","CAN2","CAN3",
         "IMU","IMU_RAW","IMU_BIAS","DRIFT","LASER","RANGE","PLAN","BRAKE","TIMING","WAVE","MAP","WORK"};
@@ -356,7 +369,8 @@ public sealed class VofaTestSession {
         Match tag = Regex.Match(line, @"^\[(INFO|WARN|ERROR)\] TEST_([A-Z_]+)\b");
         if (!tag.Success) return false;
         string category = tag.Groups[2].Value;
-        if (category == "WORK" || category == "WORK_EVENT" || category == "WORK_VISION" || category == "WORK_ENCODER" || category == "WORK_STOP") return true;
+        if (category == "WORK" || category == "WORK_EVENT" || category == "WORK_ENCODER" || category == "WORK_STOP" || category == "WORK_CANCEL") return true;
+        if (category == "WORK_VISION") category = "WORK";
         if (category == "MAP_ACK" || category == "MAP_EVENT" || category == "MAP_SNAPSHOT" || category == "MAP_TREE_EVENT" || category == "MAP_CONTROL_FAULT" || category == "PREDICT") return true;
         if (category == "MAP_STATUS" || category == "MAP_POSE" || category == "MAP_AISLE" || category == "MAP_TREE") category = "MAP";
         if (category == "TRACE" || category == "TRACE_META" || category == "TRACE_STATE" || category == "TRACE_END") return true;
@@ -386,7 +400,7 @@ public sealed class VofaTestSession {
     }
     private bool SelectionMatches(string line) {
         if (!firmwareV2 && selectedPlan == "FWD" && selectedTarget == 1) return true;
-        Match plan = Regex.Match(line, @"\bplan=(FWD|ROUND|WALL|APPROACH)\b");
+        Match plan = Regex.Match(line, @"\bplan=(FWD|ROUND|WALL|APPROACH|LEFT|RIGHT|ROWLEFT|ROWRIGHT)\b");
         Match distance = Regex.Match(line, @"\btarget_m=([0-9.]+)\b");
         double target;
         return plan.Success && plan.Groups[1].Value == selectedPlan && distance.Success &&
@@ -415,7 +429,7 @@ public sealed class VofaTestSession {
             mapArmTime = now;
             report(mapArmed ? "map_arm_ready=1 next=UI_MAP_GO expires_ms=30000" : "rejected=MAP_ARM_ACK");
         }
-        Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH)\b");
+        Match planStatus = Regex.Match(line, @"TEST_PLAN proto=2 plan=(FWD|ROUND|WALL|APPROACH|LEFT|RIGHT|ROWLEFT|ROWRIGHT)\b");
         if (planStatus.Success) {
             firmwareV2 = true; lastPlan = now; observedPlan = planStatus.Groups[1].Value;
             firmwareOneShot = Regex.IsMatch(line, @"\bhb_required=0\b");
@@ -630,11 +644,14 @@ public sealed class VofaTestSession {
             }
             return true;
         }
-        Match motion = Regex.Match(command, @"^UI (ARM|GO)(?: (ROUND|WALL) ([124])| (APPROACH))?$");
+        Match motion = Regex.Match(command, @"^UI (ARM|GO)(?: (ROUND|WALL) ([124])| (APPROACH|LEFT|RIGHT|ROWLEFT|ROWRIGHT))?$");
         if (!motion.Success) { report("rejected=UNKNOWN_COMMAND"); return false; }
         bool isArm = motion.Groups[1].Value == "ARM";
-        string requestedPlan = motion.Groups[2].Success ? motion.Groups[2].Value : motion.Groups[4].Success ? "APPROACH" : "FWD";
-        int requestedTarget = motion.Groups[3].Success ? Int32.Parse(motion.Groups[3].Value, CultureInfo.InvariantCulture) : 1;
+        string requestedPlan = motion.Groups[2].Success ? motion.Groups[2].Value :
+            motion.Groups[4].Success ? motion.Groups[4].Value : "FWD";
+        double requestedTarget = motion.Groups[3].Success ? Int32.Parse(motion.Groups[3].Value, CultureInfo.InvariantCulture)
+            : requestedPlan == "LEFT" || requestedPlan == "RIGHT" ? 0.25
+            : requestedPlan == "ROWLEFT" || requestedPlan == "ROWRIGHT" ? 0.10 : 1.0;
         if (!allowMotion) { report("rejected=STATIC_MODE_USE_MOTION_LAUNCHER_IN_OPEN_AREA"); return false; }
         if (!firmwareOneShot || now - lastPlan > 1000) {
             report("rejected=FIRMWARE_ONE_SHOT_REQUIRED"); return false;
@@ -653,7 +670,7 @@ public sealed class VofaTestSession {
             Clear(); selectedPlan = requestedPlan; selectedTarget = requestedTarget;
             awaitingArm = true; armSent = now;
             tx(selectedPlan == "FWD" ? "ARM" : "ARM " + selectedPlan +
-                (selectedPlan == "APPROACH" ? "" : " " + selectedTarget));
+                (motion.Groups[3].Success ? " " + motion.Groups[3].Value : ""));
             return true;
         }
         if (requestedPlan != selectedPlan || requestedTarget != selectedTarget || Math.Abs(firmwareTarget - selectedTarget) >= 0.005 || Double.IsNaN(firmwareTarget)) {

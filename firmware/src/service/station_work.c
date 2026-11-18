@@ -145,11 +145,18 @@ bool station_work_begin_visual(uint8_t station,uint32_t now,bool east) {
     visual_scan_east=east;
     return true;
 }
+bool station_work_can_skip_alignment(void) {
+    return visual_scan && g_station_work.phase==STATION_LINK_ALIGN && !realign_sequence;
+}
+
 bool station_work_cancel_scan(void) {
-    if(!visual_scan || g_station_work.phase!=STATION_LINK_APPROACH)
+    if(!visual_scan || (g_station_work.phase!=STATION_LINK_APPROACH && !station_work_can_skip_alignment()))
         return false;
+    if(scan_cancel_pending) return true;
     scan_cancel_pending=true;
     g_station_work.slow_requested=g_station_work.stop_requested=false;
+    g_station_work.aligned=g_station_work.align_seen=false;
+    g_station_work.align_direction=0;
     dirty=true;
     return true;
 }
@@ -173,7 +180,7 @@ bool station_work_alignment_fresh(uint32_t now) {
 
 bool station_work_start(uint32_t now, bool stationary) {
     now=HAL_GetTick();
-    if(g_station_work.phase != STATION_LINK_ALIGN || !g_station_work.online ||
+    if(g_station_work.phase != STATION_LINK_ALIGN || scan_cancel_pending || !g_station_work.online ||
        !g_station_work.aligned || !station_work_alignment_fresh(now) || !stationary ||
        !stopped_tracking || (uint32_t)(now-stopped_since)<WORK_STOP_STABLE_MS)
         return false;
@@ -229,7 +236,7 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
                     packet.state == STATION_SLOW || packet.state == STATION_WAIT;
                 g_station_work.stop_requested = g_station_work.stop_requested || packet.state == STATION_WAIT;
             }
-        } else if(packet.state == STATION_REALIGN &&
+        } else if(packet.state == STATION_REALIGN && !scan_cancel_pending &&
                   (g_station_work.phase == STATION_LINK_WORKING || g_station_work.phase == STATION_LINK_ALIGN)) {
             const uint8_t advance=(uint8_t)(packet.result-realign_sequence);
             if(advance && advance<128u) {
@@ -242,6 +249,7 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
                 started_ms=stamp;dirty=true;
             } else if(g_station_work.phase!=STATION_LINK_ALIGN || advance) return false;
         } else if(g_station_work.phase == STATION_LINK_ALIGN && station_can_is_alignment(packet.state)) {
+            if(scan_cancel_pending) return false;
             const uint8_t advance = (uint8_t)(packet.result - g_station_work.align_sequence);
             if(!g_station_work.align_seen || (advance && advance < 128u)) {
                 g_station_work.align_sequence = packet.result;
@@ -277,7 +285,9 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
         } else if(packet.state == STATION_RELEASED &&
                   (g_station_work.phase == STATION_LINK_RELEASE ||
                    g_station_work.phase == STATION_LINK_DONE ||
-                   (g_station_work.phase==STATION_LINK_APPROACH && scan_cancel_pending))) {
+                   (g_station_work.phase==STATION_LINK_APPROACH && scan_cancel_pending) ||
+                   (station_work_can_skip_alignment() && scan_cancel_pending && packet.result==WORK_RESULT_SKIPPED))) {
+            if(g_station_work.phase==STATION_LINK_ALIGN) g_station_work.result=packet.result;
             g_station_work.phase = STATION_LINK_DONE;
             g_station_work.hold = false;
             g_station_work.returned=true;
@@ -377,7 +387,8 @@ void station_work_process(uint32_t now, bool healthy, bool stationary) {
        g_station_work.phase == STATION_LINK_READY) command.state = STATION_SYNC;
     else if(g_station_work.phase == STATION_LINK_APPROACH) command.state = STATION_APPROACH;
     else if(g_station_work.phase == STATION_LINK_ALIGN) {
-        command.state = STATION_ALIGN;command.result=realign_sequence;
+        command.state = scan_cancel_pending?STATION_RELEASE:STATION_ALIGN;
+        command.result=realign_sequence;
     }
     else if(g_station_work.phase == STATION_LINK_RELEASE ||
             g_station_work.phase == STATION_LINK_DONE) command.state = STATION_RELEASE;
