@@ -54,6 +54,7 @@ static DriveVelocity manual_target;
 static ChassisTrace trace;
 static ChassisTraceSample trace_sensor;
 static bool trace_recording, trace_was_active, trace_dumping, trace_header;
+static float strafe_yaw_ref;
 static uint32_t trace_dump_sequence, trace_dump_end, trace_dump_sent, trace_last_export;
 static unsigned trace_chunk_offset;
 static char trace_row[CHASSIS_TRACE_CSV_CAPACITY];
@@ -190,7 +191,10 @@ static bool remote_permit(void) {
     if(!rc_online) blockers |= BLOCK_RC_OFFLINE;
     else {
         if(!rc_switches) blockers |= BLOCK_RC_SWITCH;
-        if(!rc_centered && drive_source_requested(&rc_state) == DRIVE_SOURCE_HOST) blockers |= BLOCK_RC_STICK;
+        /* During a map run the switches retain stop and takeover authority. */
+        const bool map_in_progress=full_map.phase==MAP_RUNNING || full_map.phase==MAP_PAUSED;
+        if(!rc_centered && !map_in_progress && drive_source_requested(&rc_state) == DRIVE_SOURCE_HOST)
+            blockers |= BLOCK_RC_STICK;
     }
     return rc_online && rc_switches && rc_centered;
 }
@@ -454,6 +458,12 @@ static FullMapInput map_input(uint32_t now,StraightInput in) {
         m.work_active=g_station_work.phase==STATION_LINK_WORKING ||
             g_station_work.phase==STATION_LINK_RELEASE;
         m.work_align=g_station_work.phase==STATION_LINK_ALIGN;
+        m.work_can_skip_alignment=station_work_can_skip_alignment();
+        m.work_target_missing=g_station_work.visual_online && g_station_work.visual_dx==9999 &&
+            now-g_station_work.visual_sample_ms<=STATION_VISION_MAX_AGE_MS;
+        m.work_target_fresh=g_station_work.visual_online && g_station_work.visual_dx!=9999 &&
+            now-g_station_work.visual_sample_ms<=180u;
+        m.work_target_dx=g_station_work.visual_dx-STATION_VISION_CENTER_DX;
         m.work_alignment_fresh=station_work_alignment_fresh(now);
         m.work_centered=g_station_work.aligned;
         m.work_align_direction=g_station_work.align_direction;
@@ -576,6 +586,7 @@ static void commands(uint32_t now, StraightInput in) {
             } else ok = straight_command(&test, line, now, in);
             if(before == ST_ARMED && test.phase == ST_RUNNING) {
                 const ImuAngle a = imu.get_angle();
+                strafe_yaw_ref = a.yaw;
                 chassis_yaw_hold_set_target(a.yaw);
             }
             const char* command_name = !strncmp(line, "SPEED ", 6u) ? "SPEED" : !strncmp(line, "ACCEL ", 6u) ? "ACCEL" : !strncmp(line, "EDGE ", 5u) ? "EDGE" :
@@ -1009,10 +1020,12 @@ void straight_test_app_loop(void) {
                        station_work_begin_visual(full_map.target_tree,now,
                            full_map.route.segment[full_map.segment].line.end.x>
                            full_map.route.segment[full_map.segment].line.start.x)) full_map.work_request_pending=false;
-                    if(full_map.work_scan_ending) (void)station_work_cancel_scan();
+                    if(full_map.work_scan_ending || full_map.tree_alignment.skip_pending)
+                        (void)station_work_cancel_scan();
                 } else if(g_station_work.station!=full_map.target_tree && station_work_ready())
                     (void)station_work_begin(full_map.target_tree,now);
-                if(full_map.tree_hold_stable && now-full_map.tree_hold_ms>=200u) {
+                if(!full_map.tree_alignment.skip_pending && full_map.tree_hold_stable &&
+                   now-full_map.tree_hold_ms>=200u) {
                     if(g_station_work.phase==STATION_LINK_APPROACH)
                         (void)station_work_align(now,in.stationary);
                     else if(full_map.tree_alignment.ready)
@@ -1058,7 +1071,11 @@ void straight_test_app_loop(void) {
             const uint8_t previous_guard = test.guard_mask;
             uint16_t guards[4];
             straight_guard_limits(&test, in, guards);
-            straight_step(&test, now, in);
+            const float strafe_yaw_limit = straight_plan_row(test.plan) ? .026179939f : .087266463f;
+            if(straight_plan_lateral(test.plan) && test.phase == ST_RUNNING &&
+               fabsf(remainderf(imu.get_angle().yaw - strafe_yaw_ref, 6.283185307f)) > strafe_yaw_limit)
+                straight_fault(&test, "STRAFE_YAW");
+            else straight_step(&test, now, in);
             if(test.phase == ST_RUNNING && (was_laser_paused != test.laser_paused ||
                (!previous_guard && test.guard_mask))) {
                 log_info("TEST_PAUSE token=%lu result=%s laser_wait=%u guard_mask=0x%x stale_mask=0x%x x=%.3f vx=%.3f",
@@ -1105,7 +1122,8 @@ void straight_test_app_loop(void) {
         else if(host_active) {
             const ImuAngle a = imu.get_angle();
             const ImuGyro g = imu_get_gyro_corrected();
-            const float wz = chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, (float)control_dt_ms * 0.001f);
+            const float wz = straight_plan_lateral(test.plan) ? 0.0f :
+                chassis_yaw_hold_apply(test.speed_mps, test.lateral_mps, 0.0f, a.yaw, g.z, (float)control_dt_ms * 0.001f);
             if(chassis.set_velocity(test.speed_mps, test.lateral_mps, wz) != chassis.OK || chassis.process() != chassis.OK)
                 straight_fault(&test, "CHASSIS_CONTROL");
         } else if(!host_paused) {
@@ -1192,6 +1210,13 @@ void straight_test_app_loop(void) {
                 (double)full_map.hint.vx,(double)full_map.hint.vy,(double)full_map.hint.wz,
                 (double)full_map.motion.out.cross_error*1000,(double)full_map.motion.out.heading_error*57.295779513,
                 (double)full_map.entry.recovery_m*1000,(unsigned long)now);
+            if(full_map.phase==MAP_RUNNING)
+                log_info("TEST_MAP_YAW t_ms=%lu segment=%u error_deg=%.2f wz_cmd=%.4f wz_meas=%.4f deadband_deg=%.2f steer_ready=%u",
+                    (unsigned long)now,full_map.segment,
+                    (double)full_map.motion.out.heading_error*57.295779513,
+                    (double)full_map.command.wz,(double)imu_get_gyro_corrected().z,
+                    (double)full_map.motion.config.yaw_tolerance*57.295779513,
+                    (unsigned)chassis_drive_output_allowed());
             log_info("TEST_MAP_AISLE active=%u frozen=%u confirmations=%u front_mm=%u rear_mm=%u error_mm=%.1f correction_mm=%.1f surfaces=%lu,%lu centering=%u align=%u limit=%.3f reject=0x%x wall_mm=%.1f along=%.3f t_ms=%lu",
                 (unsigned)ac.active,(unsigned)ac.frozen,ac.confirmations,ac.front_mm,ac.rear_mm,
                 (double)ac.error_m*1000,(double)ac.correction_m*1000,
@@ -1203,6 +1228,22 @@ void straight_test_app_loop(void) {
     }
     if(now - last_log >= 100u) {
         last_log = now;
+        if(straight_plan_lateral(test.plan) && (test.phase == ST_RUNNING || test.phase == ST_STOPPING)) {
+            log_info("TEST_STRAFE t_ms=%lu token=%lu plan=%s phase=%u travel_m=%.3f cross_m=%.3f vy_cmd=%.3f vy_meas=%.3f yaw_delta_deg=%.3f wz_meas=%.4f",
+                (unsigned long)now, (unsigned long)test.token, straight_plan_name(test.plan), (unsigned)test.phase,
+                (double)test.distance_m, (double)test.cross_travel_m, (double)test.lateral_mps, (double)in.vy_mps,
+                (double)remainderf(imu.get_angle().yaw - strafe_yaw_ref, 6.283185307f)*57.295779513,
+                (double)imu_get_gyro_corrected().z);
+            if(straight_plan_row(test.plan)) {
+                const ChassisSteeringDiagnostic steer = chassis_get_steering_diagnostic();
+                log_info("TEST_ROW_WHEELS t_ms=%lu token=%lu gate=%u steer_error=%.4f,%.4f,%.4f,%.4f wheel_rad_s=%.3f,%.3f,%.3f,%.3f front_mm=%u rear_mm=%u",
+                    (unsigned long)now, (unsigned long)test.token, (unsigned)chassis_drive_output_allowed(),
+                    (double)steer.error_rad[0], (double)steer.error_rad[1], (double)steer.error_rad[2], (double)steer.error_rad[3],
+                    (double)trace_sensor.wheel_rad_s[0], (double)trace_sensor.wheel_rad_s[1],
+                    (double)trace_sensor.wheel_rad_s[2], (double)trace_sensor.wheel_rad_s[3],
+                    in.front_mm, in.rear_mm);
+            }
+        }
         const ImuAngle a = imu.get_angle();
         log_info("TEST_STATUS phase=%u token=%lu healthy=%u stopped=%u target_m=%.2f s=%.3f vx=%.3f cmd=%.3f yaw_deg=%.2f ref_deg=%.2f wz=%.4f blocked=%s result=%s control=%s",
             (unsigned)test.phase, (unsigned long)test.token, (unsigned)in.healthy, (unsigned)in.stationary,

@@ -516,12 +516,21 @@ static void test_alignment_hysteresis(void) {
     run_station(500, 1, 50, 0, 1, 1);
     assert(Vision_Online && g_station_work.online && !station_work_alignment_fresh(now_ms));
     assert(!station_work_start(now_ms, true));
+    run_station(200, 1, 4, 1, 1, 1);
+    run_station(200, 1, 0, 0, 1, 1);
+    assert(!g_station_work.aligned && !station_work_start(now_ms, true));
+    run_station(100, 1, -2, 1, 1, 1);
+    assert(g_station_work.aligned && !g_station_work.align_direction);
+    run_station(500, 1, 0, 0, 1, 1);
+    run_station(100, 1, -2, 1, 1, 1);
+    assert(!g_station_work.aligned && !station_work_start(now_ms, true));
     run_station(500, 1, 0, 1, 1, 1);
     assert(g_station_work.aligned && !g_station_work.align_direction);
     run_station(500, 1, STATION_VISION_STOP_PX, 1, 1, 1);
     assert(g_station_work.aligned && !g_station_work.align_direction);
     run_station(200, 1, 30, 1, 1, 1);
     assert(!g_station_work.aligned && g_station_work.align_direction == 1);
+    assert(!station_work_start(now_ms, true));
     run_station(100, 1, 31, 1, 1, 1);
     assert(!g_station_work.aligned && g_station_work.align_direction == 1);
     run_station(100, 1, -31, 1, 1, 1);
@@ -884,6 +893,18 @@ static void test_station_visual_trigger(void) {
     assert(station_work_cancel_scan());
     run_station(300,1, STATION_VISION_STOP_PX,1,1,1);
     assert(g_station_work.phase==STATION_LINK_DONE && starts==0);
+    reset_station(0);
+    assert(station_work_begin_visual(1,now_ms,true));
+    run_station(400,1,80,1,1,0);
+    run_station(100,1,STATION_VISION_STOP_PX,1,1,0);
+    assert(station_work_align(now_ms,true));
+    run_station(300,0,0,0,1,1);
+    assert(station_work_can_skip_alignment() && station_work_cancel_scan());
+    assert(!station_work_start(now_ms,true));
+    assert(g_station_work.phase==STATION_LINK_ALIGN && !g_station_work.returned);
+    run_station(300,0,0,0,1,1);
+    assert(g_station_work.phase==STATION_LINK_DONE && g_station_work.returned);
+    assert(g_station_work.result==WORK_RESULT_SKIPPED && starts==0);
     puts("VISUAL_SCAN_GATE_OK tree_or_gmg_slows_green_required_for_stop_passed_tree_no_work_scan_cancel_ack");
 }
 static void test_visual_acquisition_replay(void) {
@@ -893,7 +914,7 @@ static void test_visual_acquisition_replay(void) {
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(150,1,180*direction,1,1,0);
         run_station(100,0,120*direction,1,1,0); /* Brief missing green frame. */
-        run_station(150,1,-60*direction,1,1,0); /* Passed +/-30 during deceleration. */
+        run_station(300,1,-60*direction,1,1,0); /* Reconfirm GMG after the missing frame. */
         assert(g_station_work.stop_requested && starts==0);
         run_station(400,0,9999,1,1,0);
         assert(g_station_work.stop_requested && starts==0); /* Retain stop until alignment. */
@@ -913,8 +934,11 @@ static void test_visual_acquisition_replay(void) {
     assert(g_station_work.slow_requested && !g_station_work.stop_requested);
     run_station(100,0,-145,1,1,0);
     run_station(200,1,9999,1,1,0);
-    run_station(100,1,-20,1,1,0);
+    run_station(50,1,-20,1,1,0);
     run_station(200,1,9999,1,1,0);
+    assert(!g_station_work.stop_requested && starts==0);
+    run_station(100,1,-20,1,1,0);
+    run_station(100,1,9999,1,1,0);
     assert(g_station_work.stop_requested && starts==0 && Vision_TreeDX==9999);
     run_station(400,1,9999,1,1,1);
     assert(starts==0); /* Retained dx never authorizes a strike. */
@@ -954,9 +978,31 @@ static void test_visual_acquisition_replay(void) {
     puts("G6_SPARSE_TREE_REPLAY_OK both_directions_1s_tree_gap_continuous_gmg_parks_1500ms_expiry_no_80px_early_stop");
     puts("VISUAL_ACQUISITION_REPLAY_OK both_directions_brief_gap_passed_center_latched_stop_long_gap_reset");
 }
+
+static void test_station_consecutive_acquisition(void) {
+    reset_station(0);
+    assert(station_work_begin_visual(7,now_ms,true));
+    run_station(50,3,9999,1,1,0);
+    run_station(100,0,9999,1,1,0);
+    assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
+    run_station(50,0,20,1,1,0);
+    run_station(100,0,9999,1,1,0);
+    assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
+    run_station(300,3,100,1,1,0);
+    assert(g_station_work.slow_requested && !g_station_work.stop_requested);
+    run_station(50,3,20,1,1,0);
+    run_station(100,3,9999,1,1,0);
+    assert(!g_station_work.stop_requested);
+    run_station(50,3,15,1,1,0);
+    assert(!g_station_work.stop_requested);
+    run_station(100,3,-10,1,1,0);
+    assert(g_station_work.stop_requested && starts==0);
+    puts("STATION_CONSECUTIVE_ACQUISITION_OK isolated_tree_gmg_and_close_dx_do_not_latch");
+}
 static void test_station_empty_and_limits(void) {
     /* 定时方案没有编码器故障分支，先跑视觉获取/对中/返回对中/手动恢复四组回放。 */
     test_visual_acquisition_replay();
+    test_station_consecutive_acquisition();
     test_station_visual_trigger();
     test_station_realign_after_return();
     test_station_manual_recovery();
@@ -975,6 +1021,21 @@ static void test_station_empty_and_limits(void) {
     run_station(500,1,0,1,1,1);
     assert(starts==1 && g_station_work.phase==STATION_LINK_WORKING);
     puts("STATION_EMPTY_STOP_OK delayed_target_1500ms_strikes_empty_2s_SKIPPED_without_strike");
+    for (unsigned long_gap = 0; long_gap <= 1; ++long_gap) {
+        reset_station(0);
+        request_station(1, 0);
+        run_station(1550, 0, 0, 1, 1, 1);
+        run_station(long_gap ? 500 : 200, 0, 9999, 1, 1, 1);
+        assert(Vision_WorkState == VISION_WORK_CHECK && starts == 0);
+        run_station(160, 0, 0, 1, 1, 1);
+        assert(Vision_WorkState == VISION_WORK_CHECK);
+        run_station(650, 0, 0, 1, 1, 1);
+        if (long_gap) assert(Vision_WorkState == VISION_WORK_CHECK);
+        else assert(g_station_work.phase == STATION_LINK_DONE);
+        run_station(1300, 0, 0, 1, 1, 1);
+        assert(g_station_work.phase == STATION_LINK_DONE && starts == 0);
+    }
+    puts("STATION_EMPTY_RECHECK_GAP_OK short_gap_pauses_long_gap_resets");
     /* 同一区域连续 4 次定时打击后按次数上限放行，返回结束即放行。 */
     reset_station(0);
     request_station(2, 1);

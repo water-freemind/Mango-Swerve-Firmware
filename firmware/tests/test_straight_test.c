@@ -11,7 +11,51 @@ static void start(StraightTest* t, uint32_t now) {
     snprintf(cmd, sizeof(cmd), "GO %lu", (unsigned long)t->token);
     assert(straight_command(t, cmd, now, good));
 }
+static void lateral_test(bool row) {
+    const StraightInput clear = {.healthy=true, .stationary=true, .laser_fresh=true,
+        .left_mm=1600, .right_mm=1600, .front_mm=row ? 144 : 370, .rear_mm=row ? 153 : 1600};
+    const float limit = row ? .05f : .10f;
+    const float target = row ? .10f : .25f;
+    for(int direction=-1; direction<=1; direction+=2) {
+        StraightTest t;
+        StraightInput in = clear;
+        straight_init(&t, 0);
+        const char* arm = row ? (direction>0 ? "ARM ROWLEFT" : "ARM ROWRIGHT") :
+            (direction>0 ? "ARM LEFT" : "ARM RIGHT");
+        in.front_mm = row ? 139 : 249;
+        assert(!straight_command(&t, arm, 0, in));
+        in = clear;
+        assert(straight_command(&t, arm, 0, in));
+        in.laser_stale_mask = 1;
+        assert(!straight_command(&t, "GO 1", 0, in));
+        in = clear;
+        assert(straight_command(&t, "GO 1", 0, in));
+        for(uint32_t now=10; now<8000 && t.phase!=ST_DONE; now+=10) {
+            in.vy_mps = t.lateral_mps;
+            in.stationary = in.vy_mps == 0;
+            straight_step(&t, now, in);
+            assert(t.speed_mps == 0 && direction*t.lateral_mps >= 0 && fabsf(t.lateral_mps) <= limit);
+        }
+        assert(t.phase == ST_DONE && fabsf(t.distance_m-target) <= .0051f);
+        assert(!straight_command(&t, "GO 1", 8000, clear));
+        for(unsigned failure=0; failure<3; ++failure) {
+            straight_init(&t,0);
+            assert(straight_command(&t,arm,0,clear));
+            assert(straight_command(&t,"GO 1",0,clear));
+            straight_step(&t,10,clear);
+            in = clear;
+            if(failure==0) in.laser_fresh=false;
+            if(failure==1) in.healthy=false;
+            if(failure==2) in.front_mm=row ? 135 : 125;
+            straight_step(&t,20,in);
+            assert(t.phase == ST_FAULT && t.lateral_mps == 0);
+        }
+    }
+}
 int main(void) {
+    lateral_test(false);
+    lateral_test(true);
+    puts("STRAFE_OK open_and_row_both_directions_distance_stop_rc_laser_collision");
     StraightTest t;
     straight_init(&t, 0u);
     assert(t.max_speed_mps == 0.50f && t.accel_mps2 == 0.20f);

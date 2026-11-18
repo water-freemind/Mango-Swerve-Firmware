@@ -38,6 +38,7 @@ void station_work_process(uint32_t now, bool healthy, bool stationary);
 bool station_work_begin(uint8_t station, uint32_t now);
 bool station_work_begin_visual(uint8_t station, uint32_t now, bool east);
 bool station_work_cancel_scan(void);
+bool station_work_can_skip_alignment(void);
 bool station_work_start(uint32_t now, bool stationary);
 bool station_work_align(uint32_t now, bool stationary);
 bool station_work_alignment_fresh(uint32_t now);

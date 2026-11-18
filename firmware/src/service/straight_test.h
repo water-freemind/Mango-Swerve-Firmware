@@ -29,7 +29,8 @@
 #define STRAIGHT_TEST_SPEED_TRACKING_MARGIN_MPS 0.05f
 
 typedef enum { ST_IDLE, ST_ARMED, ST_RUNNING, ST_STOPPING, ST_DONE, ST_FAULT } StraightPhase;
-typedef enum { ST_PLAN_FWD, ST_PLAN_ROUND, ST_PLAN_WALL, ST_PLAN_APPROACH } StraightPlan;
+typedef enum { ST_PLAN_FWD, ST_PLAN_ROUND, ST_PLAN_WALL, ST_PLAN_APPROACH,
+    ST_PLAN_LEFT, ST_PLAN_RIGHT, ST_PLAN_ROWLEFT, ST_PLAN_ROWRIGHT } StraightPlan;
 typedef enum { ST_LEG_OUT, ST_LEG_WAIT, ST_LEG_BACK } StraightLeg;
 typedef struct {
     StraightPhase phase;
@@ -48,6 +49,7 @@ typedef struct {
     uint8_t laser_pause_mask, laser_recovery_frames;
     float max_speed_mps, target_m, distance_m, speed_mps, lateral_mps, outbound_m, right_ref_mm, right_filtered_mm;
     float accel_mps2;
+    float cross_travel_m;
     bool stopped_timing;
     const char* result;
 } StraightTest;
@@ -63,6 +65,8 @@ typedef struct {
     uint8_t laser_predicted_mask; /* Bounded odometry fallback; never a measured update. */
 } StraightInput;
 const char* straight_plan_name(StraightPlan plan);
+bool straight_plan_lateral(StraightPlan plan);
+bool straight_plan_row(StraightPlan plan);
 const char* straight_leg_name(StraightLeg leg);
 bool straight_laser_ready(StraightPlan plan, StraightInput input);
 bool straight_motion_laser_ready(const StraightTest* test, StraightInput input);
