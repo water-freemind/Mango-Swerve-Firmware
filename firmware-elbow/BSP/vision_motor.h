@@ -27,7 +27,7 @@
  * 本节区间参数用于底盘协同模式。独立测试只使用目标稳定、无目标确认参数。
  * 修改参数后需要重新编译和烧录。当前激光读数只参与显示。
  */
-#define WORK_DX_CENTER STATION_VISION_CENTER_DX // 调整相机位置后以0像素为对中目标。
+#define WORK_DX_CENTER STATION_VISION_CENTER_DX // 固定相机后以原始 dx=-22 像素为对中目标。
 #define WORK_SLOW_DX 100                  // 传统协同模式减速区间。
 #define WORK_VISUAL_BRAKE_DX 40           // 视觉接近到±40像素再平滑停车，停稳后用实时dx对中。
 #define WORK_VISUAL_ACQUIRE_HOLD_MS 1500U // Gmg持续存在时，短时保留已捕获树的接近资格。

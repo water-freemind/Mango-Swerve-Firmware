@@ -65,7 +65,7 @@ static inline uint8_t work_can_decode(const uint8_t data[8], WorkCanPacket* pack
 #define STATION_ENCODER_RETURN_FLAG 0x20u
 /* Diagnostic task packs signed dx in low 16 bits and frame sequence in high 16. */
 #define STATION_VISION_ONLINE_FLAG 0x10u
-#define STATION_VISION_CENTER_DX 0
+#define STATION_VISION_CENTER_DX (-22)
 #define STATION_VISION_STOP_PX 10
 #define STATION_VISION_RESTART_PX 30
 #define STATION_VISION_STABLE_MS 300u

@@ -618,7 +618,7 @@ static void test_station_stable_start(void) {
     assert(starts==1);
     puts("STRIKE_DX_GATE_OK minus_21_plus_11_block_plus_10_allows");
     reset_station(UINT32_MAX-300u);
-    assert(STATION_VISION_CENTER_DX==0 && WORK_DX_CENTER==0);
+    assert(STATION_VISION_CENTER_DX==-22 && WORK_DX_CENTER==-22);
     assert(station_work_begin(1,now_ms));
     run_station(100,1,0,1,1,1);
     assert(station_work_align(now_ms,true));
@@ -629,7 +629,7 @@ static void test_station_stable_start(void) {
     assert(!station_work_start(now_ms,true));
     run_station(20,1,0,1,1,1);
     assert(station_work_start(now_ms,true));
-    puts("STATION_STABLE_START_OK dx_zero_200ms_continuous_stop_restarts_after_noise_tick_wrap");
+    puts("STATION_STABLE_START_OK centered_200ms_continuous_stop_restarts_after_noise_tick_wrap");
 }
 static void test_alignment_detector_dropouts(void) {
     reset_station(0);
@@ -846,7 +846,7 @@ static void test_station_visual_trigger(void) {
         run_station(100,2,120*direction,1,1,0);
         run_station(150,3,-160*direction,1,1,0);
         assert(g_station_work.stop_requested && starts==0);
-        assert(g_station_work.visual_rx_count && g_station_work.visual_dx==-160*direction);
+        assert(g_station_work.visual_rx_count && g_station_work.visual_dx==STATION_VISION_CENTER_DX-160*direction);
         assert(g_station_work.visual_region==3 && g_station_work.visual_online);
         reset_station(0);
         assert(station_work_begin_visual(1,now_ms,!reverse));
