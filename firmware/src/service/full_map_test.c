@@ -12,6 +12,7 @@
 #define FULL_MAP_MIN_LASER_RANGE_M .095f
 #define FULL_MAP_ENTRY_APPROACH_M 1.50f
 #define NEAR_RECOVERY_TIME_MS 1500u
+#define NEAR_RECOVERY_STEER_MS 2800u
 #define NEAR_RECOVERY_SPEED_MPS .04f
 #define NEAR_RECOVERY_PATH_M .04f
 #define NEAR_RECOVERY_CLEAR_MM 110u
@@ -24,20 +25,46 @@
 #define WORK_VISION_MISSING_SKIP_MS 2500u
 #define WORK_VISION_SKIP_ACK_MS 1500u
 #define VISUAL_SURVEY_SPEED_MPS .45f
-#define VISUAL_NEAR_APPROACH_MPS .20f
+#define VISUAL_CLEAR_SURVEY_SPEED_MPS .50f
+#define VISUAL_GMG_APPROACH_MPS .20f
+#define VISUAL_CLEAR_GMG_APPROACH_MPS .24f
 #define VISUAL_TRACKED_APPROACH_MPS .22f
+#define VISUAL_CLEAR_TRACKED_APPROACH_MPS .26f
+#define VISUAL_NEAR_HOLD_MS 180u
 #define VISUAL_STOP_APPROACH_MPS .13f
 #define VISUAL_FINE_ADJUST_MPS .05f
-#define VISUAL_FAR_ADJUST_MPS .10f
+#define VISUAL_FAR_ADJUST_MPS .12f
+#define VISUAL_ALIGN_GAP_MS 200u
+#define VISUAL_ALIGN_GAP_MPS .04f
 #define SHIFT_CRUISE_CAP_MPS .28f
-#define SHIFT_CENTERED_CAP_MPS .32f
+#define SHIFT_CLEAR_CAP_MPS .30f
+#define SHIFT_CENTERED_CAP_MPS .36f
 #define SHIFT_CORRECTION_CAP_MPS .12f
 #define SHIFT_LOOKAHEAD_M .12f
+#define SHIFT_WALL_CORRECT_M .040f
+#define SHIFT_WALL_STOP_M .012f
+#define SHIFT_WALL_RESUME_M .022f
+#define SHIFT_WALL_BRAKE_MPS2 .10f
+#define SHIFT_WALL_DELAY_S .70f
+#define SHIFT_WALL_MAX_AGE_MS 200u
 #define SURVEY_ENTRY_CAP_MPS .22f
-#define SURVEY_ENTRY_TRACKED_CAP_MPS .26f
+#define SURVEY_ENTRY_TRACKED_CAP_MPS .30f
+#define AISLE_CAUTION_GAP_M .032f
+#define AISLE_CRUISE_GAP_M .020f
+#define AISLE_CRAWL_GAP_M .008f
+#define AISLE_MIN_OPPOSITE_GAP_M .040f
+#define AISLE_NEAR_SPEED_MPS .10f
+#define AISLE_RANGE_AGE_MS 200u
+#define AISLE_TRANSVERSE_GUARD_MM 150u
 #define G4_ENTRY_OFFSET_M .030f
 #define G4_ENTRY_CAP_MPS .12f
 #define SURVEY_TRACKING_YAW_TOLERANCE_RAD .013089969f /* 0.75 degrees */
+
+typedef struct {
+    uint8_t bit;
+    float outward, gap_m;
+    bool fresh;
+} ShiftWallClearance;
 
 static float speed_blend(float near,float far,float distance,float start,float end) {
     const float ratio=fmaxf(0,fminf(1,(distance-start)/(end-start)));
@@ -126,7 +153,7 @@ static bool begin(FullMapTest* m,uint32_t now) {
     if(m->segment==0u) line.end=m->route.segment[1].line.end;
     m->target_tree=0;
     const AutoRouteSegment route=m->route.segment[m->segment];
-    if(route.kind==AUTO_ROUTE_SHIFT || (route.kind==AUTO_ROUTE_SURVEY && route.row!=1u)) {
+    if(route.kind==AUTO_ROUTE_SURVEY && route.row!=1u) {
         c.lateral_min=.020f;c.wz_min=.040f;
     }
     if(route.kind==AUTO_ROUTE_SHIFT && m->segment+1u<AUTO_ROUTE_COUNT && m->route.segment[m->segment+1u].aisle==4u) {
@@ -151,7 +178,7 @@ static bool begin(FullMapTest* m,uint32_t now) {
             }
             const unsigned local=m->row_work_count==0u?0u:1u;
             m->target_tree=(uint8_t)((route.row-1u)*2u+(line.end.x>line.start.x?local:1u-local)+1u);
-            if(!m->visual_stop) m->visual_approach_limit=0;
+            if(!m->visual_stop) m->visual_approach_limit=m->visual_near_limit=0;
             if(m->visual_stop && !m->visual_braking) {
                 line.end.x=m->visual_stop_x;
                 if(fabsf(line.end.x-line.start.x)<.001f)
@@ -285,7 +312,7 @@ bool full_map_command(FullMapTest* m,const char* cmd,FullMapInput in) {
 }
 /* Optional paired ridge observation during horizontal aisle traversal. Empty
  * fields never match these short, opposing returns. Never modify raw ranges. */
-static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
+static void correct_aisle_position(FullMapTest* m,FullMapInput in,bool work_hold) {
     MapAisleCorrection* s=&m->aisle_correction;
     const AutoRouteSegment segment=m->route.segment[m->segment];
     const AutoPose pose=m->localization.pose.pose;
@@ -373,6 +400,7 @@ static void correct_aisle_position(FullMapTest* m,FullMapInput in) {
     if(!s->active) return;
     if(fabsf(s->error_m)>.035f) s->centering=true;
     else if(fabsf(s->error_m)<=.015f) s->centering=false;
+    if(work_hold) return; /* Relative ridge ranges monitor motion during a strike. */
     /* Limit observation corrections to 20mm/s and 2mm per fresh pair. The
      * existing motion controller then drives back toward the nominal aisle. */
     const float limit=fminf(.002f,.02f*fminf(elapsed*.001f,.2f));
@@ -394,6 +422,24 @@ interrupted:
     }
 invalid:
     s->active=s->centering=false;s->confirmations=s->pending_updates=0;s->error_m=s->correction_m=0;
+}
+static float work_ridge_displacement(FullMapTest* m,uint32_t now) {
+    const MapAisleCorrection* pair=&m->aisle_correction;
+    if(!pair->active || now-pair->sample_ms[0]>AISLE_RANGE_AGE_MS ||
+       now-pair->sample_ms[1]>AISLE_RANGE_AGE_MS)
+        return 0;
+    MapWorkRidgeReference* reference=&m->work_ridge;
+    if(!reference->front_surface) {
+        *reference=(MapWorkRidgeReference){.front_surface=pair->front_surface,
+            .rear_surface=pair->rear_surface,.front_mm=pair->front_mm,.rear_mm=pair->rear_mm};
+        return 0;
+    }
+    if(reference->front_surface!=pair->front_surface || reference->rear_surface!=pair->rear_surface)
+        return 0;
+    const int front=(int)pair->front_mm-reference->front_mm;
+    const int rear=(int)pair->rear_mm-reference->rear_mm;
+    /* A translation changes the two opposing ranges in opposite directions. */
+    return front*rear<0?fminf(abs(front),abs(rear))*.001f:0;
 }
 static void correct_boundary_cross(FullMapTest* m,FullMapInput in) {
     MapWallCorrection* s=&m->wall_correction;
@@ -611,30 +657,39 @@ static void bridge_far_survey_ray(FullMapTest* m,FullMapInput raw,FullMapInput i
     range->mask|=bit;m->odom_range_mask|=bit;
     if(m->along_speed_limit==0 || m->along_speed_limit>.15f) m->along_speed_limit=.15f;
 }
-/* Near readings suspend route travel, but a bounded translation away from the
- * obstacle may recover clearance. Never use predicted/median-only rays here.
- * The original deadline and measured path survive jitter and changing masks. */
-static bool near_recovery_step(FullMapTest* m,FullMapInput in,LaserSnapshot raw,bool pose_limited) {
+/* Recover by a bounded motion away from a real near return or a fresh,
+ * positive but insufficient side-fence gap during a transfer. */
+static bool near_recovery_step(FullMapTest* m,FullMapInput in,LaserSnapshot raw,bool pose_limited,
+    ShiftWallClearance wall,bool recover_wall,bool other_ranges_safe) {
     MapNearRecovery* r=&m->near_recovery;
-    if(!r->active && !m->range_near_mask) return false;
+    const bool probing_wall=!r->active && recover_wall;
+    if(!r->active && !m->range_near_mask && !recover_wall) return false;
     if(!r->active) {
         *r=(MapNearRecovery){.active=true,.start_ms=in.now,.last_ms=in.now,
-            .frame=raw.frame_count,.preparing=true};
-        m->phase=MAP_PAUSED;m->pause_ms=in.now;
-        auto_motion_cancel(&m->motion);
+            .frame=raw.frame_count,.preparing=true,.wall_mask=recover_wall?wall.bit:0};
+        if(!probing_wall) {
+            m->phase=MAP_PAUSED;m->pause_ms=in.now;
+            auto_motion_cancel(&m->motion);
+        }
     }
     r->mask|=m->range_near_mask;
+    const bool shift_wall=r->wall_mask!=0;
+    const uint8_t required_clear=(uint8_t)(r->mask|r->wall_mask);
     const float dt=(float)(in.now-r->last_ms)*.001f;r->last_ms=in.now;
     r->path_m+=hypotf(in.wheel.vx,in.wheel.vy)*dt;
     m->tree_hold_stable=false;m->stable=false;m->recovery_frames=0;m->recovery_updates=0;
-    m->reason="NEAR_RECOVERY_WAIT";
-    if(in.now-r->start_ms>=NEAR_RECOVERY_TIME_MS) {
-        full_map_stop(m,"NEAR_RECOVERY_TIMEOUT",false);return true;
+    m->reason=shift_wall?"SHIFT_WALL_RECOVERY_WAIT":"NEAR_RECOVERY_WAIT";
+    const uint32_t elapsed=r->move_started?in.now-r->move_ms:in.now-r->start_ms;
+    const uint32_t budget=r->steering_requested && !r->move_started?
+        NEAR_RECOVERY_STEER_MS:NEAR_RECOVERY_TIME_MS;
+    if(elapsed>=budget) {
+        full_map_stop(m,shift_wall?"SHIFT_WALL_RECOVERY_TIMEOUT":"NEAR_RECOVERY_TIMEOUT",false);return true;
     }
     if(r->path_m>=NEAR_RECOVERY_PATH_M) {
-        full_map_stop(m,"NEAR_RECOVERY_TRAVEL_LIMIT",false);return true;
+        full_map_stop(m,shift_wall?"SHIFT_WALL_RECOVERY_TRAVEL_LIMIT":"NEAR_RECOVERY_TRAVEL_LIMIT",false);return true;
     }
-    bool fresh=raw.frame_fresh,clear=true;
+    bool fresh=raw.frame_fresh && (!shift_wall || (wall.fresh && wall.bit==r->wall_mask));
+    bool clear=!shift_wall || wall.gap_m>SHIFT_WALL_RESUME_M;
     for(unsigned i=0;i<4u;++i) {
         const uint8_t bit=(uint8_t)(1u<<i);
         if(!(raw.valid_mask&bit) || raw.sample_age_ms[i]>200u) fresh=false;
@@ -645,18 +700,18 @@ static bool near_recovery_step(FullMapTest* m,FullMapInput in,LaserSnapshot raw,
     if(fresh && clear) {
         if(raw.frame_count!=r->frame) {
             r->frame=raw.frame_count;
-            for(unsigned i=0;i<4u;++i) if(r->mask&(1u<<i)) {
+            for(unsigned i=0;i<4u;++i) if(required_clear&(1u<<i)) {
                 const uint32_t source=in.now-raw.sample_age_ms[i];
                 const uint32_t advance=source-r->sample_ms[i];
                 if((raw.updated_mask&(1u<<i)) && advance && advance<0x80000000u) {
                     r->clear_updates|=(uint8_t)(1u<<i);r->sample_ms[i]=source;
                 }
             }
-            if((r->clear_updates&r->mask)==r->mask) {++r->clear_frames;r->clear_updates=0;}
+            if((r->clear_updates&required_clear)==required_clear) {++r->clear_frames;r->clear_updates=0;}
         }
         if(r->clear_frames>=2u) {
             *r=(MapNearRecovery){0};m->recovery_frame=raw.frame_count;
-            m->reason="NEAR_RECOVERY_CLEAR";
+            m->reason=shift_wall?"SHIFT_WALL_RECOVERY_CLEAR":"NEAR_RECOVERY_CLEAR";
             return false; /* Ordinary two-frame/200ms stopped recovery follows. */
         }
         r->preparing=true;r->prepared=false;return true;
@@ -665,11 +720,13 @@ static bool near_recovery_step(FullMapTest* m,FullMapInput in,LaserSnapshot raw,
     /* A station action, severe near return, conflicting obstacles, missing
      * telemetry or inadequate localization permits no autonomous escape. */
     bool allowed=fresh && !pose_limited && !in.work_active && !in.work_wait &&
-        fabsf(in.wheel.wz)<.02f && (r->mask&3u)!=3u && (r->mask&12u)!=12u;
+        (required_clear&3u)!=3u && (required_clear&12u)!=12u;
+    if(shift_wall && (!other_ranges_safe || r->mask || wall.gap_m<=0)) allowed=false;
+    const bool yaw_still=fabsf(in.wheel.wz)<.02f;
     for(unsigned i=0;i<4u;++i)
         if(raw.accepted_mm[i]<=NEAR_RECOVERY_HARD_MM) allowed=false;
-    AutoTwist escape={.vx=((r->mask&(1u<<AUTO_REAR))?1.0f:0)-((r->mask&(1u<<AUTO_FRONT))?1.0f:0),
-        .vy=((r->mask&(1u<<AUTO_RIGHT))?1.0f:0)-((r->mask&(1u<<AUTO_LEFT))?1.0f:0)};
+    AutoTwist escape={.vx=((required_clear&(1u<<AUTO_REAR))?1.0f:0)-((required_clear&(1u<<AUTO_FRONT))?1.0f:0),
+        .vy=((required_clear&(1u<<AUTO_RIGHT))?1.0f:0)-((required_clear&(1u<<AUTO_LEFT))?1.0f:0)};
     const float norm=hypotf(escape.vx,escape.vy);
     if(norm==0) allowed=false;
     else {escape.vx*=NEAR_RECOVERY_SPEED_MPS/norm;escape.vy*=NEAR_RECOVERY_SPEED_MPS/norm;}
@@ -686,24 +743,42 @@ static bool near_recovery_step(FullMapTest* m,FullMapInput in,LaserSnapshot raw,
         if(away>.0001f) needed_m=fmaxf(needed_m,
             fmaxf(0,(NEAR_RECOVERY_CLEAR_MM+5.0f-raw.accepted_mm[i])*.001f)/away);
     }
+    if(shift_wall) {
+        const float inward=-wall.outward*delta.x/NEAR_RECOVERY_SPEED_MPS;
+        if(inward<=.0001f) allowed=false;
+        else needed_m=fmaxf(needed_m,(SHIFT_WALL_RESUME_M+.005f-wall.gap_m)/inward);
+    }
     const float remaining=fminf(needed_m,fmaxf(0,NEAR_RECOVERY_PATH_M-r->path_m))/NEAR_RECOVERY_SPEED_MPS;
     for(unsigned step=0u;step<=8u;++step) {
         AutoPose next=p;next.x+=delta.x*remaining*(float)step/8.0f;next.y+=delta.y*remaining*(float)step/8.0f;
         if(!auto_route_pose_clear(&m->route,body,next,0)) allowed=false;
     }
-    if(!allowed) {r->preparing=true;r->prepared=false;return true;}
+    if(!allowed) {
+        /* Keep the ordinary range pause until there is a safe escape path. */
+        if(probing_wall) {*r=(MapNearRecovery){0};return false;}
+        r->preparing=true;r->prepared=false;return true;
+    }
+    if(probing_wall) {
+        m->phase=MAP_PAUSED;m->pause_ms=in.now;
+        auto_motion_cancel(&m->motion);
+    }
     if(fabsf(escape.vx-r->escape.vx)>.0001f || fabsf(escape.vy-r->escape.vy)>.0001f) {
         r->preparing=true;r->prepared=false;
     }
     r->escape=escape;
+    if(!yaw_still && !r->preparing) {r->preparing=true;r->prepared=false;}
     if(r->preparing) {
-        if(!in.stationary) return true;
-        m->hint=escape;m->reason="NEAR_RECOVERY_ALIGN";
+        if(!in.stationary) {r->prepared=false;return true;}
+        /* Steering on a soft floor can nudge yaw. Keep zero-drive wheel
+         * preparation available, then require settled yaw to start moving. */
+        r->steering_requested=true;
+        m->hint=escape;m->reason=shift_wall?"SHIFT_WALL_RECOVERY_ALIGN":"NEAR_RECOVERY_ALIGN";
         if(!r->prepared) {r->prepared=true;return true;}
-        if(!in.aligned) return true;
+        if(!in.aligned || !yaw_still) return true;
         r->preparing=false;
     }
-    m->command=m->hint=escape;m->reason="NEAR_RECOVERY_MOVE";
+    if(!r->move_started) {r->move_started=true;r->move_ms=in.now;}
+    m->command=m->hint=escape;m->reason=shift_wall?"SHIFT_WALL_RECOVERY_MOVE":"NEAR_RECOVERY_MOVE";
     return true;
 }
 static float endpoint_feedback(FullMapTest* m,FullMapInput in,const LaserSnapshot* observation) {
@@ -751,7 +826,41 @@ static AutoEnvelope shift_tolerance_body(AutoPose pose) {
     const float side=.155f-trim;
     return (AutoEnvelope){side,side,side,side};
 }
-static void map_cross_limits(const FullMapTest* m,FullMapInput in,AutoMotionInput* input) {
+
+static ShiftWallClearance shift_wall_clearance(const AutoRoute* route, AutoSegment line,
+    AutoPose pose, AutoEnvelope body, const LaserSnapshot* laser) {
+    const float east_fence=3.0f*route->scale;
+    const bool east=line.start.x>east_fence*.5f;
+    const unsigned channel=east?AUTO_RIGHT:AUTO_LEFT;
+    const float outward=east?1.0f:-1.0f;
+    const AutoVec2 normal=auto_rotate((AutoVec2){outward,0},-pose.yaw);
+    const float extent=auto_envelope_support(body,normal);
+    const float incidence=-outward*normal.y;
+    ShiftWallClearance wall={.bit=(uint8_t)(1u<<channel),.outward=outward,
+        .gap_m=(east?east_fence-pose.x:pose.x)-extent};
+    wall.fresh=laser->frame_fresh && (laser->valid_mask&wall.bit) &&
+        laser->sample_age_ms[channel]<=SHIFT_WALL_MAX_AGE_MS && incidence>=.95f;
+    if(wall.fresh) {
+        const float measured=(laser->accepted_mm[channel]*.001f+FIELD_POSE_LASER_ORIGIN_M)*incidence-extent;
+        wall.gap_m=fminf(wall.gap_m,measured);
+    }
+    return wall;
+}
+
+static bool aisle_range_fresh(const LaserSnapshot* laser,unsigned channel) {
+    return laser->frame_fresh && (laser->valid_mask&(1u<<channel)) &&
+        laser->sample_age_ms[channel]<=AISLE_RANGE_AGE_MS;
+}
+
+static float aisle_ray_gap(AutoPose pose,AutoEnvelope body,unsigned channel,uint16_t distance_mm) {
+    const float direction=channel==AUTO_FRONT?1.0f:-1.0f;
+    const AutoVec2 normal=auto_rotate((AutoVec2){0,direction},-pose.yaw);
+    return (distance_mm*.001f+FIELD_POSE_LASER_ORIGIN_M)*direction*normal.x-
+        auto_envelope_support(body,normal);
+}
+
+static void map_cross_limits(const FullMapTest* m,FullMapInput in,ShiftWallClearance wall,
+    AutoMotionInput* input) {
     const unsigned axis=fabsf(m->motion.segment.end.y-m->motion.segment.start.y)>
         fabsf(m->motion.segment.end.x-m->motion.segment.start.x)?0u:1u;
     float negative,positive;
@@ -764,6 +873,13 @@ static void map_cross_limits(const FullMapTest* m,FullMapInput in,AutoMotionInpu
     const float a=.45f,delay=.20f;
     negative=sqrtf(a*a*delay*delay+2*a*fmaxf(0,negative-.005f))-a*delay;
     positive=sqrtf(a*a*delay*delay+2*a*fmaxf(0,positive-.005f))-a*delay;
+    if(wall.bit) {
+        const float delay_speed=SHIFT_WALL_BRAKE_MPS2*SHIFT_WALL_DELAY_S;
+        const float space=fmaxf(0,wall.gap_m-SHIFT_WALL_STOP_M-.003f);
+        const float limit=wall.fresh?sqrtf(delay_speed*delay_speed+2*SHIFT_WALL_BRAKE_MPS2*space)-delay_speed:0;
+        if(wall.outward>0) positive=fminf(positive,limit);
+        else negative=fminf(negative,limit);
+    }
     if(axis==1u && m->aisle_correction.frozen) negative=positive=0;
     const float normal=axis==0u?m->motion.normal.x:m->motion.normal.y;
     input->cross_negative_limit=normal>=0?negative:positive;
@@ -773,14 +889,17 @@ static void map_cross_limits(const FullMapTest* m,FullMapInput in,AutoMotionInpu
     const bool g4_entry=route.aisle==4u && (m->g4_entry_offset ||
         route.line.start.x-m->localization.pose.pose.x<.60f);
     const bool visual_stop=m->visual_work && m->visual_stop && m->target_tree && in.work_enabled;
-    if(!g4_entry && !visual_stop) return;
-    /* Plan both transverse closing speeds through the staggered ends and
-     * their pair handoff. Use the same front limit at a visual work stop. */
+    const bool ridge_aisle=route.kind==AUTO_ROUTE_SURVEY && route.row!=0u;
+    if(!g4_entry && !visual_stop && !ridge_aisle) return;
+    /* Limit motion toward either short ray, even while its opposite face is
+     * still outside the pair observer's acquisition window. */
     const float yaw=m->localization.pose.pose.yaw;
     const float forward_normal=cosf(yaw)*m->motion.normal.x+sinf(yaw)*m->motion.normal.y;
     const float forward_along=cosf(yaw)*m->motion.tangent.x+sinf(yaw)*m->motion.tangent.y;
     const float along_closing=fabsf(forward_along)*m->motion.config.vmax;
-    for(unsigned ch=g4_entry?AUTO_REAR:AUTO_FRONT;ch<=AUTO_FRONT;++ch) {
+    for(unsigned ch=AUTO_REAR;ch<=AUTO_FRONT;++ch) {
+        const bool planned=g4_entry || (visual_stop && ch==AUTO_FRONT);
+        if(!planned && (!ridge_aisle || in.laser.accepted_mm[ch]>AISLE_TRANSVERSE_GUARD_MM)) continue;
         if(!(in.laser.valid_mask&(1u<<ch)) || in.laser.sample_age_ms[ch]>LASER_FRAME_TIMEOUT_MS) continue;
         const float available=fmaxf(0,in.laser.accepted_mm[ch]*.001f-FULL_MAP_MIN_LASER_RANGE_M-.010f);
         const float reaction=.55f+fminf(.30f,in.laser.sample_age_ms[ch]*.001f);
@@ -817,16 +936,20 @@ static bool refine_tree_position(FullMapTest* m,FullMapInput in) {
     if(in.now-a->started_ms>=12000u) {
         full_map_stop(m,"TREE_VISION_TIMEOUT",false);return true;
     }
-    if(!in.work_alignment_fresh || !in.work_align_direction || in.work_align_frame==a->frame)
+    if(!in.work_alignment_fresh || !in.work_align_direction || in.work_align_frame==a->frame ||
+       in.work_target_missing ||
+       (in.work_target_fresh && in.work_target_dx*in.work_align_direction<=STATION_VISION_STOP_PX))
         return true;
     a->frame=in.work_align_frame;
+    const bool new_pass=!a->steps || a->direction!=in.work_align_direction;
     a->direction=in.work_align_direction;
+    a->far_target_seen=false;
     const float travel=m->visual_work?.18f:.06f;
     a->target_x=a->nominal_x+travel*a->direction;
-    if(a->steps>=12u || fabsf(a->target_x-m->localization.pose.pose.x)<=.005f) {
+    if((new_pass && a->steps>=12u) || fabsf(a->target_x-m->localization.pose.pose.x)<=.005f) {
         full_map_stop(m,"TREE_VISION_TRAVEL_LIMIT",false);return true;
     }
-    ++a->steps;
+    if(new_pass) ++a->steps;
     m->tree_hold=false;
     if(!begin(m,in.now)) full_map_stop(m,"TREE_VISION_CONFIG",false);
     else m->reason="TREE_VISION_ADJUST";
@@ -853,8 +976,11 @@ static void finish_tree(FullMapTest* m,FullMapInput in,bool skipped) {
 
 void full_map_step(FullMapTest* m,FullMapInput in) {
     if(!m->initialized) full_map_init(m,in.now);
-    if(!in.work_enabled || !in.work_active || !m->tree_hold)
+    const bool work_hold=in.work_enabled && in.work_active && m->tree_hold;
+    if(!work_hold) {
         m->work_pose_excursion=false;
+        m->work_ridge=(MapWorkRidgeReference){0};
+    }
     const AutoTwist previous_command=m->command;
     m->command=m->hint=(AutoTwist){0};
     const LaserSnapshot raw_laser=in.laser;
@@ -887,7 +1013,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     for(unsigned i=0u;i<LASER_CHANNEL_COUNT;++i) {
         const uint8_t bit=(uint8_t)(1u<<i);
         if(((raw_laser.valid_mask&bit) && raw_laser.accepted_mm[i]<=NEAR_OBSERVATION_REJECT_MM) ||
-           (m->near_recovery.active && (m->near_recovery.mask&bit))) {
+           (m->near_recovery.active && ((m->near_recovery.mask|m->near_recovery.wall_mask)&bit))) {
             observation.valid_mask&=(uint8_t)~bit;
             observation.updated_mask&=(uint8_t)~bit;
         }
@@ -938,6 +1064,16 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     if(m->phase!=MAP_RUNNING&&m->phase!=MAP_PAUSED) return;
     const bool visual_alignment=in.work_enabled && in.work_align && m->tree_alignment.active &&
         m->tree_alignment.station==m->target_tree;
+    MapTreeAlignment* tree=&m->tree_alignment;
+    if(visual_alignment && in.work_target_fresh) {
+        tree->far_target_seen=in.work_alignment_fresh &&
+            in.work_align_direction==tree->direction && in.work_target_dx*tree->direction>45;
+        tree->far_target_ms=in.work_target_sample_ms;
+    }
+    const bool visual_gap=visual_alignment && !m->tree_hold && in.work_online &&
+        in.work_target_missing && !in.work_target_fresh && tree->far_target_seen &&
+        in.now-tree->far_target_ms<=VISUAL_ALIGN_GAP_MS &&
+        (!in.work_align_direction || in.work_align_direction==tree->direction);
     if(visual_alignment && m->tree_alignment.ready && !in.work_centered) {
         m->tree_alignment.started_ms=in.now;m->tree_alignment.steps=0;
         m->tree_alignment.ready=false;
@@ -981,7 +1117,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     if(m->phase==MAP_PAUSED && m->user_hold) {m->reason="USER_PAUSE";return;}
     FullMapInput correction_input=in;
     correction_input.laser=observation;
-    correct_aisle_position(m,correction_input);
+    correct_aisle_position(m,correction_input,work_hold);
     correct_boundary_cross(m,correction_input);
     if(m->g4_entry_offset) {
         const float entered=m->route.segment[m->segment].line.start.x-m->localization.pose.pose.x;
@@ -993,12 +1129,26 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             in.laser.accepted_mm[AUTO_FRONT]>600u && in.laser.accepted_mm[AUTO_REAR]>600u;
         if(m->aisle_correction.active || open) m->g4_entry_offset=false;
     }
-    if(paired_aisle && m->aisle_correction.active &&
-       fabsf(m->aisle_correction.error_m)<=.020f &&
-       fabsf(auto_wrap_angle(m->localization.pose.pose.yaw-1.570796327f))<=.034906585f)
-        m->aisle_entry_qualified=true;
     if(in.now-m->run_ms>900000u||in.now-m->segment_ms>180000u) {full_map_stop(m,"RUN_TIMEOUT",false);return;}
     const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    const AutoPose pose=m->localization.pose.pose;
+    float aisle_gap[2]={INFINITY,INFINITY};
+    if(paired_aisle && !in.work_active &&
+       fabsf(auto_wrap_angle(pose.yaw-m->route.segment[m->segment].line.heading))<=.13962634f) {
+        for(unsigned ch=AUTO_REAR;ch<=AUTO_FRONT;++ch)
+            if(aisle_range_fresh(&raw_laser,ch))
+                aisle_gap[ch-AUTO_REAR]=aisle_ray_gap(pose,body,ch,raw_laser.accepted_mm[ch]);
+    }
+    const float closest_aisle_gap=fminf(aisle_gap[0],aisle_gap[1]);
+    const bool aisle_clear=isfinite(aisle_gap[0]) && isfinite(aisle_gap[1]) &&
+        closest_aisle_gap>=AISLE_CRUISE_GAP_M;
+    const bool aisle_near_unpaired=!m->aisle_correction.active && closest_aisle_gap<AISLE_CAUTION_GAP_M;
+    const bool aisle_tight=closest_aisle_gap<=AISLE_CRAWL_GAP_M;
+    if(aisle_near_unpaired || aisle_tight) m->aisle_entry_qualified=false;
+    else if(aisle_clear && m->aisle_correction.active &&
+       fabsf(m->aisle_correction.error_m)<=.020f &&
+       fabsf(auto_wrap_angle(pose.yaw-1.570796327f))<=.034906585f)
+        m->aisle_entry_qualified=true;
     const AutoSegment seg=m->motion.initialized?m->motion.segment:m->route.segment[m->segment].line;
     if(!auto_route_pose_clear(&m->route,body,m->localization.pose.pose,0)) {
         const AutoPose pose=m->localization.pose.pose;
@@ -1028,6 +1178,8 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         margin_limited=!auto_route_pose_clear(&m->route,body,preview,.015f);
     }
     m->along_speed_limit=margin_limited?.05f:0;
+    const ShiftWallClearance exterior=shift_leg?
+        shift_wall_clearance(&m->route,seg,m->localization.pose.pose,body,&raw_laser):(ShiftWallClearance){0};
     LaserPredictionOutput range=laser_prediction_step(&m->prediction,&in.laser,in.now,
         in.wheel.vx,in.wheel.vy,in.imu_yaw,m->phase==MAP_RUNNING);
     /* A rejected fresh return is not a new anchor for the legacy dropout
@@ -1128,15 +1280,21 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         (!m->entry.north_confirmed || in.now-m->localization.constrained_ms[1]>500u);
     uint8_t required=0;bool safe=!pose_limited && !entry_needs_north;
     float range_speed=segment_speed(m);
+    const MapAisleCorrection* pair=&m->aisle_correction;
+    const bool clear_aisle=paired_aisle && m->aisle_entry_qualified && !m->g4_entry_offset &&
+        !margin_limited && pair->active && !pair->frozen &&
+        closest_aisle_gap>=AISLE_CAUTION_GAP_M && aisle_clear && fabsf(pair->error_m)<=.018f &&
+        fabsf(auto_wrap_angle(current.yaw-seg.heading))<=.034906585f;
     if(shift_leg) {
         const float shift_cross=fabsf(current.x-seg.start.x);
         const float shift_yaw=fabsf(auto_wrap_angle(current.yaw-seg.heading));
         const MapWallCorrection* wall=&m->wall_correction;
-        float cruise=SHIFT_CRUISE_CAP_MPS;
+        float cruise=exterior.fresh && exterior.gap_m>=.032f && !margin_limited?
+            SHIFT_CLEAR_CAP_MPS:SHIFT_CRUISE_CAP_MPS;
         AutoPose preview=current;
         const float remaining=seg.end.y-current.y;
         preview.y+=copysignf(fminf(fabsf(remaining),.20f),remaining);
-        if(!margin_limited && wall->active && wall->axis==0u &&
+        if(!margin_limited && exterior.fresh && exterior.gap_m>=.035f && wall->active && wall->axis==0u &&
            in.now-wall->sample_ms<=200u && fabsf(wall->error_m)<=.012f &&
            shift_cross<=.012f && shift_yaw<=.034906585f &&
            auto_route_pose_clear(&m->route,body,current,.03f) &&
@@ -1144,24 +1302,54 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             cruise=SHIFT_CENTERED_CAP_MPS;
         const float cross_cap=speed_blend(cruise,SHIFT_CORRECTION_CAP_MPS,shift_cross,.012f,.035f);
         const float yaw_cap=speed_blend(cruise,SHIFT_CORRECTION_CAP_MPS,shift_yaw,.034906585f,.087266463f);
-        range_speed=fminf(range_speed,fminf(cross_cap,yaw_cap));
+        const float wall_cap=speed_blend(.05f,cruise,exterior.gap_m,SHIFT_WALL_STOP_M,SHIFT_WALL_CORRECT_M);
+        range_speed=fminf(range_speed,fminf(wall_cap,fminf(cross_cap,yaw_cap)));
     }
     if(paired_aisle && !m->aisle_entry_qualified) {
         const AutoSegment row=m->route.segment[m->segment].line;
-        const float distance=(current.x-row.start.x)*copysignf(1,row.end.x-row.start.x);
-        const MapAisleCorrection* pair=&m->aisle_correction;
-        const bool tracking=!margin_limited && pair->confirmations>=2u &&
+        const bool tracking=aisle_clear && !margin_limited && pair->confirmations>=2u &&
             in.now-pair->sample_ms[0]<=200u && in.now-pair->sample_ms[1]<=200u &&
             fabsf(pair->error_m)<=.012f && fabsf(current.y-row.start.y)<=.020f &&
             fabsf(auto_wrap_angle(current.yaw-row.heading))<=.034906585f &&
             auto_route_pose_clear(&m->route,body,current,.03f);
-        const float entry_speed=tracking?SURVEY_ENTRY_TRACKED_CAP_MPS:SURVEY_ENTRY_CAP_MPS;
-        const float entry_cap=speed_blend(entry_speed,range_speed,distance,.30f,.50f);
-        range_speed=fminf(range_speed,entry_cap);
+        /* A lost pair must never release the cap just because the chassis
+         * passed the nominal end of the entrance zone. */
+        range_speed=fminf(range_speed,tracking?SURVEY_ENTRY_TRACKED_CAP_MPS:SURVEY_ENTRY_CAP_MPS);
+    }
+    /* A raw return at the body edge takes priority over the pair's short
+     * dropout lease. Keep enough time for correction before the hard stop. */
+    if(aisle_tight) range_speed=fminf(range_speed,AISLE_NEAR_SPEED_MPS);
+    float aisle_entry_cross=0;
+    if(aisle_near_unpaired && !m->visual_stop && !m->tree_hold) {
+        const bool front_close=aisle_gap[1]<aisle_gap[0];
+        const unsigned channel=front_close?AUTO_FRONT:AUTO_REAR;
+        const unsigned opposite=front_close?AUTO_REAR:AUTO_FRONT;
+        const float nearest=aisle_gap[channel-AUTO_REAR];
+        const float opposite_gap=aisle_gap[opposite-AUTO_REAR];
+        const float crawl=fminf(range_speed,AISLE_NEAR_SPEED_MPS);
+        range_speed=speed_blend(crawl,range_speed,nearest,AISLE_CRAWL_GAP_M,AISLE_CAUTION_GAP_M);
+        /* Steer away after the independent median agrees and the opposite
+         * raw ray is clear. The confirmed pair owns correction when active. */
+        if(isfinite(opposite_gap) && opposite_gap>=AISLE_MIN_OPPOSITE_GAP_M &&
+           (raw_laser.median_valid_mask&(1u<<channel)) &&
+           raw_laser.median_age_ms[channel]<=LASER_FRAME_TIMEOUT_MS) {
+            const float median_gap=aisle_ray_gap(current,body,channel,raw_laser.median_mm[channel]);
+            const float confirmed_gap=fmaxf(nearest,median_gap);
+            if(confirmed_gap<AISLE_CAUTION_GAP_M)
+                aisle_entry_cross=copysignf(fminf(.040f,1.5f*(AISLE_CAUTION_GAP_M-confirmed_gap)),
+                    front_close?1.0f:-1.0f);
+        }
     }
     if(m->g4_entry_offset) range_speed=fminf(range_speed,G4_ENTRY_CAP_MPS);
     if(park_leg) range_speed=fminf(range_speed,speed_blend(.15f,.20f,to_end/len,.20f,.45f));
-    if(m->visual_work && m->target_tree) range_speed=fminf(range_speed,VISUAL_SURVEY_SPEED_MPS);
+    if(paired_aisle && m->route.segment[m->segment].aisle==6u) {
+        /* The westbound ray in G6 stayed far until a short return at x=.67m.
+         * Brake before reaching that blind portion, even with a far reading. */
+        const float exit_gap=current.x-m->route.segment[m->segment].line.end.x;
+        range_speed=fminf(range_speed,speed_blend(.10f,range_speed,exit_gap,.55f,.95f));
+    }
+    const float survey_cap=clear_aisle?VISUAL_CLEAR_SURVEY_SPEED_MPS:VISUAL_SURVEY_SPEED_MPS;
+    if(m->visual_work && m->target_tree) range_speed=fminf(range_speed,survey_cap);
     /* Side-corridor Y is odometry until the ridge pair is actually visible.
      * Acquire a centered pair before accelerating through the first tree leg.
      * Keep qualification through ordinary producer gaps and later tree stops. */
@@ -1169,25 +1357,32 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         range_speed=fminf(range_speed,.15f);
     if(visual_alignment) {
         float adjust=VISUAL_FINE_ADJUST_MPS;
+        /* Start tapering while there is room for another camera/drive
+         * interval. A late taper overshoots the 10px band and reverses. */
         if(in.work_target_fresh && in.work_target_dx*in.work_align_direction>0)
             adjust=speed_blend(VISUAL_FINE_ADJUST_MPS,VISUAL_FAR_ADJUST_MPS,
                 fabsf((float)in.work_target_dx),16.0f,45.0f);
-        range_speed=fminf(range_speed,adjust);
+        range_speed=fminf(range_speed,visual_gap?VISUAL_ALIGN_GAP_MPS:adjust);
     }
     if(in.work_enabled && m->target_tree && in.work_station==m->target_tree) {
         if(m->visual_work && !m->visual_stop && !in.work_done) {
-            float approach=VISUAL_SURVEY_SPEED_MPS;
+            float approach=survey_cap;
             bool close_target=false;
-            const float near=fminf(VISUAL_NEAR_APPROACH_MPS,m->approach_speed);
             if(in.work_slow) {
-                approach=near;
+                approach=fminf(clear_aisle?VISUAL_CLEAR_GMG_APPROACH_MPS:VISUAL_GMG_APPROACH_MPS,m->approach_speed);
                 const float ahead_px=in.work_target_dx*m->motion.tangent.x;
                 if(in.work_target_fresh && ahead_px>=-40.0f) {
-                    const float tracked=fminf(VISUAL_TRACKED_APPROACH_MPS,m->approach_speed);
+                    const float tracked=fminf(clear_aisle?VISUAL_CLEAR_TRACKED_APPROACH_MPS:VISUAL_TRACKED_APPROACH_MPS,m->approach_speed);
+                    const float stop=fminf(VISUAL_STOP_APPROACH_MPS,tracked);
                     close_target=ahead_px<80.0f;
-                    approach=close_target?
-                        speed_blend(VISUAL_STOP_APPROACH_MPS,tracked,ahead_px,40.0f,80.0f):
+                    approach=close_target?speed_blend(stop,tracked,ahead_px,40.0f,80.0f):
                         speed_blend(tracked,fminf(.30f,m->approach_speed),ahead_px,80.0f,130.0f);
+                    m->visual_near_limit=close_target?approach:0;
+                    m->visual_near_ms=in.now;
+                } else if(m->visual_near_limit>0 && in.now-m->visual_near_ms<=VISUAL_NEAR_HOLD_MS) {
+                    /* Do not accelerate through a near tree during a short
+                     * loss of dx. The held cap grants no alignment evidence. */
+                    approach=m->visual_near_limit;
                 }
             }
             if(m->visual_approach_limit==0) m->visual_approach_limit=approach;
@@ -1258,11 +1453,31 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         if(!in.laser.frame_fresh||!((in.laser.valid_mask|range.mask)&bit)) {m->range_stale_mask|=bit;safe=false;continue;}
         if(range.mm[i]*.001f<=budget) {m->range_brake_mask|=bit;safe=false;}
     }
+    const bool other_ranges_safe=safe;
+    bool recover_wall=false;
+    if(exterior.bit) {
+        const AutoVec2 wheel_map=auto_rotate((AutoVec2){in.wheel.vx,in.wheel.vy},current.yaw);
+        const AutoVec2 command_map=auto_rotate((AutoVec2){previous_command.vx,previous_command.vy},current.yaw);
+        const float closing=fmaxf(0,fmaxf(exterior.outward*wheel_map.x,exterior.outward*command_map.x));
+        const bool resuming=m->phase==MAP_PAUSED;
+        const float stopping_gap=SHIFT_WALL_STOP_M+SHIFT_WALL_DELAY_S*closing+
+            closing*closing/(2*SHIFT_WALL_BRAKE_MPS2);
+        const float required_gap=resuming?fmaxf(SHIFT_WALL_RESUME_M,stopping_gap):stopping_gap;
+        if(exterior.gap_m<=SHIFT_WALL_CORRECT_M || resuming) {
+            required|=exterior.bit;
+            if(!exterior.fresh) {m->range_stale_mask|=exterior.bit;safe=false;}
+        }
+        if(exterior.gap_m<=required_gap) {
+            recover_wall=other_ranges_safe && exterior.fresh && !in.work_active && !in.work_wait &&
+                exterior.gap_m>0 && exterior.gap_m<=SHIFT_WALL_RESUME_M;
+            m->range_brake_mask|=exterior.bit;safe=false;
+        }
+    }
     if(m->required_mask!=required) {
         m->recovery_frames=0;m->recovery_updates=0;m->stable=false;
     }
     m->required_mask=required;
-    if(near_recovery_step(m,in,raw_laser,pose_limited||entry_needs_north)) return;
+    if(near_recovery_step(m,in,raw_laser,pose_limited||entry_needs_north,exterior,recover_wall,other_ranges_safe)) return;
     if(!safe) {
         m->tree_hold_stable=false;
         if(m->phase!=MAP_PAUSED) {
@@ -1292,7 +1507,9 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             m->recovery_frame=in.laser.frame_count;
             /* A repeated median is fresh but adds no independent evidence.
              * Retain earlier clear samples while the next required rays advance. */
-            m->recovery_updates|=(uint8_t)(in.laser.updated_mask&required);
+            const uint8_t updated=(uint8_t)((in.laser.updated_mask&~exterior.bit)|
+                (raw_laser.updated_mask&exterior.bit));
+            m->recovery_updates|=(uint8_t)(updated&required);
             if((m->recovery_updates&required)==required) {
                 ++m->recovery_frames;m->recovery_updates=0;
             }
@@ -1303,7 +1520,6 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         if(!begin(m,in.now)) {full_map_stop(m,"MOTION_CONFIG",false);return;}
         m->phase=MAP_RUNNING;m->reason="RESUMED";
     }
-    MapTreeAlignment* tree=&m->tree_alignment;
     if(tree->skip_pending) {
         m->reason="TREE_VISION_SKIP_WAIT";
         if(in.work_station==m->target_tree && in.work_done && in.work_result==WORK_RESULT_SKIPPED && in.stationary)
@@ -1329,10 +1545,10 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         if(in.work_enabled && in.work_active) {
             const AutoPose pose=m->localization.pose.pose;
             const AutoVec2 target=m->motion.segment.end;
-            const float distance=fmaxf(fabsf(pose.x-target.x),fabsf(pose.y-target.y));
+            const float position_delta=fmaxf(fabsf(pose.x-target.x),fabsf(pose.y-target.y));
+            const float distance=fmaxf(position_delta,work_ridge_displacement(m,in.now));
             const float yaw=fabsf(auto_wrap_angle(pose.yaw-m->motion.segment.heading));
-            const bool displaced=distance>.03f || yaw>m->motion.config.finish_yaw_tolerance ||
-                (m->aisle_correction.active && m->aisle_correction.centering);
+            const bool displaced=distance>.03f || yaw>m->motion.config.finish_yaw_tolerance;
             if(displaced) {
                 if(!m->work_pose_excursion) {
                     m->work_pose_excursion=true;
@@ -1346,7 +1562,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             }
             m->work_pose_excursion=false;
         }
-        if(m->aisle_correction.active && m->aisle_correction.centering) {
+        if(!work_hold && m->aisle_correction.active && m->aisle_correction.centering) {
             m->tree_hold=m->tree_hold_stable=false;
             if(!begin(m,in.now))
                 full_map_stop(m,"TREE_RECENTER_FAILED",false);
@@ -1400,14 +1616,23 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     input.endpoint_stop_tolerance=m->target_tree && !m->visual_work && !visual_alignment?.015f:0;
     input.stop_requested=m->visual_braking;
     if(visual_alignment) {
-        input.stop_requested=!in.work_alignment_fresh || in.work_centered || !in.work_align_direction ||
-            in.work_align_direction!=m->tree_alignment.direction;
-        m->tree_alignment.ready=false;
+        input.stop_requested=in.work_centered ||
+            (!visual_gap && (!in.work_alignment_fresh || !in.work_align_direction ||
+                            in.work_align_direction!=tree->direction || in.work_target_missing)) ||
+            (in.work_target_fresh && in.work_target_dx*tree->direction<=STATION_VISION_STOP_PX);
+        tree->ready=false;
     }
-    /* In a tight shift corridor, recover toward the route center using the
-     * fused pose. A changing ridge-end wall reference must not steer inward. */
-    const float cross=shift_leg?
-        m->localization.pose.pose.x-seg.start.x:continuous_cross_feedback(m,in,&seg);
+    float cross=shift_leg?current.x-seg.start.x:continuous_cross_feedback(m,in,&seg);
+    if(shift_leg && exterior.fresh && exterior.gap_m<SHIFT_WALL_CORRECT_M) {
+        /* A short exterior ray can warn ahead of the rate-limited pose fix.
+         * Bias correction inwards while the opposite ridge still bounds it. */
+        const float wall_error=fminf(.06f,SHIFT_WALL_CORRECT_M-exterior.gap_m);
+        cross=exterior.outward*fmaxf(exterior.outward*cross,wall_error);
+    }
+    if(aisle_entry_cross>0) cross=fmaxf(cross,aisle_entry_cross);
+    else if(aisle_entry_cross<0) cross=fminf(cross,aisle_entry_cross);
+    if(shift_leg)
+        m->motion.config.cross_kp=speed_blend(3.2f,3.5f,fabsf(cross),.025f,.040f);
     if(paired_aisle && !m->tree_alignment.active) {
         const bool first_row=m->route.segment[m->segment].row==1u;
         const bool acquiring=!m->aisle_entry_qualified && !m->aisle_correction.centering;
@@ -1422,7 +1647,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     if(fabsf(seg.end.y-seg.start.y)>fabsf(seg.end.x-seg.start.x)) input.pose.pose.x=seg.start.x+cross;
     else input.pose.pose.y=seg.start.y+cross;
     if(m->endpoint.active && !visual_alignment && !m->visual_work) input.pose.pose.x=endpoint_x;
-    map_cross_limits(m,raw_input,&input);
+    map_cross_limits(m,raw_input,exterior,&input);
     if(m->aisle_correction.active) {
         /* Feed the confirmed, filtered pair into continuous cross correction.
          * The separately rate-limited fused pose remains the map/envelope state. */

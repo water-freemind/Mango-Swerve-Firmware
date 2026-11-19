@@ -3,6 +3,9 @@
 #include "vision_motor.h"
 #include "work_can.h"
 #include "can_test.h"
+#include "car_button_protocol.h"
+static unsigned car_transmits;
+static uint8_t car_last_packet[8];
 #include "work_link.h"
 #include "work_config.h"
 #include "station_work.h"
@@ -57,7 +60,8 @@ Can3BusStatus can3_bus_send(uint16_t id, const uint8_t* data, uint8_t len) {
 int HAL_CAN_ConfigFilter(CAN_HandleTypeDef* can, CAN_FilterTypeDef* f) {
     (void)can;
     assert((f->FilterBank == 14 && f->FilterIdHigh == WORK_CAN_REPLY_ID << 5) ||
-           (f->FilterBank == 15 && f->FilterIdHigh == CAN_LASER_ID << 5));
+           (f->FilterBank == 15 && f->FilterIdHigh == CAN_LASER_ID << 5) ||
+           (f->FilterBank == 16 && f->FilterIdHigh == 0x613u << 5));
     assert(f->FilterMaskIdLow == 6 && f->FilterMaskIdHigh == 0x7FFu << 5);
     return HAL_OK;
 }
@@ -84,6 +88,10 @@ int HAL_CAN_GetRxMessage(CAN_HandleTypeDef* can, uint32_t fifo, CAN_RxHeaderType
 int HAL_CAN_AddTxMessage(CAN_HandleTypeDef* can, CAN_TxHeaderTypeDef* h, uint8_t* data, uint32_t* box) {
     Can3Frame frame = {0};
     (void)can;
+    if(h->StdId==CAR_REQUEST_ID) {
+        assert(h->DLC==8 && car_valid(data));
+        memcpy(car_last_packet,data,8);car_transmits++;*box=1;return HAL_OK;
+    }
     assert(h->StdId == WORK_CAN_REQUEST_ID && h->DLC == 8);
     *box = 1;
     last_tx_time = now_ms;
@@ -980,6 +988,45 @@ static void test_visual_acquisition_replay(void) {
     puts("VISUAL_ACQUISITION_REPLAY_OK both_directions_brief_gap_passed_center_latched_stop_long_gap_reset");
 }
 
+static void test_station_g2_brake_hold(void) {
+    const unsigned gap_ms[]={1u,65u,47u,44u,69u};
+    const int dx[]={-39,-8,9999,43,9999};
+    for(unsigned drop_first=0;drop_first<=1u;++drop_first) {
+        reset_station(0);
+        assert(station_work_begin_visual(3,now_ms,false));
+        run_station(150,0,-75,1,1,0);
+        /* G2 westbound, the five GMG frames took 225ms in the field. */
+        for(unsigned frame=0;frame<5u;++frame) {
+            run_station_period(gap_ms[frame]-1u,0,9999,0,1,0,1u);
+            char report[40];
+            const int raw=drop_first && frame==0?9999:dx[frame];
+            const int size=snprintf(report,sizeof(report),"$VIS,2,%d\r\n",raw);
+            Vision_Motor_Receive((const uint8_t*)report,(uint16_t)size);
+            run_station_period(1,0,9999,0,1,0,1u);
+        }
+        run_station(100,0,9999,0,1,0);
+        assert(g_station_work.stop_requested==!drop_first && starts==0);
+        if(drop_first) continue;
+        assert(!station_work_align(now_ms,false));
+        assert(station_work_align(now_ms,true));
+        run_station(200,2,9999,1,1,1);
+        assert(!station_work_start(now_ms,true) && starts==0);
+        run_station(450,2,0,1,1,1);
+        assert(station_work_start(now_ms,true));
+        run_station(400,2,0,1,1,1);
+        assert(starts==1);
+    }
+    reset_station(0);
+    assert(station_work_begin_visual(3,now_ms,false));
+    run_station(100,0,-20,1,1,0);
+    run_station(300,0,9999,1,1,0);
+    run_station(400,2,9999,1,1,0);
+    assert(!g_station_work.stop_requested && starts==0);
+    run_station(300,2,100,1,1,0);
+    assert(!g_station_work.stop_requested && starts==0);
+    puts("G2_SPARSE_BRAKE_REPLAY_OK stop_held_225ms_single_outlier_expired_and_passed_rejected_fresh_center_required");
+}
+
 static void test_station_consecutive_acquisition(void) {
     reset_station(0);
     assert(station_work_begin_visual(7,now_ms,true));
@@ -1004,6 +1051,7 @@ static void test_station_empty_and_limits(void) {
     /* 定时方案没有编码器故障分支，先跑视觉获取/对中/返回对中/手动恢复四组回放。 */
     test_visual_acquisition_replay();
     test_station_consecutive_acquisition();
+    test_station_g2_brake_hold();
     test_station_visual_trigger();
     test_station_realign_after_return();
     test_station_manual_recovery();
@@ -1037,6 +1085,34 @@ static void test_station_empty_and_limits(void) {
         assert(g_station_work.phase == STATION_LINK_DONE && starts == 0);
     }
     puts("STATION_EMPTY_RECHECK_GAP_OK short_gap_pauses_long_gap_resets");
+    /* G6 回放中的回收后漏检：只累计新鲜、对中的无果画面。 */
+    const unsigned return_gaps_ms[] = {550u, 900u, 2100u};
+    for (unsigned i = 0; i < sizeof(return_gaps_ms)/sizeof(return_gaps_ms[0]); ++i) {
+        reset_station(0);
+        request_station(1, 1);
+        run_station(350, 1, 0, 1, 1, 1);
+        assert(starts == 1u && Vision_MotorPhase);
+        for (unsigned elapsed = 0; elapsed < 3000u && Vision_MotorPhase; elapsed += 10u)
+            run_station(10, 0, 0, 1, 1, 1);
+        assert(!Vision_MotorPhase && Vision_Motor_VerifyReturned());
+        run_station(WORK_SETTLE_MS + 310u, 0, 0, 1, 1, 1);
+        assert(g_station_work.hold && Vision_WorkState == VISION_WORK_CHECK);
+        run_station(return_gaps_ms[i], 0, 9999, 1, 1, 1);
+        if (return_gaps_ms[i] > WORK_VISION_WAIT_MS) {
+            assert(g_station_work.phase == STATION_LINK_FAULT && g_station_work.result == WORK_RESULT_VISION);
+            continue;
+        }
+        assert(g_station_work.hold && Vision_WorkState == VISION_WORK_CHECK && starts == 1u);
+        run_station(100, 0, 0, 1, 1, 1);
+        assert(g_station_work.hold && Vision_WorkState == VISION_WORK_CHECK);
+        run_station(150, 0, 0, 1, 1, 1);
+        if (return_gaps_ms[i] > 800u) {
+            assert(g_station_work.hold && Vision_WorkState == VISION_WORK_CHECK);
+            run_station(300, 0, 0, 1, 1, 1);
+        }
+        assert(g_station_work.phase == STATION_LINK_DONE && g_station_work.returned && starts == 1u);
+    }
+    puts("STATION_POST_RETURN_RECHECK_GAP_OK 550ms_retained_900ms_reset_2100ms_fault_missing_time_excluded");
     /* 同一区域连续 4 次定时打击后按次数上限放行，返回结束即放行。 */
     reset_station(0);
     request_station(2, 1);
@@ -1137,6 +1213,22 @@ static void test_manual_fault_override(void) {
 }
 
 int main(void) {
+    {
+        const char* cmd="$CAR,123,2\r\n";
+        assert(work_link_init());Vision_Motor_Init();CAN_Test_Init();now_ms=0;drop_requests=1;
+        Vision_Motor_Receive((const uint8_t*)cmd,(uint16_t)strlen(cmd));
+        CAN_Test_Task();assert(car_transmits==1 && car_last_packet[1]==CAR_WORK);
+        now_ms=100;CAN_Test_Task();assert(car_transmits==2);
+        laser_header=(CAN_RxHeaderTypeDef){.StdId=CAR_REPLY_ID,.IDE=CAN_ID_STD,.RTR=CAN_RTR_DATA,.DLC=8};
+        memcpy(laser_data,car_last_packet,8);laser_data[5]=2;laser_data[6]=1;
+        laser_data[7]=car_checksum(laser_data);laser_pending=1;
+        CAN_Test_Task();assert(Car_AckSeq==123 && Car_AckOp==2 && Car_AckMode==2 && Car_AckPhase==1);
+        now_ms=200;CAN_Test_Task();assert(car_transmits==2);
+        Car_ButtonSeq=124;Car_ButtonOp=CAR_STOP;CAN_Test_Task();assert(car_transmits==3);
+        now_ms=1800;CAN_Test_Task();assert(car_transmits==3);
+        Vision_Motor_Init();CAN_Test_Init();drop_requests=0;now_ms=0;
+        puts("CAR_UART_CAN_FORWARD_ACK_RETRY_EXPIRY_OK");
+    }
     setbuf(stdout, NULL);
     if (ELBOW_TEST_MODE == 3) {
         Vision_Motor_Init();

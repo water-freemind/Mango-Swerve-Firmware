@@ -159,6 +159,9 @@ static void route_with_work(const char* speed, const char* approach, int unresol
     const bool unresolved=unresolved_tree==1 || unresolved_tree==5;
     assert(map.trees_unresolved == (unresolved?(1u<<11):0u));
     assert(!strcmp(map.reason,unresolved?"ROUTE_COMPLETE_WITH_UNRESOLVED":"ROUTE_COMPLETE"));
+    /* A late taper at .14m/s caused an extra reversal and ~1.5s alignment. */
+    if(!unresolved_tree && !strcmp(speed,"0.50") && !strcmp(approach,"0.30"))
+        assert(longest_alignment<1200u);
     printf("FULL_ROUTE_WORK_OK speed=%s approach=%s stations=%u actions=%u time_ms=%u\n",
         speed, approach, completed, starts, now_ms);
     printf("CONTINUOUS_ALIGNMENT_TIME_OK max_ms=%u stations=%u\n",longest_alignment,completed);

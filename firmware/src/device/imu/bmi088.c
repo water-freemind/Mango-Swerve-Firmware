@@ -343,6 +343,8 @@ ImuStatus bmi088_get_attitude_debug(Bmi088AttitudeDebug* debug) {
     debug->gyro_temp_coeff.x = attitude->config.gyro_x_temp_coeff;
     debug->gyro_temp_coeff.y = attitude->config.gyro_y_temp_coeff;
     debug->gyro_temp_coeff.z = attitude->config.gyro_z_temp_coeff;
+    debug->zru_updates = attitude->zru_updates;
+    debug->gyro_z_boot_bias = attitude->gyro_z_boot_bias;
     debug->zru_enabled = attitude->zru_enabled;
     debug->zru_active = attitude->zru_active;
     debug->calib_count = attitude->calib_count;
@@ -354,7 +356,6 @@ ImuStatus bmi088_get_attitude_debug(Bmi088AttitudeDebug* debug) {
 }
 
 ImuStatus bmi088_set_zru_enabled(bool enabled) {
-    (void)enabled;
 
     if(!s_bmi088_is_initialized) {
         return IMU_STATUS_NOT_INITIALIZE;
@@ -364,18 +365,18 @@ ImuStatus bmi088_set_zru_enabled(bool enabled) {
         return IMU_STATUS_UNSUPPORTED;
     }
 
-    s_bmi088_attitude.zru_enabled = false;
-    s_bmi088_attitude.zru_active = false;
-    s_bmi088_attitude.zru_static_time_us = 0U;
+    const ImuAttitudeConfig* config=&s_bmi088_attitude.config;
+    s_bmi088_attitude.zru_enabled=enabled && config->zru_gyro_threshold>0 &&
+        config->zru_min_static_us>0 && config->zru_bias_gain>0;
+    if(!s_bmi088_attitude.zru_enabled) {
+        s_bmi088_attitude.zru_active=false;
+        s_bmi088_attitude.zru_static_time_us=0;
+    }
     return IMU_STATUS_OK;
 }
 
 bool bmi088_is_zru_enabled(void) {
-    if(!s_bmi088_is_initialized || !s_bmi088_attitude_enabled) {
-        return false;
-    }
-
-    return false;
+    return s_bmi088_is_initialized && s_bmi088_attitude_enabled && s_bmi088_attitude.zru_enabled;
 }
 
 /**

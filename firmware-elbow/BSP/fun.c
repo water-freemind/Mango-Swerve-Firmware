@@ -7,6 +7,7 @@
  */
 #include "headfile.h"
 #include "work_can.h"
+#include "car_button_protocol.h"
 
 char str[32];                  /* OLED 单行文本缓冲，先格式化文字，再写入屏幕显存。 */
 char uart_rx[32];              /* 串口接收缓冲，解析时使用实际长度，不依赖字符串结束符。 */
@@ -227,30 +228,40 @@ transfer:
 }
 
 
-/** @brief USART3 每 500 ms 输出四路转速、作业、CAN 和 OLED 诊断。
+/** @brief 定期报告 F407 串口收包情况，优先回传新收到的底盘回执。
  *  @note PB10=TX、PB11=RX，115200 bit/s，8N1，使用中断发送。
- *        UART 忙时跳过本轮发送，接收与作业流程继续运行。
  */
 void UART_SendStatus(void)
 {
-    static uint32_t last_uart = 0;
-    uint32_t now = HAL_GetTick();
-    uint32_t primask;
+    static uint32_t last_uart;
+    static uint16_t last_ack_seq;
+    static uint8_t last_ack_op;
+    const uint32_t now = HAL_GetTick();
+    const uint16_t ack_seq = Car_AckSeq;
+    const uint8_t ack_op = Car_AckOp;
+    const uint8_t new_ack = ack_seq && (ack_seq != last_ack_seq || ack_op != last_ack_op);
+    const uint8_t periodic = (uint32_t)(now - last_uart) >= 500u;
+    if (huart3.gState != HAL_UART_STATE_READY || (!new_ack && !periodic)) return;
+
     int32_t rpm[4];
-    uint8_t i;
-    int length;
-    if ((uint32_t)(now - last_uart) < 500U ||
-        huart3.gState != HAL_UART_STATE_READY) return;
-    /* 短暂保护四路测速数据的读取，随后恢复原中断状态。 */
-    primask = __get_PRIMASK();
+    const uint32_t primask = __get_PRIMASK();
     __disable_irq();
-    for (i = 0; i < 4; i++) rpm[i] = Speed[i];
+    const uint16_t received_seq = Car_ButtonSeq;
+    const uint8_t received_op = Car_ButtonOp;
+    for (unsigned i = 0; i < 4u; ++i) rpm[i] = Speed[i];
     __set_PRIMASK(primask);
-    /* 静态缓冲在中断发送完成前始终有效，发送忙时不会重写。 */
-    if ((uint32_t)(now - last_uart) >= 500U && huart3.gState == HAL_UART_STATE_READY)
-    {
-        last_uart = now;
-        length = snprintf(uart_tx, sizeof(uart_tx),
+
+    /* CARLINK reports only what F407 received over UART. A camera may
+     * advance the start sequence only on the matching chassis CARACK. */
+    int length = snprintf(uart_tx, sizeof(uart_tx), "$CARLINK,%u,%u\r\n$CARACK,%u,%u,%u,%u,%u\r\n",
+        received_seq, received_op, ack_seq, ack_op, Car_AckResult, Car_AckMode, Car_AckPhase);
+    if (length < 0 || length >= (int)sizeof(uart_tx)) {
+        UART_TxErrorCount++;
+        return;
+    }
+    if (periodic) {
+        const size_t room = sizeof(uart_tx) - (size_t)length;
+        const int diagnostics = snprintf(uart_tx + length, room,
             "A:%ld RPM B:%ld RPM C:%ld RPM D:%ld RPM | WORK:%u TASK:%lu RESULT:%u VIS:%u REGION:%u DX:%ld | STROKE:%lums CNT:%ld | CAN2 WORK %s TX:%lu RX:%lu ERR:%lu S:%u | OLED:%u OE:%lu NACK:%lu\r\n",
             (long)rpm[0], (long)rpm[1], (long)rpm[2], (long)rpm[3],
             Vision_WorkState, (unsigned long)Vision_WorkTask, Vision_WorkResult,
@@ -261,15 +272,16 @@ void UART_SendStatus(void)
             (unsigned long)CAN_Test_ErrorCount, CAN_Test_State,
             OLED_Ready, (unsigned long)OLED_I2C_LastError,
             (unsigned long)OLED_I2C_NackCount);
-        if (length < 0 || length >= (int)sizeof(uart_tx))
-        {
-            UART_TxErrorCount++;
-            return;
-        }
-        if (HAL_UART_Transmit_IT(&huart3, (uint8_t *)uart_tx, (uint16_t)length) == HAL_OK)
-            UART_TxCount++;
+        if (diagnostics >= 0 && (size_t)diagnostics < room) length += diagnostics;
         else UART_TxErrorCount++;
     }
+    /* Keep the buffer intact until the UART interrupt finishes transmission. */
+    if (HAL_UART_Transmit_IT(&huart3, (uint8_t *)uart_tx, (uint16_t)length) == HAL_OK) {
+        UART_TxCount++;
+        if (periodic) last_uart = now;
+        last_ack_seq = ack_seq;
+        last_ack_op = ack_op;
+    } else UART_TxErrorCount++;
 }
 
 /** @brief 配置外设完成后，启动串口、PWM、编码器和 10 ms 测速中断。

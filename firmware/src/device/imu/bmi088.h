@@ -74,6 +74,8 @@ typedef struct {
     float gyro_z_temp_intercept; /**< z 轴 bias 线性模型截距 */
     float gyro_z_bias_effective; /**< 当前实际用于扣除的 z 轴 bias */
     ImuGyro gyro_temp_coeff;   /**< 当前三轴温漂补偿系数，单位 rad/s/℃ */
+    uint32_t zru_updates;      /**< 已完成的静止 Z 轴零偏更新次数 */
+    float gyro_z_boot_bias;    /**< 启动 Z 轴零偏，单位 rad/s */
     bool zru_enabled;          /**< true 表示当前允许执行静止 ZRU */
     bool zru_active;           /**< true 表示当前已进入静止 ZRU 修正 */
     uint16_t calib_count;      /**< 已累计的启动零偏标定样本 */

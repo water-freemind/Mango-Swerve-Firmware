@@ -9,6 +9,11 @@
 #include "tim.h"
 #include "work_control.h"
 #include <string.h>
+#include "car_button_protocol.h"
+volatile uint16_t Car_ButtonSeq;
+volatile uint8_t Car_ButtonOp;
+volatile uint16_t Car_AckSeq;
+volatile uint8_t Car_AckOp, Car_AckResult, Car_AckMode, Car_AckPhase;
 
 volatile uint8_t Vision_Region;
 volatile int32_t Vision_TreeDX = 9999;
@@ -207,6 +212,8 @@ static void Motor_Run(uint8_t motor_id, uint8_t striking)
 
 void Vision_Motor_Init(void)
 {
+    Car_ButtonSeq=Car_AckSeq=0;
+    Car_ButtonOp=Car_AckOp=Car_AckResult=Car_AckMode=Car_AckPhase=0;
     motor_pwm = VISION_MOTOR_PWM;
     Vision_MotorResult = 0;
     /* 定时动作没有编码器零位要求，上电即可应答底盘的 HOME 确认。 */
@@ -237,6 +244,20 @@ static uint8_t Parse_Frame(void)
 {
     uint8_t pos = 7, digits = 0, negative = 0;
     int32_t value = 0;
+    /* $CAR,序号,操作\r\n。操作8/9分别请求单独跑图和联合作业。 */
+    if(used>=10 && !memcmp(line,"$CAR,",5)) {
+        uint32_t seq=0; uint8_t p=5, count=0;
+        while(p<used && line[p]>='0' && line[p]<='9') {
+            if(++count>5) return 0;
+            seq=seq*10u+(uint8_t)(line[p++]-'0');
+        }
+        if(!count || !seq || seq>65535u || p+4u!=used || line[p]!=',' ||
+           line[p+1]<'0'+CAR_NAV || line[p+1]>'0'+CAR_START_WORK ||
+           line[p+2]!='\r' || line[p+3]!='\n') return 0;
+        Car_ButtonOp=(uint8_t)(line[p+1]-'0');
+        Car_ButtonSeq=(uint16_t)seq;
+        return 1;
+    }
     if (used < 10 || memcmp(line, "$VIS,", 5) != 0 ||
         line[5] < '0' || line[5] > '4' || line[6] != ',') return 0;
     if (line[pos] == '-') { negative = 1; pos++; }

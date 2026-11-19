@@ -223,6 +223,24 @@ int main(void) {
     assert(Vision_Online && Vision_Region == 4 && Vision_FrameCount == 2);
     check_pwm(0);
     puts("VISION_OFF_FILTER_OK short_gap_uart_error_no_false_off_exact_timeout_wrap_fresh_recovery");
+    {
+        extern volatile uint16_t Car_ButtonSeq;
+        extern volatile uint8_t Car_ButtonOp;
+        uint32_t frames=Vision_FrameCount, bad=Vision_BadFrameCount;
+        feed("$CAR,123,"); feed("2\r\n");
+        assert(Car_ButtonSeq==123 && Car_ButtonOp==2);
+        assert(Vision_FrameCount==frames && Vision_BadFrameCount==bad);
+        feed("$CAR,65535,6\r\n");
+        assert(Car_ButtonSeq==65535 && Car_ButtonOp==6);
+        feed("$CAR,7,"); feed("8\r\n");
+        assert(Car_ButtonSeq==7 && Car_ButtonOp==8);
+        feed("$CAR,8,9\r\n");
+        assert(Car_ButtonSeq==8 && Car_ButtonOp==9);
+        feed("$CAR,65536,5\r\n"); feed("$CAR,0,1\r\n"); feed("$CAR,2,0\r\n");
+        assert(Car_ButtonSeq==8 && Car_ButtonOp==9 && Vision_BadFrameCount==bad+3);
+        assert(Vision_FrameCount==frames);
+        puts("CAR_UART_FRAGMENT_BOUNDS_AND_VISION_ISOLATION_OK");
+    }
     puts("VISION_UART_PARSER_DIRECTION_TIMING_WRAP_TEST_OK");
     return 0;
 }

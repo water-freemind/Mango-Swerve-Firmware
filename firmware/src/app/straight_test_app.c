@@ -27,6 +27,8 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include "car_button_protocol.h"
 
 static StraightTest test;
 static FullMapTest full_map;
@@ -51,6 +53,20 @@ static uint32_t acknowledged_steer_failures, acknowledged_drive_failures, last_c
 static DriveSource control_source;
 static DriveVelocity manual_velocity;
 static DriveVelocity manual_target;
+static volatile uint8_t car_inbox[8];
+static volatile uint32_t car_rx_ms;
+static volatile bool car_pending;
+static uint8_t car_reply[8];
+static uint16_t car_last_seq;
+static uint32_t car_arm_token;
+static bool car_reply_pending;
+static bool car_receive(const Can3Frame* frame, void* user) {
+    (void)user;
+    if(frame->len!=8 || !car_valid(frame->data)) return false;
+    if(car_pending && car_inbox[1]==CAR_STOP && frame->data[1]!=CAR_STOP) return true;
+    for(unsigned i=0;i<8;i++) car_inbox[i]=frame->data[i];
+    car_rx_ms=frame->rx_ms;car_pending=true;return true;
+}
 static ChassisTrace trace;
 static ChassisTraceSample trace_sensor;
 static bool trace_recording, trace_was_active, trace_dumping, trace_header;
@@ -79,7 +95,7 @@ static uint32_t work_stop_excursion_ms;
 static uint32_t work_stop_sample_ms;
 static float work_stop_excursion_m;
 static Bmi088AttitudeDebug imu_debug;
-static bool imu_debug_valid;
+static bool imu_debug_valid, imu_steering_stationary;
 static uint32_t imu_age_us;
 static bool drift_tracking, drift_valid;
 static uint32_t drift_start_us, drift_last_us, drift_window_ms;
@@ -237,7 +253,10 @@ static StraightInput input(uint32_t now) {
     if(imu_age_us > 100000u) blockers |= BLOCK_IMU_STALE;
     imu_debug_valid = bmi088_get_attitude_debug(&imu_debug) == IMU_STATUS_OK;
     if(!imu_debug_valid || !imu_debug.calibrated || !imu_debug.has_angle) blockers |= BLOCK_IMU_CAL;
+    imu_steering_stationary=true;
     for(uint16_t id = 1u; id <= 4u; ++id) {
+        imu_steering_stationary=imu_steering_stationary && steer_status[id-1u]==MOTOR_STATUS_OK &&
+            fabsf(steer_sample[id-1u].speed)<.10f && motor_age[id-1u]<=50u && motor_age[id+3u]<=50u;
         const float sign = (id == 2u || id == 3u) ? -1.0f : 1.0f;
         const float speed = drive_status[id-1u] == MOTOR_STATUS_OK ? drive_sample[id-1u].speed : NAN;
         const float angle = steer_status[id-1u] == MOTOR_STATUS_OK ? steer_sample[id-1u].position - zeros[id-1u] : NAN;
@@ -464,12 +483,117 @@ static FullMapInput map_input(uint32_t now,StraightInput in) {
         m.work_target_fresh=g_station_work.visual_online && g_station_work.visual_dx!=9999 &&
             now-g_station_work.visual_sample_ms<=180u;
         m.work_target_dx=g_station_work.visual_dx-STATION_VISION_CENTER_DX;
+        m.work_target_sample_ms=g_station_work.visual_sample_ms;
         m.work_alignment_fresh=station_work_alignment_fresh(now);
         m.work_centered=g_station_work.aligned;
         m.work_align_direction=g_station_work.align_direction;
         m.work_align_frame=g_station_work.align_updates;
     }
     return m;
+}
+static uint8_t car_mode_error(bool work, StraightInput in) {
+    if(full_map_active(&full_map) || !in.stationary) return 4;
+    if(work && !WORK_STATION_ENABLED) return 5;
+    if(g_station_work.hold || g_station_work.phase==STATION_LINK_APPROACH ||
+       g_station_work.phase==STATION_LINK_ALIGN || g_station_work.phase==STATION_LINK_WORKING ||
+       g_station_work.phase==STATION_LINK_RELEASE) return 6;
+    return 0;
+}
+
+/* 一条启动请求在主循环内完成登记、准备和开始，沿用全图的原有检查。 */
+static uint8_t car_start(bool work, uint32_t now, StraightInput in) {
+    const uint8_t mode_error=car_mode_error(work,in);
+    if(mode_error) return mode_error;
+    if(!in.healthy) {
+        full_map.reason="ARM_NOT_READY";
+        return 10;
+    }
+    if(work && !station_work_ready()) {
+        full_map.reason="WORK_PEER_NOT_READY";
+        return 8;
+    }
+    const bool previous_work=map_work_enabled;
+    map_work_enabled=work;
+    car_arm_token=0;
+    const FullMapInput input=map_input(now,in);
+    if(!full_map_command(&full_map,"MAP ORIGIN",input)) {
+        map_work_enabled=previous_work;
+        return 9;
+    }
+    if(!full_map_command(&full_map,"MAP ARM ALL",input)) {
+        map_work_enabled=previous_work;
+        return !strcmp(full_map.reason,"WORK_PEER_NOT_READY")?8:10;
+    }
+    char go[32];
+    snprintf(go,sizeof(go),"MAP GO %lu",(unsigned long)full_map.token);
+    if(full_map_command(&full_map,go,input)) return 0;
+
+    full_map_stop(&full_map,"CAMERA_GO_NOT_READY",false);
+    map_work_enabled=previous_work;
+    return 11;
+}
+
+/* 接收回调只入队。重复请求可重发回执，不能重复登记或起步。 */
+static void car_commands(uint32_t now, StraightInput in) {
+    if(car_pending) {
+        uint8_t p[8]; uint32_t stamp;
+        const uint32_t mask=__get_PRIMASK(); __disable_irq();
+        for(unsigned i=0;i<8;i++) p[i]=car_inbox[i];
+        stamp=car_rx_ms;car_pending=false; __set_PRIMASK(mask);
+        const uint16_t seq=(uint16_t)(p[2]|((uint16_t)p[3]<<8));
+        const uint8_t op=p[1];
+        if(seq==car_last_seq && op==car_reply[1]) car_reply_pending=true;
+        else if(op==CAR_STATUS || !car_last_seq || (seq!=car_last_seq && (uint16_t)(seq-car_last_seq)<32768u)) {
+            bool ok=false; uint8_t result=1;
+            const bool straight_busy=test.phase==ST_ARMED || test.phase==ST_RUNNING || test.phase==ST_STOPPING;
+            const bool allowed=control_source.mode==DRIVE_SOURCE_HOST && !straight_busy;
+            if(now-stamp>250u) result=2;
+            else if(op==CAR_STOP) {
+                full_map_stop(&full_map,"CAMERA_STOP",false);
+                drive_source_stop_manual(&control_source);manual_velocity=(DriveVelocity){0};
+                chassis_yaw_hold_disable();stop_outputs();
+                (void)straight_command(&test,"STOP",now,in);car_arm_token=0;ok=true;
+            } else if(op==CAR_STATUS) ok=true;
+            else if(!allowed) result=3;
+            else if(op==CAR_START_NAV || op==CAR_START_WORK) {
+                result=car_start(op==CAR_START_WORK,now,in);
+                ok=result==0;
+            }
+            else if(op==CAR_NAV || op==CAR_WORK) {
+                const bool work=op==CAR_WORK;
+                result=car_mode_error(work,in);
+                if(!result) {
+                    if(work!=map_work_enabled) {
+                        full_map_stop(&full_map,"MODE_CHANGED",true);full_map.phase=MAP_IDLE;
+                        if(WORK_STATION_ENABLED) (void)station_work_reset(true);
+                    }
+                    map_work_enabled=work;car_arm_token=0;ok=true;
+                }
+            } else {
+                const char* command=op==CAR_ORIGIN?"MAP ORIGIN":op==CAR_ARM?"MAP ARM ALL":"";
+                char go[32];
+                if(op==CAR_GO) {
+                    if(!car_arm_token || full_map.token!=car_arm_token) result=7;
+                    else { snprintf(go,sizeof(go),"MAP GO %lu",(unsigned long)car_arm_token);command=go; }
+                }
+                if(*command) ok=full_map_command(&full_map,command,map_input(now,in));
+                if(op==CAR_ARM) car_arm_token=ok?full_map.token:0;
+                if(op==CAR_GO || op==CAR_ORIGIN) car_arm_token=0;
+                if(!ok && result==1) {
+                    if(!strcmp(full_map.reason,"WORK_PEER_NOT_READY")) result=8;
+                    else if(!strncmp(full_map.reason,"ORIGIN_",7)) result=9;
+                    else if(op==CAR_ARM) result=10;
+                    else if(op==CAR_GO) result=11;
+                }
+            }
+            car_last_seq=seq;
+            memcpy(car_reply,p,4);car_reply[4]=ok?0:result;
+            car_reply[5]=map_work_enabled?2:1;car_reply[6]=(uint8_t)full_map.phase;
+            car_reply[7]=car_checksum(car_reply);car_reply_pending=true;
+            log_info("CAMERA_BUTTON seq=%u op=%u ok=%u reason=%s",seq,op,(unsigned)ok,full_map.reason);
+        }
+    }
+    if(car_reply_pending && can3_bus_send(CAR_REPLY_ID,car_reply,8)==CAN3_BUS_OK) car_reply_pending=false;
 }
 static void commands(uint32_t now, StraightInput in) {
     if(rx_fault) {
@@ -771,6 +895,17 @@ static void acknowledge_can_recovery(uint32_t now,StraightInput in) {
         (unsigned long)now,(unsigned long)acknowledged_steer_failures,(unsigned long)acknowledged_drive_failures,
         (unsigned)manual_permit);
 }
+/* Use the existing endpoint settle of the initial drive and each ridge
+ * transfer. This gate is evaluated after control, before the next IMU sample. */
+static bool entrance_imu_calibration_allowed(StraightInput in) {
+    return in.healthy && in.stationary && imu_steering_stationary && imu_age_us<=20000u &&
+        control_source.mode==DRIVE_SOURCE_HOST &&
+        full_map.phase==MAP_RUNNING && !full_map.tree_hold &&
+        full_map.motion.settled_s>0 && full_map.motion.out.settle_blockers==0 &&
+        full_map.segment<AUTO_ROUTE_COUNT &&
+        (full_map.segment==0 || full_map.route.segment[full_map.segment].kind==AUTO_ROUTE_SHIFT);
+}
+
 static void update_drift(StraightInput in) {
     const uint32_t bad_data = BLOCK_STEER_RX | BLOCK_DRIVE_RX | BLOCK_IMU_SAMPLE |
         BLOCK_IMU_STALE | BLOCK_IMU_CAL | BLOCK_NONFINITE;
@@ -836,13 +971,13 @@ static void log_detail(uint32_t now, StraightInput in) {
     } else if(slot == 3u) {
         log_info("TEST_IMU_RAW t_ms=%lu unit=rad/s raw=%.6f,%.6f,%.6f startup_bias=%.6f,%.6f,%.6f corrected=%.6f,%.6f,%.6f",
             (unsigned long)now, (double)imu_sample.gyro.x, (double)imu_sample.gyro.y, (double)imu_sample.gyro.z,
-            (double)imu_debug.gyro_bias.x, (double)imu_debug.gyro_bias.y, (double)imu_debug.gyro_bias.z,
+            (double)imu_debug.gyro_bias.x, (double)imu_debug.gyro_bias.y, (double)imu_debug.gyro_z_boot_bias,
             (double)imu_debug.gyro_corrected.x, (double)imu_debug.gyro_corrected.y, (double)imu_debug.gyro_corrected.z);
     } else if(slot == 4u) {
-        log_info("TEST_IMU_BIAS t_ms=%lu applied_z_rad_s=%.6f temp_z_rad_s=%.6f slope_rad_s_C=%.7f intercept_rad_s=%.6f zru=%u active=%u policy=BOOT_MEAN",
+        log_info("TEST_IMU_BIAS t_ms=%lu applied_z_rad_s=%.6f temp_z_rad_s=%.6f slope_rad_s_C=%.7f intercept_rad_s=%.6f zru=%u active=%u policy=BOOT_MEAN entrance_updates=%lu",
             (unsigned long)now, (double)imu_debug.gyro_z_bias_effective, (double)imu_debug.gyro_temp_comp.z,
             (double)imu_debug.gyro_temp_coeff.z, (double)imu_debug.gyro_z_temp_intercept,
-            (unsigned)imu_debug.zru_enabled, (unsigned)imu_debug.zru_active);
+            (unsigned)imu_debug.zru_enabled, (unsigned)imu_debug.zru_active, (unsigned long)imu_debug.zru_updates);
     } else if(slot <= 8u) {
         const uint16_t id = (uint16_t)(slot - 4u);
         static const char* const wheel[] = {"FL", "FR", "RR", "RL"};
@@ -922,7 +1057,9 @@ void straight_test_app_init(void) {
     straight_init(&test, HAL_GetTick());
     full_map_init(&full_map, HAL_GetTick());
     if(assemble_imu() != SYSTEM_STATUS_OK || assemble_laser() != SYSTEM_STATUS_OK ||
-       !work_link_init() || !station_work_init() || assemble_can3() != SYSTEM_STATUS_OK ||
+       !work_link_init() || !station_work_init() ||
+       can3_bus_register_endpoint(CAR_REQUEST_ID,car_receive,NULL)!=CAN3_BUS_OK ||
+       assemble_can3() != SYSTEM_STATUS_OK ||
        can_register_rx_callback(CHASSIS_STEER_CAN, motor_received, NULL) != STM32_HAL_CAN_OK ||
        can_register_rx_callback(CHASSIS_DRIVE_CAN, motor_received, NULL) != STM32_HAL_CAN_OK ||
        assemble_chassis() != SYSTEM_STATUS_OK || assemble_remote() != SYSTEM_STATUS_OK) {
@@ -972,6 +1109,7 @@ void straight_test_app_loop(void) {
     update_control_source(now, in);
     if(control_source.mode != DRIVE_SOURCE_HOST) in.healthy = false;
     commands(now, in);
+    car_commands(now, in);
     if(WORK_STATION_ENABLED) {
         const bool transaction=g_station_work.phase==STATION_LINK_APPROACH ||
             g_station_work.phase==STATION_LINK_ALIGN ||
@@ -1155,6 +1293,7 @@ void straight_test_app_loop(void) {
         }
         last_manual_process = now;
     } else if(!control_source.manual_armed) last_manual_process = now;
+    (void)bmi088_set_zru_enabled(entrance_imu_calibration_allowed(in));
     trace_capture(in);
     if(WORK_STATION_ENABLED && (!full_map_active(&full_map) ||
        (g_station_work.hold && full_map.phase!=MAP_RUNNING)) &&

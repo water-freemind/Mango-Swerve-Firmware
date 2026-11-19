@@ -61,6 +61,10 @@ typedef struct {
     float gyro_z_temp_intercept; /**< z 轴 bias 线性模型截距 */
     float gyro_z_bias_effective; /**< 当前实际用于扣除的 z 轴 bias */
 
+    float gyro_z_boot_bias, zru_weighted_sum;
+    ImuAcc zru_reference_acc;
+    ImuGyro zru_reference_gyro;
+    uint32_t zru_updates;
     uint32_t zru_static_time_us; /**< 连续满足静止条件的累计时长，单位 us */
     bool zru_enabled;           /**< true 表示允许执行静止 ZRU */
     bool zru_active;            /**< true 表示本次更新已触发静止 ZRU */
