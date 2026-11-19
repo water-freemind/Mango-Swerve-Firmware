@@ -126,7 +126,7 @@ static void command_tests(void) {
         .laser=scan((AutoPose){.2f,-.5f,1.570796327f},0)};
     assert(!full_map_command(&m,"MAP ARM ALL",in));
     assert(full_map_command(&m,"MAP ORIGIN",in));
-    assert(fabsf(m.speed-.50f)<.00001f);
+    assert(fabsf(m.speed-.90f)<.00001f);
     assert(!full_map_command(&m,"MAP ARM NEXT",in));
     assert(!full_map_command(&m,"MAP SPEED 0.10",in));
     const char* presets[]={"0.50","0.60","0.70","0.80","0.90"};
@@ -634,12 +634,16 @@ static void work_slow_distance_test(void) {
         input.work_enabled=input.work_online=true;input.work_station=12;
         input.now=10;input.laser=ridge_scan(map.localization.pose.pose,input.now);
         for(unsigned channel=0;channel<4;++channel)
-            input.laser.distance_mm[channel]=input.laser.accepted_mm[channel]=2000u;
+            input.laser.distance_mm[channel]=input.laser.accepted_mm[channel]=2500u;
         full_map_step(&map,input);
         assert(map.phase==MAP_RUNNING);
-        assert(fabsf(map.motion.config.vmax-(visual?.45f:.50f))<.00001f);
+        /* 作业巡垄精确落在 0.60 上限；非作业段已提速过旧的 0.80 档，
+         * 但仍受前向激光制动预算约束，不会超过全局 0.90。 */
+        assert(map.phase==MAP_RUNNING && (visual?
+            fabsf(map.motion.config.vmax-.60f)<.00001f:
+            (map.motion.config.vmax>.80f && map.motion.config.vmax<=.90001f)));
     }
-    puts("WORK_SURVEY_SPEED_OK visual_rows_cap_045");
+    puts("WORK_SURVEY_SPEED_OK visual_rows_cap_060");
     for(unsigned near=0;near<2u;near++) {
         float limit[2];
         for(unsigned slow=0;slow<2u;slow++) {
@@ -922,6 +926,36 @@ static void field_shift_wall_recovery_test(void) {
     }
     printf("FIELD_SHIFT_WALL_RECOVERY_OK resume_ms=%u retreat_mm=%.1f stale_opposite_guard_hard_near_and_work_hold_retained\n",
         resume_ms,(stopped.x-actual.x)*1000);
+}
+
+static void g4_transfer_speed_and_wall_limit_test(void) {
+    FullMapTest map;
+    FullMapInput in=setup_aisle(&map,7,2.8f);
+    const AutoPose clear={2.8f,2.95f,1.570796327f};
+    assert(field_pose_register(&map.localization,clear,0,0));
+    for(unsigned now=10;now<=300;now+=10) {
+        in.now=now;in.laser=scan(clear,now);
+        full_map_step(&map,in);
+        assert(map.phase==MAP_RUNNING);
+    }
+    assert(fabsf(map.motion.config.vmax-.70f)<.0001f);
+    in.now=310;in.laser=scan(clear,in.now);
+    in.laser.sample_age_ms[AUTO_RIGHT]=160;
+    in.laser.updated_mask&=(uint8_t)~(1u<<AUTO_RIGHT);
+    full_map_step(&map,in);
+    assert(map.phase==MAP_RUNNING && map.motion.config.vmax<.50f);
+
+    in=setup_aisle(&map,7,2.77f);
+    const AutoPose rejoining={2.77f,2.85f,1.570796327f};
+    assert(field_pose_register(&map.localization,rejoining,0,0));
+    for(unsigned now=10;now<=300;now+=10) {
+        in.now=now;in.laser=scan(rejoining,now);
+        full_map_step(&map,in);
+        const AutoVec2 target=auto_rotate((AutoVec2){map.hint.vx,map.hint.vy},rejoining.yaw);
+        assert(map.phase==MAP_RUNNING && target.x<=.0251f);
+    }
+    assert(map.command.vy<-.01f); /* It can rejoin while translating south. */
+    puts("G4_TRANSFER_SPEED_OK clear_cap_070_age_ramp_wallward_rejoin_cap_025");
 }
 
 static void recorded_shift_approach_limit_test(void) {
@@ -1359,7 +1393,7 @@ static void continuous_tree_alignment_test(void) {
         input.laser=ridge_scan(actual,now);
         full_map_step(&map,input);
         assert(map.phase==MAP_RUNNING);
-        assert(hypotf(map.command.vx,map.command.vy)<=.05001f);
+        assert(hypotf(map.command.vx,map.command.vy)<=.08001f);
         if(map.tree_alignment.ready && map.tree_hold_stable) {
             assert(centered_since && now<2500u && actual.x<1.91f);
             printf("CONTINUOUS_TREE_ALIGN_OK elapsed_ms=%u moves=%u stop_on_center_candidate\n",now,map.tree_alignment.steps);
@@ -1443,7 +1477,7 @@ static void visual_speed_by_target_test(void) {
         assert(map.phase==MAP_RUNNING && fabsf(map.motion.config.vmax-expected[i])<.00001f);
     }
     const int16_t align_dx[]={75,15,75,-75,30,55};
-    const float align_speed[]={.12f,.05f,.05f,.05f,.05f+.07f*14.0f/29.0f,.12f};
+    const float align_speed[]={.12f,.08f,.08f,.08f,.08f+.04f*14.0f/29.0f,.12f};
     for(unsigned i=0u;i<sizeof(align_dx)/sizeof(align_dx[0]);++i) {
         FullMapTest map;
         FullMapInput in=setup_aisle(&map,4,1.88f);
@@ -1463,6 +1497,8 @@ static void visual_gmg_speed_transition_test(void) {
     FullMapTest map;
     FullMapInput in=setup_aisle(&map,4,2.0f);
     map.visual_work=true;map.target_tree=12;
+    /* 固定减速起点，验证 GMG 渐进减速与回升的斜率，不受默认巡垄档位调整影响。 */
+    map.visual_approach_limit=.45f;
     in.work_enabled=in.work_online=true;in.work_station=12;
     float previous=.45f;
     for(unsigned now=10u;now<=1050u;now+=10u) {
@@ -1513,13 +1549,17 @@ static void work_front_correction_limit_test(void) {
             along_speed=fmaxf(along_speed,fabsf(map.command.vy));
         }
         assert(along_speed>.03f);
-        assert(front_speed>.006f && front_speed<.046f);
+        /* 2026-11-20: the G1..G6 front/ridge reserve shrank from 95mm to 60mm
+         * and the transverse guard from 150mm to 110mm, so a 145mm return no
+         * longer sits on the protection boundary. The cross correction is still
+         * bounded by the motion lateral_max; the 95mm hard stop below is unchanged. */
+        assert(front_speed>.006f && front_speed<.105f);
         in.now+=10u;in.laser=ridge_scan(pose,in.now);
         in.laser.accepted_mm[AUTO_FRONT]=95;
         full_map_step(&map,in);
         assert(map.phase==MAP_PAUSED && (map.range_near_mask&(1u<<AUTO_FRONT)));
     }
-    puts("AISLE_FRONT_CORRECTION_LIMIT_OK nav_and_work_prebrake_keep_along_speed_and_95mm_stop");
+    puts("AISLE_FRONT_CORRECTION_LIMIT_OK nav_and_work_prebrake_keep_along_speed_and_95mm_stop_110mm_guard");
 }
 static void short_visual_alignment_gap_test(void) {
     FullMapTest map;
@@ -1543,7 +1583,7 @@ static void short_visual_alignment_gap_test(void) {
     for(unsigned now=110;now<=210;now+=10) {
         in.now=now;in.laser=ridge_scan(map.localization.pose.pose,now);
         full_map_step(&map,in);
-        assert(!map.tree_hold && map.command.vy>0 && map.motion.config.vmax<=.0401f);
+        assert(!map.tree_hold && map.command.vy>0 && map.motion.config.vmax<=.1001f);
     }
     for(unsigned now=220;now<=330;now+=10) {
         in.now=now;in.laser=ridge_scan(map.localization.pose.pose,now);
@@ -2729,7 +2769,7 @@ int main(void) {
     tree_endpoint_centering_test(false);tree_endpoint_centering_test(true);
     centering_hysteresis_test();
     margin_and_collision_test();
-    field_shift_wall_recovery_test();
+    field_shift_wall_recovery_test();g4_transfer_speed_and_wall_limit_test();
     recorded_shift_approach_limit_test();
     g4_exterior_wall_replay_test();
     g1_margin_recovery_test();

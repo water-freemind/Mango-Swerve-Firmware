@@ -1086,8 +1086,8 @@ void straight_test_app_init(void) {
     log_info("TEST_READY proto=2 programs=FWD,ROUND,WALL,APPROACH round_leg_m=1,2,4 body_edge_mm=110 guard_mm=130 front_gap_mm=100 max_approach_m=1");
     log_info("TEST_READY control=SWC_1000_STOP_1500_HOST_2000_MANUAL SWD_1000_STOP_2000_PERMIT hb_required=0 manual_reenable=SWD_OFF_CENTER_ON");
     log_info("TEST_READY manual_control=direct ramp=0");
-    log_info("TEST_READY full_map_proto=1 field=NOMINAL_3x4.6 start_x=0.20 start_y=FRONT_ANCHORED[-0.80,0.00] yaw_deg=90 default_speed=0.50 trees=12 tree_dwell_ms=2000 tools=%s auto_start=0",
-        WORK_STATION_ENABLED?"STATION_V2":"DISABLED");
+    log_info("TEST_READY full_map_proto=1 field=NOMINAL_3x4.6 start_x=0.20 start_y=FRONT_ANCHORED[-0.80,0.00] yaw_deg=90 default_speed=%.2f trees=12 tree_dwell_ms=2000 tools=%s auto_start=0",
+        (double)full_map.speed,WORK_STATION_ENABLED?"STATION_V2":"DISABLED");
     log_info("TEST_READY laser_filter=MEDIAN3 window_gap_ms=200 near_bypass_mm=1100 laser_recovery_ms=5000 brake_delay_ms=500");
     log_info("TEST_READY manual_jerk linear=0.80 angular=1.60 target_lateral_budget=0.30 transient_budget_not_guaranteed=1");
 }

@@ -122,11 +122,14 @@ static void advance_encoders(unsigned period) {
     unsigned index;
     int32_t step, progress;
     const unsigned pwm[4] = {timer.CCR1, timer.CCR2, timer.CCR3, timer.CCR4};
+    const uint8_t returning = Vision_MotorPhase == VISION_MOTOR_RETURN_PARTIAL ||
+        Vision_MotorPhase == VISION_MOTOR_RETURN_FINAL;
     if(ELBOW_TEST_MODE == 3 || !Vision_MotorRegion ||
-        (Vision_MotorPhase != 1 && Vision_MotorPhase != 3)) return;
+        (!returning && Vision_MotorPhase != VISION_MOTOR_EXTEND_FIRST &&
+         Vision_MotorPhase != VISION_MOTOR_EXTEND_SECOND)) return;
     index = Vision_MotorRegion - 1u;
     step = (int32_t)(pwm[index] * period / 5u) * signs[index];
-    if(Vision_MotorPhase == 3) step = -step;
+    if(returning) step = -step;
     /* 换算到 0..limit 的行程进度，两端都当作机械限位。 */
     progress = signs[index] * (int32_t)((uint32_t)Encoder_Position[index] + (uint32_t)step);
     if(progress < 0) progress = 0;
@@ -579,7 +582,7 @@ static void test_station_realign_after_return(void) {
     reset_station(0);
     request_station(1,1);
     const uint32_t task=g_station_work.task;
-    for(unsigned attempt=1;attempt<=4u;++attempt) {
+    for(unsigned attempt=1;attempt<=WORK_STATION_MAX_ATTEMPTS_PER_REGION;++attempt) {
         run_station(600,1,0,1,1,1);
         assert(starts==attempt);
         Can3Frame delayed={.id=WORK_CAN_REQUEST_ID,.len=8,.rx_ms=now_ms};
@@ -604,13 +607,13 @@ static void test_station_realign_after_return(void) {
         assert(g_station_work.aligned && station_work_start(now_ms,true));
     }
     run_station(1000,1,0,1,1,1);
-    assert(starts==4u && g_station_work.phase==STATION_LINK_DONE);
+    assert(starts==WORK_STATION_MAX_ATTEMPTS_PER_REGION && g_station_work.phase==STATION_LINK_DONE);
     assert(g_station_work.result==WORK_RESULT_ATTEMPTS);
-    puts("STATION_REALIGN_RETURN_OK four_returned_realignments_same_task_attempt_limit_retained");
+    puts("STATION_REALIGN_RETURN_OK four_returned_realignments_same_task_region_attempt_limit_retained");
 }
 
 static void test_station_stable_start(void) {
-    assert(STATION_VISION_CENTER_DX==1 && WORK_DX_CENTER==1 && STATION_VISION_STOP_PX==10);
+    assert(STATION_VISION_CENTER_DX==1 && WORK_DX_CENTER==1 && STATION_VISION_STOP_PX==14);
     reset_station(0);
     assert(station_work_begin(1,now_ms));
     run_station(100,1,0,1,1,1);
@@ -618,15 +621,15 @@ static void test_station_stable_start(void) {
     run_station(500,1,-10,1,1,1);
     assert(g_station_work.aligned && g_station_work.visual_dx==-9);
     assert(station_work_start(now_ms,true));
-    run_station(500,1,-11,1,1,1);
+    run_station(500,1,-16,1,1,1);
     assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
-    run_station(500,1,11,1,1,1);
+    run_station(500,1,16,1,1,1);
     assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
     run_station(500,1,10,1,1,1);
     assert(station_work_start(now_ms,true));
     run_station(500,1,10,1,1,1);
     assert(starts==1 && g_station_work.visual_dx==11);
-    puts("STRIKE_DX_GATE_OK center_1_raw_minus9_to_plus11_inclusive");
+    puts("STRIKE_DX_GATE_OK center_1_raw_minus13_to_plus15_inclusive");
     reset_station(UINT32_MAX-300u);
     assert(station_work_begin(1,now_ms));
     run_station(100,1,0,1,1,1);
@@ -658,18 +661,18 @@ static void test_alignment_detector_dropouts(void) {
     assert(!g_station_work.aligned && !station_work_start(now_ms,true));
     run_station(350,0,-6,1,1,1);
     assert(g_station_work.aligned && !starts);
-    run_station(100,0,11,1,1,1);
+    run_station(100,0,16,1,1,1);
     assert(!g_station_work.aligned && g_station_work.align_direction==1);
     assert(!station_work_start(now_ms,true));
     run_station(400,0,-10,1,1,1);
     assert(g_station_work.aligned);
-    run_station(100,0,-11,1,1,1);
+    run_station(100,0,-16,1,1,1);
     assert(!g_station_work.aligned && g_station_work.align_direction==-1);
     run_station(400,0,10,1,1,1);
     assert(g_station_work.aligned && station_work_start(now_ms,true));
     run_station(500,1,10,1,1,1);
     assert(starts==1 && g_station_work.phase==STATION_LINK_WORKING);
-    puts("ALIGN_DROPOUT_OK intermittent_center_samples_progress_missing_START_blocked_long_loss_reset_11px_direction_and_10px_START");
+    puts("ALIGN_DROPOUT_OK intermittent_center_samples_progress_missing_START_blocked_long_loss_reset_16px_direction_and_10px_START");
 }
 static void test_station_faults(void) {
     unsigned before;
@@ -1133,7 +1136,7 @@ static void test_station_tree_attempt_cap(void) {
     unsigned cur = 1u, seen = 0u, i;
     reset_station(0);
     request_station(1, 1);
-    /* 每打一次就换到另一个区域，累计 4 次仍应结束本树并交给底盘前往下一个工作区。 */
+    /* 每打一次就换到另一个区域，累计达到单树上限仍应结束本树并交给底盘前往下一个工作区。 */
     for (i = 0; i < 2000u && g_station_work.phase != STATION_LINK_DONE; ++i) {
         run_station(10, cur, 0, 1, 1, 1);
         if (starts != seen) { seen = starts; cur = cur == 1u ? 2u : 1u; }
@@ -1142,7 +1145,7 @@ static void test_station_tree_attempt_cap(void) {
     assert(g_station_work.phase == STATION_LINK_DONE && !g_station_work.hold);
     assert(g_station_work.result == WORK_RESULT_ATTEMPTS);
     assert(!Vision_MotorPhase && Vision_Motor_VerifyReturned());
-    puts("STATION_TREE_ATTEMPT_CAP_OK four_total_strikes_then_release_next_work_area");
+    puts("STATION_TREE_ATTEMPT_CAP_OK six_total_strikes_then_release_next_work_area");
 }
 
 static void test_station_four_regions_scheduled(void) {

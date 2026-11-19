@@ -24,22 +24,23 @@
 #define WORK_POSE_HARD_YAW_RAD .13962634f
 #define WORK_VISION_MISSING_SKIP_MS 2500u
 #define WORK_VISION_SKIP_ACK_MS 1500u
-#define VISUAL_SURVEY_SPEED_MPS .45f
-#define VISUAL_CLEAR_SURVEY_SPEED_MPS .50f
+#define VISUAL_SURVEY_SPEED_MPS .60f
+#define VISUAL_CLEAR_SURVEY_SPEED_MPS .60f
 #define VISUAL_GMG_APPROACH_MPS .20f
 #define VISUAL_CLEAR_GMG_APPROACH_MPS .24f
 #define VISUAL_TRACKED_APPROACH_MPS .22f
 #define VISUAL_CLEAR_TRACKED_APPROACH_MPS .26f
 #define VISUAL_NEAR_HOLD_MS 180u
 #define VISUAL_STOP_APPROACH_MPS .13f
-#define VISUAL_FINE_ADJUST_MPS .05f
+#define VISUAL_FINE_ADJUST_MPS .08f
 #define VISUAL_FAR_ADJUST_MPS .12f
 #define VISUAL_ALIGN_GAP_MS 200u
-#define VISUAL_ALIGN_GAP_MPS .04f
+#define VISUAL_ALIGN_GAP_MPS .10f
 #define SHIFT_CRUISE_CAP_MPS .28f
 #define SHIFT_CLEAR_CAP_MPS .30f
-#define SHIFT_CENTERED_CAP_MPS .36f
-#define SHIFT_CORRECTION_CAP_MPS .12f
+#define SHIFT_CENTERED_CAP_MPS .70f
+#define G4_SHIFT_WALL_CLOSING_MPS .025f
+#define SHIFT_CORRECTION_CAP_MPS .20f
 #define SHIFT_LOOKAHEAD_M .12f
 #define SHIFT_WALL_CORRECT_M .040f
 #define SHIFT_WALL_STOP_M .012f
@@ -55,7 +56,13 @@
 #define AISLE_MIN_OPPOSITE_GAP_M .040f
 #define AISLE_NEAR_SPEED_MPS .10f
 #define AISLE_RANGE_AGE_MS 200u
-#define AISLE_TRANSVERSE_GUARD_MM 150u
+/* 2026-11-20 field run: G1..G6 paired ridge returns sat at 118..199mm
+ * (median 150mm). A 150mm transverse guard therefore clamped the cross speed
+ * on exactly the operating distance, stalling the cart before the tool could
+ * reach the tree. Shorten the guard and the braking reserve on ridge aisles;
+ * the 95mm hard near-stop and the map envelope checks stay in force. */
+#define AISLE_WORK_MIN_LASER_RANGE_M .060f
+#define AISLE_TRANSVERSE_GUARD_MM 110u
 #define G4_ENTRY_OFFSET_M .030f
 #define G4_ENTRY_CAP_MPS .12f
 #define SURVEY_TRACKING_YAW_TOLERANCE_RAD .013089969f /* 0.75 degrees */
@@ -80,7 +87,7 @@ bool full_map_active(const FullMapTest* m) {
 }
 void full_map_init(FullMapTest* m,uint32_t now) {
     memset(m,0,sizeof(*m));m->initialized=auto_route_build(&m->route,1,1.570796327f);
-    m->phase=MAP_IDLE;m->reason="NEED_ORIGIN";m->speed=.50f;m->last_ms=now;
+    m->phase=MAP_IDLE;m->reason="NEED_ORIGIN";m->speed=.90f;m->last_ms=now;
     m->approach_speed=.30f;
     for(unsigned row=1;row<=6;++row) for(unsigned number=1;number<=2;++number)
         if(!full_map_set_tree_x(m,row,number,full_map_tree_x_m[row-1][number-1])) m->initialized=false;
@@ -120,11 +127,13 @@ static float segment_speed(const FullMapTest* m) {
     if(kind==AUTO_ROUTE_SURVEY && a->confirmations) {
         const uint16_t nearest=a->front_mm<a->rear_mm?a->front_mm:a->rear_mm;
         const float clearance=fmaxf(0,fminf(1,((float)nearest-130.0f)/50.0f));
-        /* Field tuning 2026-11-11: 0.08..0.15 m/s made the G1..G6 aisles the
-         * dominant cost of a run. 0.12..0.22 still leaves the 0.4 m unobserved
-         * budget ~2 s of correction window at the slow end, while the laser
-         * braking budget below keeps deciding every genuine approach. */
-        const float correction_speed=.20f+.15f*clearance;
+        /* Field tuning 2026-11-20: with the ridge guard shortened to 110mm the
+         * confirmed pair no longer clamps the cart at its 150mm operating
+         * distance, so a qualified pair may run 0.26..0.44 m/s. A lost or still
+         * rebuilding pair keeps the old 0.20..0.35 ceiling: the entry/pair-loss
+         * speed protection must not be bypassed by this tuning. */
+        const float correction_speed=a->active?
+            .26f+.18f*clearance:.20f+.15f*clearance;
         const float error_fraction=a->active ?
             fmaxf(0,fminf(1,(fabsf(a->error_m)-.025f)/.035f)):1.0f;
         speed=fminf(speed,speed+(correction_speed-speed)*error_fraction);
@@ -153,7 +162,10 @@ static bool begin(FullMapTest* m,uint32_t now) {
     if(m->segment==0u) line.end=m->route.segment[1].line.end;
     m->target_tree=0;
     const AutoRouteSegment route=m->route.segment[m->segment];
-    if(route.kind==AUTO_ROUTE_SURVEY && route.row!=1u) {
+    /* 视觉找正的微调段不再套用连续纠偏的最小输出下限：低速下 20mm/s、
+     * 40mrad/s 的强制输出会让舵轮在死区边界反复摆动（轮子跳舞）。
+     * 其余巡垄段保留滞回，保证有误差时仍能起步修正。 */
+    if(route.kind==AUTO_ROUTE_SURVEY && route.row!=1u && !m->tree_alignment.active) {
         c.lateral_min=.020f;c.wz_min=.040f;
     }
     if(route.kind==AUTO_ROUTE_SHIFT && m->segment+1u<AUTO_ROUTE_COUNT && m->route.segment[m->segment+1u].aisle==4u) {
@@ -860,7 +872,7 @@ static float aisle_ray_gap(AutoPose pose,AutoEnvelope body,unsigned channel,uint
 }
 
 static void map_cross_limits(const FullMapTest* m,FullMapInput in,ShiftWallClearance wall,
-    AutoMotionInput* input) {
+    bool g4_transfer,AutoMotionInput* input) {
     const unsigned axis=fabsf(m->motion.segment.end.y-m->motion.segment.start.y)>
         fabsf(m->motion.segment.end.x-m->motion.segment.start.x)?0u:1u;
     float negative,positive;
@@ -876,7 +888,10 @@ static void map_cross_limits(const FullMapTest* m,FullMapInput in,ShiftWallClear
     if(wall.bit) {
         const float delay_speed=SHIFT_WALL_BRAKE_MPS2*SHIFT_WALL_DELAY_S;
         const float space=fmaxf(0,wall.gap_m-SHIFT_WALL_STOP_M-.003f);
-        const float limit=wall.fresh?sqrtf(delay_speed*delay_speed+2*SHIFT_WALL_BRAKE_MPS2*space)-delay_speed:0;
+        float limit=wall.fresh?sqrtf(delay_speed*delay_speed+2*SHIFT_WALL_BRAKE_MPS2*space)-delay_speed:0;
+        /* Rejoining the shift line after recovery must not drive hard back
+         * toward the fence while its distance is settling. */
+        if(g4_transfer) limit=fminf(limit,G4_SHIFT_WALL_CLOSING_MPS);
         if(wall.outward>0) positive=fminf(positive,limit);
         else negative=fminf(negative,limit);
     }
@@ -901,7 +916,10 @@ static void map_cross_limits(const FullMapTest* m,FullMapInput in,ShiftWallClear
         const bool planned=g4_entry || (visual_stop && ch==AUTO_FRONT);
         if(!planned && (!ridge_aisle || in.laser.accepted_mm[ch]>AISLE_TRANSVERSE_GUARD_MM)) continue;
         if(!(in.laser.valid_mask&(1u<<ch)) || in.laser.sample_age_ms[ch]>LASER_FRAME_TIMEOUT_MS) continue;
-        const float available=fmaxf(0,in.laser.accepted_mm[ch]*.001f-FULL_MAP_MIN_LASER_RANGE_M-.010f);
+        /* G1..G6 keep a shorter front/rear reserve so the tool can close on
+         * the ridge; non-work legs retain the original 95mm reserve. */
+        const float reserve=ridge_aisle?AISLE_WORK_MIN_LASER_RANGE_M:FULL_MAP_MIN_LASER_RANGE_M;
+        const float available=fmaxf(0,in.laser.accepted_mm[ch]*.001f-reserve-.010f);
         const float reaction=.55f+fminf(.30f,in.laser.sample_age_ms[ch]*.001f);
         const float delay_speed=.10f*reaction;
         const float closing=fmaxf(0,sqrtf(delay_speed*delay_speed+.20f*available)-delay_speed-.012f);
@@ -1032,6 +1050,8 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     const bool paired_aisle=m->segment<AUTO_ROUTE_COUNT &&
         m->route.segment[m->segment].kind==AUTO_ROUTE_SURVEY && m->route.segment[m->segment].row!=0u;
     const bool shift_leg=m->segment<AUTO_ROUTE_COUNT && m->route.segment[m->segment].kind==AUTO_ROUTE_SHIFT;
+    const bool g4_transfer=shift_leg && m->segment+1u<AUTO_ROUTE_COUNT &&
+        m->route.segment[m->segment+1u].aisle==4u;
     if(shift_leg) {
         /* The inward side alternates between the ridge end and the far fence.
          * Keep the outer wall as the X reference for this short transfer. */
@@ -1294,16 +1314,31 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         AutoPose preview=current;
         const float remaining=seg.end.y-current.y;
         preview.y+=copysignf(fminf(fabsf(remaining),.20f),remaining);
-        if(!margin_limited && exterior.fresh && exterior.gap_m>=.035f && wall->active && wall->axis==0u &&
-           in.now-wall->sample_ms<=200u && fabsf(wall->error_m)<=.012f &&
-           shift_cross<=.012f && shift_yaw<=.034906585f &&
+        /* 换垄提速：2026-11-20 实车日志显示 0.70 档整轮未命中，但放宽进入条件
+         * 会让 G4 外墙回放误入高速档、破坏已知墙距保护，因此保留原有严格门控。
+         * 提速改由提高修正档下限(0.12->0.20)与收窄横差/航向降速区间承担，
+         * 基础巡航档与 40mm 墙距修正带保持不变。 */
+        if(!margin_limited && exterior.fresh && exterior.gap_m>=.030f && wall->active && wall->axis==0u &&
+           in.now-wall->sample_ms<=300u && fabsf(wall->error_m)<=.018f &&
+           shift_cross<=.018f && shift_yaw<=.034906585f &&
            auto_route_pose_clear(&m->route,body,current,.03f) &&
            auto_route_pose_clear(&m->route,body,preview,.03f))
             cruise=SHIFT_CENTERED_CAP_MPS;
-        const float cross_cap=speed_blend(cruise,SHIFT_CORRECTION_CAP_MPS,shift_cross,.012f,.035f);
-        const float yaw_cap=speed_blend(cruise,SHIFT_CORRECTION_CAP_MPS,shift_yaw,.034906585f,.087266463f);
+        /* 2026-11-20: the old 0.12 m/s correction floor plus a 12mm/2deg blend
+         * held recorded shift legs at 0.13..0.22 m/s even after centering.
+         * Keep the cruise caps unchanged (G4 outer-wall protection), but raise
+         * the correction floor and widen the full-speed cross/yaw band. */
+        const float cross_cap=speed_blend(cruise,SHIFT_CORRECTION_CAP_MPS,shift_cross,.018f,.040f);
+        const float yaw_cap=speed_blend(cruise,SHIFT_CORRECTION_CAP_MPS,shift_yaw,.052359878f,.087266463f);
         const float wall_cap=speed_blend(.05f,cruise,exterior.gap_m,SHIFT_WALL_STOP_M,SHIFT_WALL_CORRECT_M);
         range_speed=fminf(range_speed,fminf(wall_cap,fminf(cross_cap,yaw_cap)));
+        if(g4_transfer && exterior.fresh) {
+            /* Ease off before a delayed fence update reaches the existing
+             * freshness stop. An aged sample cannot release the brake. */
+            const float age=(float)raw_laser.sample_age_ms[AUTO_RIGHT];
+            range_speed=fminf(range_speed,speed_blend(range_speed,.18f,
+                age,120.0f,(float)SHIFT_WALL_MAX_AGE_MS));
+        }
     }
     if(paired_aisle && !m->aisle_entry_qualified) {
         const AutoSegment row=m->route.segment[m->segment].line;
@@ -1647,7 +1682,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
     if(fabsf(seg.end.y-seg.start.y)>fabsf(seg.end.x-seg.start.x)) input.pose.pose.x=seg.start.x+cross;
     else input.pose.pose.y=seg.start.y+cross;
     if(m->endpoint.active && !visual_alignment && !m->visual_work) input.pose.pose.x=endpoint_x;
-    map_cross_limits(m,raw_input,exterior,&input);
+    map_cross_limits(m,raw_input,exterior,g4_transfer,&input);
     if(m->aisle_correction.active) {
         /* Feed the confirmed, filtered pair into continuous cross correction.
          * The separately rate-limited fused pose remains the map/envelope state. */
