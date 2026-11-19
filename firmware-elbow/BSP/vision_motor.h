@@ -27,7 +27,7 @@
  * 本节区间参数用于底盘协同模式。独立测试只使用目标稳定、无目标确认参数。
  * 修改参数后需要重新编译和烧录。当前激光读数只参与显示。
  */
-#define WORK_DX_CENTER STATION_VISION_CENTER_DX // 调整相机位置后以0像素为对中目标。
+#define WORK_DX_CENTER STATION_VISION_CENTER_DX // 相机原始 dx 的对中目标。
 #define WORK_SLOW_DX 100                  // 传统协同模式减速区间。
 #define WORK_VISUAL_BRAKE_DX 40           // 视觉接近到±40像素再平滑停车，停稳后用实时dx对中。
 #define WORK_VISUAL_ACQUIRE_HOLD_MS 1500U // Gmg持续存在时，短时保留已捕获树的接近资格。
@@ -71,16 +71,16 @@ uint8_t Vision_Motor_VerifyReturned(void);
  *
  * 检测到目标后的动作顺序：
  * 打击 → 换向停顿 → 返回 → 打击后等待 → 接收下一条指令。
- * 动作由毫秒计时控制，和 elbow-controller 里已验证的版本一致：
- * 100% 占空比、打击和返回各650ms，没有编码器位置闭环和软限位。
+ * 动作由毫秒计时控制。100% 占空比，打击和返回各 700 ms。
+ * 编码器不参与位置闭环和软限位。
  * 实际机械方向取决于接线，方向调整在各区域的独立控制函数中完成。
  * 这里是按时间控制，逆转相同时间不保证机构精确回到原位。
  */
 #define VISION_MOTOR_PWM 100U           // 打击和返回共用占空比；手动编码器测量模式的实际PWM为0。
                                      // 当前 TIM1 的 ARR=99，因此这里的数值对应百分比。
                                      // TB6612 由 10V 供电，100 就是满占空比、约 10V 加到电机上。
-#define VISION_CW_MS 650U            // 打击阶段运行时间，当前 650 毫秒，即 0.65 秒。
-#define VISION_CCW_MS 650U           // 返回阶段运行时间，当前 650 毫秒，即 0.65 秒。
+#define VISION_CW_MS 700U            // 打击阶段运行时间，单位 ms。
+#define VISION_CCW_MS 700U           // 返回阶段运行时间，单位 ms。
 #define VISION_REVERSE_PAUSE_MS 10U  // 换向前先停止输出，当前停 10 毫秒，再开始返回。
 #define VISION_RETRIGGER_DELAY_MS 50U // 一轮结束后等待，当前 50 毫秒，即 0.05 秒，再接收新区域指令。
 

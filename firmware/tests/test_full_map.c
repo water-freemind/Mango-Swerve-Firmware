@@ -1319,17 +1319,19 @@ static void visual_speed_by_target_test(void) {
         full_map_step(&map,in);
         assert(map.phase==MAP_RUNNING && fabsf(map.motion.config.vmax-expected[i])<.00001f);
     }
-    for(unsigned i=0u;i<3u;++i) {
+    const int16_t align_dx[]={55,15,55,-55,30};
+    const float align_speed[]={.10f,.05f,.05f,.05f,.05f+(.10f-.05f)*14.0f/29.0f};
+    for(unsigned i=0u;i<sizeof(align_dx)/sizeof(align_dx[0]);++i) {
         FullMapTest map;
         FullMapInput in=setup_aisle(&map,4,1.88f);
         map.visual_work=map.visual_stop=true;map.target_tree=12;
         map.tree_alignment=(MapTreeAlignment){.active=true,.station=12,.direction=1};
         in.work_enabled=in.work_online=in.work_align=in.work_alignment_fresh=true;
-        in.work_station=12;in.work_target_fresh=i!=2u;in.work_target_dx=i==0u?55:15;
+        in.work_station=12;in.work_target_fresh=i!=2u;in.work_target_dx=align_dx[i];
         in.work_align_direction=1;
         in.now=10;in.laser=ridge_scan(map.localization.pose.pose,in.now);
         full_map_step(&map,in);
-        assert(map.phase==MAP_RUNNING && fabsf(map.motion.config.vmax-(i==0u?.08f:.05f))<.00001f);
+        assert(map.phase==MAP_RUNNING && fabsf(map.motion.config.vmax-align_speed[i])<.00001f);
     }
     puts("VISUAL_SPEED_BY_TARGET_OK far_faster_near_stale_opposite_and_gear_bounded");
 }
@@ -2180,6 +2182,104 @@ static void recorded_g4_near_recovery_test(void) {
     assert(m.command.vx==0 && m.command.vy==0);
     puts("RECORDED_G4_NEAR_OK rear_99_then_93mm_not_map_observation_escape_only_measured_40mm_limit");
 }
+static void recorded_g4_east_entry_test(void) {
+    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    const struct {float gear,yaw_error;int rear_bias_mm;uint16_t rear_obstacle_mm,front_obstacle_mm;} cases[]={
+        {.50f,.018f,70,0,0},
+        {.90f,.035f,83,0,0},
+        {.50f,.018f,70,80,0},
+        {.50f,.018f,70,0,95},
+        {.50f,.018f,0,0,0},
+    };
+    for(unsigned trial=0;trial<sizeof(cases)/sizeof(cases[0]);++trial) {
+        const uint16_t rear_obstacle=cases[trial].rear_obstacle_mm,front_obstacle=cases[trial].front_obstacle_mm;
+        FullMapTest m;FullMapInput in=setup_aisle(&m,6u,2.68f);
+        m.speed=cases[trial].gear;
+        m.visual_work=in.work_enabled=true;in.work_online=in.work_ready=true;
+        AutoPose actual=m.localization.pose.pose;
+        actual.yaw-=cases[trial].yaw_error;
+        AutoTwist measured={0};
+        const int rear_bias_mm=cases[trial].rear_bias_mm;
+        const int front_bias_mm=rear_bias_mm?rear_bias_mm-10:0;
+        uint32_t entry_ms=0,first_short_ms=0;
+        uint16_t first_short_mm=0,min_front_mm=UINT16_MAX,min_rear_mm=UINT16_MAX;
+        float entry_y=0,max_blind_speed=0;
+        bool shifted=false,acquired=false,paused=false,finished=false;
+        for(uint32_t now=10;now<=20000u;now+=10u) {
+            measured.vx+=(m.command.vx-measured.vx)*.12f;
+            measured.vy+=(m.command.vy-measured.vy)*.12f;
+            measured.wz+=(m.command.wz-measured.wz)*.12f;
+            const AutoVec2 delta=auto_rotate((AutoVec2){measured.vx*.01f,measured.vy*.01f},actual.yaw);
+            actual.x+=delta.x;actual.y+=delta.y;actual.yaw+=measured.wz*.01f;
+            in.now=now;in.wheel=measured;in.imu_yaw=actual.yaw-1.570796327f;
+            in.stationary=hypotf(measured.vx,measured.vy)<.01f && fabsf(measured.wz)<.02f;
+            /* The field stop did not finish reorienting the wheels before the escape deadline. */
+            in.aligned=(rear_obstacle || !m.near_recovery.active) && (m.segment==6u || now-m.segment_ms>=600u);
+            const bool g4=m.segment==8u;
+            if(now%100u==0) {
+                in.laser=ridge_scan(actual,now);
+                if(g4) {
+                    uint16_t rear=in.laser.accepted_mm[AUTO_REAR];
+                    uint16_t front=in.laser.accepted_mm[AUTO_FRONT];
+                    /* R3 returns first, then R4. Model the measured range bias
+                     * as a function of actual Y so the route can change it. */
+                    if(rear<250u) rear=(uint16_t)fmaxf(1,(int)rear-rear_bias_mm+(now%200u?2:-2));
+                    if(front<250u) front=(uint16_t)((int)front+front_bias_mm);
+                    if(rear<250u && front>600u && !first_short_ms) {
+                        first_short_ms=now;first_short_mm=rear;
+                        if(front_obstacle) front=front_obstacle;
+                    }
+                    if(rear_obstacle && first_short_ms) rear=rear_obstacle;
+                    if(front<min_front_mm) min_front_mm=front;
+                    if(rear<min_rear_mm) min_rear_mm=rear;
+                    in.laser.accepted_mm[AUTO_REAR]=in.laser.distance_mm[AUTO_REAR]=rear;
+                    in.laser.accepted_mm[AUTO_FRONT]=in.laser.distance_mm[AUTO_FRONT]=front;
+                }
+            } else for(unsigned ch=0;ch<4u;++ch) in.laser.sample_age_ms[ch]+=10u;
+            full_map_step(&m,in);
+            shifted|=m.segment==7u;
+            if(!paused && m.phase==MAP_PAUSED && !rear_obstacle && !front_obstacle)
+                fprintf(stderr,"G4_ENTRY_PAUSE trial=%u reason=%s segment=%u pose=%.4f,%.4f near=%x brake=%x stale=%x front_rear=%u,%u\n",
+                    trial,m.reason,m.segment,actual.x,actual.y,m.range_near_mask,m.range_brake_mask,m.range_stale_mask,
+                    in.laser.accepted_mm[AUTO_FRONT],in.laser.accepted_mm[AUTO_REAR]);
+            paused|=m.phase==MAP_PAUSED;
+            if(first_short_ms==now && (rear_obstacle || front_obstacle)) {
+                const unsigned obstacle=rear_obstacle?AUTO_REAR:AUTO_FRONT;
+                assert(m.phase==MAP_PAUSED && (m.range_near_mask&(1u<<obstacle)));
+                assert(m.command.vx==0 && m.command.vy==0 && m.command.wz==0);
+                if(front_obstacle) {finished=true;break;}
+            }
+            if(rear_obstacle && first_short_ms) {
+                assert(m.command.vx==0 && m.command.vy==0 && m.command.wz==0);
+                if(m.phase==MAP_FAULT) {
+                    assert(!strcmp(m.reason,"NEAR_RECOVERY_TIMEOUT"));
+                    finished=true;break;
+                }
+            } else if(m.phase==MAP_FAULT) break;
+            if(g4 && !entry_ms) {entry_ms=now;entry_y=m.localization.pose.pose.y;}
+            if(g4 && m.phase==MAP_RUNNING) {
+                assert(auto_route_pose_clear(&m.route,body,m.localization.pose.pose,0));
+                if(!rear_bias_mm) assert(auto_route_pose_clear(&m.route,body,actual,0));
+                acquired|=m.aisle_correction.active;
+                if(!acquired) max_blind_speed=fmaxf(max_blind_speed,hypotf(m.command.vx,m.command.vy));
+                if(m.aisle_entry_qualified && actual.x<2.23f && m.motion.config.vmax>.12f) {
+                    if(!first_short_ms) fprintf(stderr,"G4_ENTRY_ORDER trial=%u opposite_pair_appeared_before_short_rear\n",trial);
+                    assert(shifted && acquired && first_short_ms && !paused);
+                    assert(fabsf(entry_y-m.route.segment[8].line.start.y-.030f)<=.009f);
+                    assert(max_blind_speed<=.121f && min_front_mm>95u && min_rear_mm>95u);
+                    printf("G4_EAST_ENTRY_OK gear=%.2f rear_bias_mm=%d first_rear_mm=%u min_rear_mm=%u min_front_mm=%u entry_ms=%u\n",
+                        m.speed,rear_bias_mm,first_short_mm,min_rear_mm,min_front_mm,now-entry_ms);
+                    finished=true;break;
+                }
+            }
+        }
+        if(!finished) fprintf(stderr,"G4_EAST_ENTRY_FAILED trial=%u reason=%s segment=%u first_rear_mm=%u min_rear_mm=%u actual=%.3f,%.3f fused=%.3f,%.3f pair=%u\n",
+            trial,m.reason,m.segment,first_short_mm,min_rear_mm,actual.x,actual.y,
+            m.localization.pose.pose.x,m.localization.pose.pose.y,m.aisle_correction.confirmations);
+        assert(finished);
+    }
+    puts("G4_EAST_ENTRY_OBSTACLE_OK 80mm_rear_never_escapes_95mm_front_stops");
+}
 static void entry_braking_plan_test(void) {
     const float speeds[5]={.5f,.6f,.7f,.8f,.9f};
     for(unsigned i=0;i<5u;++i) {
@@ -2217,7 +2317,8 @@ int main(void) {
     origin_fresh_cached_front_test();
     recorded_entry_urgent_jump_test();endpoint_jitter_gate_test();endpoint_rejects_bad_evidence_test();route_cross_clearance_test();frozen_pair_reference_revoke_test();
     recorded_pair_control_authority_test();recorded_g5_escape_space_test();
-    uniform_near_threshold_test();near_recovery_test();recorded_g4_near_recovery_test();entry_braking_plan_test();
+    uniform_near_threshold_test();near_recovery_test();recorded_g4_near_recovery_test();
+    recorded_g4_east_entry_test();entry_braking_plan_test();
     entry_raw_wall_source_test(.5f);entry_raw_wall_source_test(.6f);entry_raw_wall_source_test(.7f);
     opposite_wall_handover_test();
     far_handover_boundaries_test();

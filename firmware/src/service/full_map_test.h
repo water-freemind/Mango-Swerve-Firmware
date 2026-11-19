@@ -115,7 +115,7 @@ typedef struct {
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */
     uint16_t trees_done;
     uint16_t trees_unresolved; /* Stations skipped or still reporting fruit after the retry limit. */
-    bool aisle_entry_qualified;
+    bool aisle_entry_qualified, g4_entry_offset;
     bool visual_work, visual_stop, visual_braking, work_request_pending, work_scan_ending;
     uint8_t visual_segment, row_work_count;
     uint32_t work_count, unresolved_work_count;
