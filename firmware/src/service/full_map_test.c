@@ -33,6 +33,9 @@
 #define SHIFT_CENTERED_CAP_MPS .32f
 #define SHIFT_CORRECTION_CAP_MPS .12f
 #define SHIFT_LOOKAHEAD_M .12f
+#define G7_FRONT_SLOW_M .130f
+#define G7_FRONT_CRUISE_M .155f
+#define G7_CAUTION_SPEED_MPS .10f
 #define SURVEY_ENTRY_CAP_MPS .22f
 #define SURVEY_ENTRY_TRACKED_CAP_MPS .26f
 #define SURVEY_TRACKING_YAW_TOLERANCE_RAD .013089969f /* 0.75 degrees */
@@ -132,6 +135,7 @@ static bool begin(FullMapTest* m,uint32_t now) {
          * Limit this open aisle's cross response during the launch ramp. */
         c.lateral_max=.04f;
         c.cross_kp=1.6f;
+        c.wz_min=0;
     }
     if(route.kind==AUTO_ROUTE_SURVEY && route.row>=1u && route.row<=6u) {
         if(m->visual_work) {
@@ -396,7 +400,9 @@ static void correct_boundary_cross(FullMapTest* m,FullMapInput in) {
         s->error_m+=(s->axis==0?velocity.x:velocity.y)*dt;
     }
     s->last_step_ms=in.now;
-    if(fabsf(in.wheel.wz)>.1f || !in.laser.frame_fresh) goto gap;
+    /* In G7, FieldPose checks the north ray's bounded rotation error. */
+    if(!in.laser.frame_fresh || (m->route.segment[m->segment].aisle!=7u && fabsf(in.wheel.wz)>.1f))
+        goto gap;
     for(unsigned ch=0;ch<4u;++ch) {
         const uint8_t bit=(uint8_t)(1u<<ch);
         if(!(in.laser.valid_mask&bit) || !(in.laser.updated_mask&bit) ||
@@ -758,12 +764,15 @@ static void map_cross_limits(const FullMapTest* m,FullMapInput in,AutoMotionInpu
     input->cross_negative_limit=normal>=0?negative:positive;
     input->cross_positive_limit=normal>=0?positive:negative;
     const uint8_t front=(uint8_t)(1u<<AUTO_FRONT);
-    if(axis!=1u || !m->visual_work || !m->visual_stop || !m->target_tree || !in.work_enabled ||
-       in.work_active || !in.laser.frame_fresh || !(in.laser.valid_mask&front) ||
-       in.laser.sample_age_ms[AUTO_FRONT]>LASER_FRAME_TIMEOUT_MS) return;
+    const bool g7=m->route.segment[m->segment].aisle==7u;
+    const bool visual_approach=m->visual_work && m->visual_stop && m->target_tree &&
+        in.work_enabled && !in.work_active;
+    if(axis!=1u || (!g7 && !visual_approach) || !in.laser.frame_fresh ||
+       !(in.laser.valid_mask&front) || in.laser.sample_age_ms[AUTO_FRONT]>LASER_FRAME_TIMEOUT_MS) return;
     /* Apply the front stopping budget before an orthogonal correction starts.
      * Preserve the 95 mm near stop and leave the along-row command available. */
-    const float available=fmaxf(0,in.laser.accepted_mm[AUTO_FRONT]*.001f-FULL_MAP_MIN_LASER_RANGE_M-.010f);
+    const float minimum=g7?G7_FRONT_SLOW_M:FULL_MAP_MIN_LASER_RANGE_M+.010f;
+    const float available=fmaxf(0,in.laser.accepted_mm[AUTO_FRONT]*.001f-minimum);
     const float reaction=.55f+fminf(.30f,in.laser.sample_age_ms[AUTO_FRONT]*.001f);
     const float delay_speed=.10f*reaction;
     const float closing=fmaxf(0,sqrtf(delay_speed*delay_speed+.20f*available)-delay_speed-.012f);
@@ -845,12 +854,14 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         in.odom_ok && (m->phase==MAP_RUNNING || m->phase==MAP_PAUSED));
     in.laser=checked.checked;m->laser_rejected_mask=checked.rejected_mask;
     const bool entry_leg=m->segment==0u;
+    const bool g7=m->segment<AUTO_ROUTE_COUNT && m->route.segment[m->segment].aisle==7u;
+    const uint8_t front_bit=(uint8_t)(1u<<AUTO_FRONT);
     LaserSnapshot observation=in.laser;
     for(unsigned i=0u;i<LASER_CHANNEL_COUNT;++i) {
         const uint8_t bit=(uint8_t)(1u<<i);
-        if(entry_leg && i==AUTO_LEFT) {
-            /* A motion/geometry-checked nearby wall uses its independent raw
-             * source time. A 2-frame-old median must not starve a live X fix. */
+        if((entry_leg && i==AUTO_LEFT) || (g7 && i==AUTO_FRONT)) {
+            /* Use the checked near-wall sample and its own source time.
+             * A delayed median must not starve live perimeter fixes. */
             if(checked.rejected_mask&bit) {
                 observation.valid_mask&=(uint8_t)~bit;observation.updated_mask&=(uint8_t)~bit;
             }
@@ -879,7 +890,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
      * It must not become a south-fence position observation during this leg.
      * Keep the north/front fence and east/west observations. The original
      * snapshot remains intact for freshness and collision protection. */
-    if(m->segment<AUTO_ROUTE_COUNT && m->route.segment[m->segment].aisle==7u) {
+    if(g7) {
         observation.valid_mask&=(uint8_t)~(1u<<AUTO_REAR);
         observation.updated_mask&=(uint8_t)~(1u<<AUTO_REAR);
     }
@@ -896,7 +907,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         observation.valid_mask&=(uint8_t)~inward;
         observation.updated_mask&=(uint8_t)~inward;
     }
-    const AutoRoute* pose_route=paired_aisle || entry_leg || shift_leg ? NULL:&m->route;
+    const AutoRoute* pose_route=paired_aisle || entry_leg || shift_leg || g7 ? NULL:&m->route;
     LaserSnapshot pose_observation=observation;
     if(paired_aisle) {
         /* At ridge ends the north/south rays switch between distant fences
@@ -1012,7 +1023,6 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
      * observations become eligible only inside the 1.5m approach zone. */
     m->odom_range_mask=0;
     AutoPlane north_plane;float north_distance;
-    const uint8_t front_bit=(uint8_t)(1u<<AUTO_FRONT);
     const float projection=sinf(m->localization.pose.pose.yaw);
     north_distance=(4.6f*m->route.scale-m->localization.pose.pose.y)/fmaxf(.95f,projection)-.04098f;
     if(entry_leg && raw_laser.frame_fresh &&
@@ -1098,8 +1108,21 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
         m->localization.uncorrected_m[1]>y_budget);
     const bool entry_needs_north=entry_leg && m->route.segment[1].line.end.y-m->localization.pose.pose.y<.30f &&
         (!m->entry.north_confirmed || in.now-m->localization.constrained_ms[1]>500u);
-    uint8_t required=0;bool safe=!pose_limited && !entry_needs_north;
+    const bool g7_front_missing=g7 && (!raw_laser.frame_fresh || !(raw_laser.valid_mask&front_bit) ||
+        raw_laser.sample_age_ms[AUTO_FRONT]>LASER_FRAME_TIMEOUT_MS);
+    uint8_t required=0;bool safe=!pose_limited && !entry_needs_north && !g7_front_missing;
     float range_speed=segment_speed(m);
+    if(g7) {
+        const MapWallCorrection* wall=&m->wall_correction;
+        const bool north_tracked=wall->active && wall->channel==AUTO_FRONT &&
+            in.now-wall->sample_ms<=LASER_FRAME_TIMEOUT_MS;
+        /* The north fence is orthogonal to travel. Slow the lateral ramp
+         * independently of the usual along-direction stopping budget. */
+        const float front_cap=north_tracked?speed_blend(G7_CAUTION_SPEED_MPS,range_speed,
+            raw_laser.accepted_mm[AUTO_FRONT]*.001f,G7_FRONT_SLOW_M,G7_FRONT_CRUISE_M):
+            G7_CAUTION_SPEED_MPS;
+        range_speed=fminf(range_speed,front_cap);
+    }
     if(shift_leg) {
         const float shift_cross=fabsf(current.x-seg.start.x);
         const float shift_yaw=fabsf(auto_wrap_angle(current.yaw-seg.heading));
@@ -1241,7 +1264,8 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             m->recovery_updates=0;
             m->recovery_frame=in.laser.frame_count;auto_motion_cancel(&m->motion);
         }
-        m->reason=pose_limited?"POSE_OBSERVATION_PAUSE":entry_needs_north?"ENTRY_NORTH_PAUSE":"RANGE_PAUSE";
+        m->reason=pose_limited?"POSE_OBSERVATION_PAUSE":entry_needs_north?"ENTRY_NORTH_PAUSE":
+            g7_front_missing?"G7_FRONT_PAUSE":"RANGE_PAUSE";
     }
     if(m->phase==MAP_PAUSED) {
         /* Field tuning 2026-11-11: 5 s was shorter than one braking-and-settle
@@ -1252,6 +1276,7 @@ void full_map_step(FullMapTest* m,FullMapInput in) {
             const char* timeout_reason="RANGE_TIMEOUT";
             if(!strcmp(m->reason,"POSE_OBSERVATION_PAUSE")) timeout_reason="POSE_OBSERVATION_TIMEOUT";
             else if(!strcmp(m->reason,"ENTRY_NORTH_PAUSE")) timeout_reason="ENTRY_NORTH_TIMEOUT";
+            else if(!strcmp(m->reason,"G7_FRONT_PAUSE")) timeout_reason="G7_FRONT_TIMEOUT";
             else if(!strcmp(m->reason,"RANGE_PAUSE")) timeout_reason="RANGE_PAUSE_TIMEOUT";
             full_map_stop(m,timeout_reason,false);return;
         }

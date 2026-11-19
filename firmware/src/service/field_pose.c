@@ -88,12 +88,14 @@ bool field_pose_step_route(FieldPose* s,AutoTwist v,float yaw,bool healthy,const
         if(!associated) continue;
         const float a=prior.yaw+laser_yaw(ch);
         const float incidence=plane.normal.x*cosf(a)+plane.normal.y*sinf(a);
-        /* A short, nearly normal side-wall ray remains usable during heading
+        /* A short, nearly normal perimeter ray remains usable during heading
          * correction when its age bounds rotational displacement below 10mm. */
         const float rotation_error=(expected+.04098f)*fabsf(v.wz)*age*.001f;
-        const bool short_side_wall=ch<2u && expected<.6f && fabsf(plane.normal.x)>.9f &&
+        const bool perimeter_ray=(ch<2u && plane.surface_id<=2u) ||
+            (ch==AUTO_FRONT && plane.surface_id==3u);
+        const bool short_wall=perimeter_ray && expected<.6f &&
             incidence>.95f && fabsf(v.wz)<=.35f && rotation_error<=.01f;
-        if(fabsf(v.wz)>.1f && !short_side_wall) {s->rejected_mask|=bit;continue;}
+        if(fabsf(v.wz)>.1f && !short_wall) {s->rejected_mask|=bit;continue;}
         const float normal_speed=fabsf(plane.normal.x*velocity.x+plane.normal.y*velocity.y);
         const float tangent_speed=fabsf(-plane.normal.y*velocity.x+plane.normal.x*velocity.y);
         const bool wall_following=expected<.6f && tangent_speed>.03f &&

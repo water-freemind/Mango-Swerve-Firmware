@@ -376,6 +376,49 @@ static void g7_ridge_exit_test(void) {
     }
     assert(0);
 }
+static void g7_north_wall_tracking_test(void) {
+    FullMapTest map;FullMapInput in=setup_aisle(&map,2,.5f);
+    AutoPose actual=map.localization.pose.pose;
+    actual.y+=.023f; /* Unmeasured north offset entering G7. */
+    const uint8_t front=(uint8_t)(1u<<AUTO_FRONT);
+    for(unsigned now=100;now<=400;now+=100) {
+        for(unsigned step=now-90;step<=now;step+=10) {
+            in.now=step;
+            if(step==now) {
+                in.laser=ridge_scan(actual,step);
+                /* Older median puts the vehicle south of its actual position. */
+                in.laser.median_valid_mask|=front;in.laser.median_updated_mask|=front;
+                in.laser.median_mm[AUTO_FRONT]=170;in.laser.median_age_ms[AUTO_FRONT]=200;
+                in.laser.sample_age_ms[AUTO_FRONT]=60;
+            } else in.laser.sample_age_ms[AUTO_FRONT]+=10;
+            in.wheel.wz=.20f; /* Short, near-normal ray within the rotation error budget. */
+            full_map_step(&map,in);
+            assert(map.phase==MAP_RUNNING);
+        }
+        assert(map.localization.used_mask&front);
+        assert(!(map.localization.used_mask&(1u<<AUTO_REAR)));
+    }
+    assert(map.wall_correction.active && map.wall_correction.channel==AUTO_FRONT);
+    assert(map.wall_correction.error_m>.020f && map.localization.pose.pose.y>4.410f);
+    assert(map.motion.config.vmax<.23f);
+    in.wheel.wz=0;
+    for(unsigned now=410;now<=700;now+=10) {
+        in.now=now;in.laser=ridge_scan(actual,now);
+        full_map_step(&map,in);
+    }
+    assert(map.command.vx<0 || map.hint.vx<0); /* Steer away from the north fence. */
+
+    in.now+=10;in.laser=ridge_scan(actual,in.now);
+    in.laser.valid_mask&=(uint8_t)~front;in.laser.updated_mask&=(uint8_t)~front;
+    full_map_step(&map,in);
+    assert(map.phase==MAP_PAUSED && map.command.vx==0 && map.command.vy==0);
+    in.now+=10;in.laser=ridge_scan(actual,in.now);in.laser.accepted_mm[AUTO_FRONT]=95;
+    full_map_step(&map,in);
+    assert(map.phase==MAP_PAUSED && map.near_recovery.active && (map.near_recovery.mask&front));
+    assert(!(map.localization.used_mask&front));
+    puts("G7_NORTH_WALL_TRACKING_OK real_front_rotation_and_delay_checked_near_cap_backoff_stale_and_95mm_stop");
+}
+
 static void g7_steering_feedback_test(void) {
     FullMapTest map;
     full_map_init(&map,0);
@@ -619,9 +662,11 @@ static void work_slow_distance_test(void) {
         map.visual_work=true;map.target_tree=0;
         input.work_enabled=input.work_online=true;
         input.work_station=0;input.work_slow=slow!=0u;
-        input.now=10;input.laser=scan(map.localization.pose.pose,input.now);
-        full_map_step(&map,input);
-        assert(map.phase==MAP_RUNNING);
+        for(unsigned now=10;now<=300;now+=10) {
+            input.now=now;input.laser=scan(map.localization.pose.pose,input.now);
+            full_map_step(&map,input);
+            assert(map.phase==MAP_RUNNING);
+        }
         idle_limit[slow]=map.motion.config.vmax;
     }
     assert(idle_limit[0]>.1f && fabsf(idle_limit[0]-idle_limit[1])<.00001f);
@@ -680,15 +725,18 @@ static void speed_transition_tests(void) {
         previous=m.motion.config.vmax;
     }
     FullMapTest m;FullMapInput in=setup_aisle(&m,2,2);
-    m.speed=.6f;in.now=10;in.laser=scan(m.localization.pose.pose,10);
-    full_map_step(&m,in);
-    assert(m.phase==MAP_RUNNING);
+    m.speed=.6f;
+    for(unsigned now=10;now<=300;now+=10) {
+        in.now=now;in.laser=scan(m.localization.pose.pose,now);
+        full_map_step(&m,in);
+        assert(m.phase==MAP_RUNNING);
+    }
     assert(m.motion.config.vmax>.4f && m.motion.config.vmax<.55f);
     /* Immediate near protection and permission loss still stop the task. */
-    in.now=20;in.laser=scan(m.localization.pose.pose,20);
+    in.now+=10;in.laser=scan(m.localization.pose.pose,in.now);
     in.laser.accepted_mm[AUTO_RIGHT]=94;
     full_map_step(&m,in);assert(m.phase==MAP_PAUSED && m.command.vy==0);
-    in.now=30;in.healthy=false;full_map_step(&m,in);
+    in.now+=10;in.healthy=false;full_map_step(&m,in);
     assert(m.phase==MAP_FAULT && m.command.vx==0 && m.command.vy==0);
     puts("MAP_SPEED_TRANSITION_OK continuous_aisle_limit anticipatory_braking safety_retained");
 }
@@ -2210,7 +2258,7 @@ int main(void) {
     visual_tree_alignment_travel_test();
     visual_realign_timer_test();
     entry_heading_correction_observation_test();
-    g7_steering_feedback_test();
+    g7_north_wall_tracking_test();g7_steering_feedback_test();
     skipped_tree_result_test();
     work_failure_reason_test();
     entry_rear_start_test();

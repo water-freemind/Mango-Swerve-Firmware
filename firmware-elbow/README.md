@@ -10,9 +10,9 @@
 
 `BSP/vision_motor.h` 的 ELBOW_TEST_MODE 默认2，与 H723 的 FullMapWork 镜像协作。模式1用于独立视觉测试，模式0使用原版本1的视觉主导协同，模式3用于PWM为零的手动编码器读数。修改后重新构建和烧录。
 
-2026-11-16按 `yjjy25/elbow-controller` 已验证的分阶段计时改为纯定时：100% 占空比打击 650 ms → 停 10 ms 换向 → 返回 650 ms → 等待 50 ms，参数和四条方向函数与该仓库逐项对齐（TIM1 PSC=79/ARR=99、CCR=100 即满占空比）。不再使用编码器位置闭环、软限位、无进展检测和回位核验。`VISION_MOTOR_PWM`、`VISION_CW_MS`、`VISION_CCW_MS`、`VISION_REVERSE_PAUSE_MS`、`VISION_RETRIGGER_DELAY_MS` 都在 `BSP/vision_motor.h`。上电不再需要手动收回并登记零位，`Vision_HomeConfirmed` 直接为 1，底盘 HOME 握手仍可应答。编码器只保留测速和手动换行程读数；若现场出现顶死堵转，把 `ELBOW_STROKE_END_MS` 从 0 改成 200 可启用“编码器停走即收尾”。视觉目标dx=0，ALIGN与START均要求±10像素，作业复检超过±30像素时请求返回后重新对齐。连续2秒无合法帧才判离线。`elbow_stroke_config.h` 已停用，只留作手推量程记录。串口状态行新增 `STROKE:<ms> CNT:<counts>`，可直接读到上一段打击/返回的真实用时和编码器变化量。
+2026-11-16按 `yjjy25/elbow-controller` 已验证的分阶段计时改为纯定时：100% 占空比打击 650 ms → 停 10 ms 换向 → 返回 650 ms → 等待 50 ms，参数和四条方向函数与该仓库逐项对齐（TIM1 PSC=79/ARR=99、CCR=100 即满占空比）。不再使用编码器位置闭环、软限位、无进展检测和回位核验。`VISION_MOTOR_PWM`、`VISION_CW_MS`、`VISION_CCW_MS`、`VISION_REVERSE_PAUSE_MS`、`VISION_RETRIGGER_DELAY_MS` 都在 `BSP/vision_motor.h`。上电不再需要手动收回并登记零位，`Vision_HomeConfirmed` 直接为 1，底盘 HOME 握手仍可应答。编码器只保留测速和手动换行程读数；若现场出现顶死堵转，把 `ELBOW_STROKE_END_MS` 从 0 改成 200 可启用“编码器停走即收尾”。视觉目标dx=-22，ALIGN与START均要求±10像素，作业复检超过±30像素时请求返回后重新对齐。连续2秒无合法帧才判离线。`elbow_stroke_config.h` 已停用，只留作手推量程记录。串口状态行新增 `STROKE:<ms> CNT:<counts>`，可直接读到上一段打击/返回的真实用时和编码器变化量。
 
-模式2当前源码采用版本5协议。底盘沿垄巡航，同时识别到 Tree 和 Gmg 才提出 SLOW/WAIT，停车位置由视觉触发。dx=0 对中、连续停稳200ms后发送 START。定时返回结束后通过 DONE/RELEASE/RELEASED 离树，不再做编码器回收核验。同一区域最多4次，且一棵树累计最多4次；次数耗尽记录未打落，通过 DONE/RELEASE 交给底盘前往下一个工作区。离树确认避免重复触发同一目标。两板须配套更新版本5。操作、状态和异常处理见[联合调试说明](../docs/CAN_WORK_DEBUG.md)。
+模式2当前源码采用版本5协议。底盘沿垄巡航，同时识别到 Tree 和 Gmg 才提出 SLOW/WAIT，停车位置由视觉触发。dx=-22 对中、连续停稳200ms后发送 START。定时返回结束后通过 DONE/RELEASE/RELEASED 离树，不再做编码器回收核验。同一区域最多4次，且一棵树累计最多4次；次数耗尽记录未打落，通过 DONE/RELEASE 交给底盘前往下一个工作区。离树确认避免重复触发同一目标。两板须配套更新版本5。操作、状态和异常处理见[联合调试说明](../docs/CAN_WORK_DEBUG.md)。
 
 相机离线时显示 `W:WAIT_CAM`，作业等待视觉就绪，激光接收与显示继续刷新。周期显示每次只传一页，规定I2C延时约18.9ms，8页轮转；动作与复检期间推迟耗时的屏幕重初始化。相机断线就绪修复及本次逐页显示修复均需下次上电更新，镜像历史与当前候选区别见[离线复审记录](../docs/CAN_WORK_DEBUG.md#offline-review-pr16)。
 
