@@ -62,10 +62,11 @@ static inline uint8_t work_can_decode(const uint8_t data[8], WorkCanPacket* pack
 #define STATION_RESULT_ENCODER_TIMEOUT 15u
 #define STATION_RESULT_RETURN_NOT_READY 16u
 #define STATION_RESULT_MAX STATION_RESULT_RETURN_NOT_READY
+#define STATION_SLOW_TREE_ONLY 17u
 #define STATION_ENCODER_RETURN_FLAG 0x20u
 /* Diagnostic task packs signed dx in low 16 bits and frame sequence in high 16. */
 #define STATION_VISION_ONLINE_FLAG 0x10u
-#define STATION_VISION_CENTER_DX 1
+#define STATION_VISION_CENTER_DX (-12)
 #define STATION_VISION_STOP_PX 14
 #define STATION_VISION_RESTART_PX 30
 #define STATION_VISION_STABLE_MS 300u
@@ -107,7 +108,8 @@ static inline uint8_t station_can_decode(const uint8_t data[8], WorkCanPacket* p
          (data[6]&0xc0u) ||
          (((data[6]>>3)&3u)!=1u && ((data[6]>>3)&3u)!=3u) ||
          ((data[6]&STATION_ENCODER_RETURN_FLAG) && (((data[6]>>3)&3u)!=3u || data[7]))) : data[6]>12u) ||
-       (!station_can_is_alignment(data[1]) && data[1] != STATION_REALIGN && data[1] != STATION_ALIGN && data[1] != STATION_VISION_DIAG && data[7] > STATION_RESULT_MAX))
+       (!station_can_is_alignment(data[1]) && data[1] != STATION_REALIGN && data[1] != STATION_ALIGN && data[1] != STATION_VISION_DIAG && data[7] > STATION_RESULT_MAX &&
+        (data[1] != STATION_SLOW || data[7] != STATION_SLOW_TREE_ONLY)))
         return 0u;
     packet->state = data[1];
     packet->task = (uint32_t)data[2] | ((uint32_t)data[3] << 8) |

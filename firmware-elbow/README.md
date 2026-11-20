@@ -10,9 +10,9 @@
 
 `BSP/vision_motor.h` 的 ELBOW_TEST_MODE 默认2，与 H723 的 FullMapWork 镜像协作。模式1用于独立视觉测试，模式0使用原版本1的视觉主导协同，模式3用于PWM为零的手动编码器读数。修改后重新构建和烧录。
 
-2026-11-16按 `yjjy25/elbow-controller` 的分阶段动作改为纯定时控制。当前候选使用100%占空比依次全速伸出 600 ms、回收 300 ms、再伸出 320 ms、最终回收 600 ms，形成一次打击内的二次冲击以减少漏打。同一次作业内直接换向，最终回收后等待 50 ms 再允许下一次作业。若在伸出中途取消，先停 10 ms 再回收。TIM1的PSC=79、ARR=99、CCR=100。编码器只用于测速、手动行程读数和可选的停走检测。`VISION_MOTOR_PWM`、`VISION_CW_MS`、`VISION_PARTIAL_RETURN_MS`、`VISION_SECOND_EXTEND_MS`、`VISION_CCW_MS`、`VISION_REVERSE_PAUSE_MS`、`VISION_RETRIGGER_DELAY_MS` 都在 `BSP/vision_motor.h`。上电前人工收回四路，`Vision_HomeConfirmed` 直接为1，底盘HOME握手可应答。若现场出现顶死堵转，可把 `ELBOW_STROKE_END_MS` 从0改成200以启用编码器停走检测。ALIGN与START均以 `dx=+1` 为中心接受±14像素，距中心超过30像素时请求返回后重新对齐。连续2秒无合法帧才判离线。`elbow_stroke_config.h` 留作手推量程记录。串口状态行 `STROKE:<ms> CNT:<counts>` 可读到上一段打击或返回的用时及编码器变化量。
+当前定时动作以 100% 占空比全速伸出 700 ms，直接换向全速回收 700 ms，回收后间隔 50 ms 再允许下一次动作。若在伸出中途取消，先停 10 ms 再回收。TIM1 的 PSC=79、ARR=99、CCR=100。编码器只用于测速、手动行程读数和可选的停走检测。`VISION_MOTOR_PWM`、`VISION_CW_MS`、`VISION_CCW_MS`、`VISION_REVERSE_PAUSE_MS`、`VISION_RETRIGGER_DELAY_MS` 都在 `BSP/vision_motor.h`。上电前人工收回四路，`Vision_HomeConfirmed` 直接为1，底盘HOME握手可应答。若现场出现顶死堵转，可把 `ELBOW_STROKE_END_MS` 从0改成200以启用编码器停走检测。ALIGN与START均以 `dx=-12` 为中心接受 ±14 像素（原始 dx 为 −26 至 +2），距中心超过30像素时请求返回后重新对齐。连续2秒无合法帧才判离线。`elbow_stroke_config.h` 留作手推量程记录。串口状态行 `STROKE:<ms> CNT:<counts>` 可读到上一段打击或返回的用时及编码器变化量。
 
-模式2采用版本5协议。底盘沿垄巡航，视觉提出 SLOW/WAIT 后由底盘减速和停车。以 `dx=+1` 对中并连续停稳200 ms后发送 START。定时返回结束后通过 DONE/RELEASE/RELEASED 离树。同一区域最多打击4次、每棵树累计最多6次。次数耗尽时记录未打落，完成握手后前往下一个工作区。离树确认避免重复触发同一目标。两板须配套更新。操作、状态和异常处理见[联合调试说明](../docs/CAN_WORK_DEBUG.md)。
+模式2采用版本5协议。底盘沿垄巡航，视觉提出 SLOW/WAIT 后由底盘减速和停车。以 `dx=-12` 对中并连续停稳200 ms后发送 START。定时返回结束后通过 DONE/RELEASE/RELEASED 离树。同一区域最多打击4次、每棵树累计最多6次。次数耗尽时记录未打落，完成握手后前往下一个工作区。离树确认避免重复触发同一目标。两板须配套更新。操作、状态和异常处理见[联合调试说明](../docs/CAN_WORK_DEBUG.md)。
 
 相机离线时显示 `W:WAIT_CAM`，作业等待视觉就绪，激光接收与显示继续刷新。周期显示每次只传一页，规定I2C延时约18.9ms，8页轮转；动作与复检期间推迟耗时的屏幕重初始化。相机断线就绪修复及本次逐页显示修复均需下次上电更新，镜像历史与当前候选区别见[离线复审记录](../docs/CAN_WORK_DEBUG.md#offline-review-pr16)。
 

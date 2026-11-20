@@ -27,6 +27,7 @@ static Can3EndpointCallback request_callback;
 static STM32HalCanRxCallback wheel_callback;
 static uint8_t reply_queue[32][8];
 static unsigned queue_read, queue_write;
+static uint8_t last_station_slow_result;
 static uint8_t laser_pending, laser_data[8];
 static CAN_RxHeaderTypeDef laser_header;
 
@@ -96,6 +97,7 @@ int HAL_CAN_AddTxMessage(CAN_HandleTypeDef* can, CAN_TxHeaderTypeDef* h, uint8_t
     *box = 1;
     last_tx_time = now_ms;
     if(drop_requests) return HAL_OK;
+    if(data[0]==STATION_CAN_VERSION && data[1]==STATION_SLOW) last_station_slow_result=data[7];
     frame.id = WORK_CAN_REQUEST_ID; frame.len = 8; frame.rx_ms = now_ms;
     memcpy(frame.data, data, 8);
     assert(request_callback(&frame, NULL));
@@ -122,11 +124,9 @@ static void advance_encoders(unsigned period) {
     unsigned index;
     int32_t step, progress;
     const unsigned pwm[4] = {timer.CCR1, timer.CCR2, timer.CCR3, timer.CCR4};
-    const uint8_t returning = Vision_MotorPhase == VISION_MOTOR_RETURN_PARTIAL ||
-        Vision_MotorPhase == VISION_MOTOR_RETURN_FINAL;
+    const uint8_t returning = Vision_MotorPhase == VISION_MOTOR_RETURN;
     if(ELBOW_TEST_MODE == 3 || !Vision_MotorRegion ||
-        (!returning && Vision_MotorPhase != VISION_MOTOR_EXTEND_FIRST &&
-         Vision_MotorPhase != VISION_MOTOR_EXTEND_SECOND)) return;
+        (!returning && Vision_MotorPhase != VISION_MOTOR_EXTEND)) return;
     index = Vision_MotorRegion - 1u;
     step = (int32_t)(pwm[index] * period / 5u) * signs[index];
     if(returning) step = -step;
@@ -578,6 +578,68 @@ static void test_station_sequence(void) {
     assert(starts == 12u);
     puts("STATION_12_TREES_SLOW_WAIT_FIXED_STOP_RETURN_RELEASE_WRAP_OK");
 }
+static void test_station_map_restart(void) {
+    reset_station(0);
+    uint32_t previous_task=0;
+    for(unsigned round=0;round<2u;++round) {
+        assert(station_work_begin_visual(12,now_ms,false));
+        assert(g_station_work.task>previous_task);
+        previous_task=g_station_work.task;
+        run_station(300,1,-80,1,1,0);
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested);
+        run_station(200,1,0,1,1,0);
+        assert(g_station_work.stop_requested);
+        run_station(250,1,0,1,1,1);
+        assert(station_work_align(now_ms,true));
+        run_station(450,1,0,1,1,1);
+        assert(station_work_start(now_ms,true));
+        run_station(600,1,0,1,1,1);
+        assert(starts==round+1u);
+        run_station(2500,0,0,1,1,1);
+        assert(g_station_work.phase==STATION_LINK_DONE && g_station_work.returned);
+        assert(!Vision_MotorPhase && Vision_Motor_VerifyReturned());
+        station_work_rearm_idle(false);
+        assert(g_station_work.phase==STATION_LINK_DONE);
+        station_work_rearm_idle(true);
+        assert(g_station_work.phase==STATION_LINK_SYNC && g_station_work.task==0u);
+        run_station(400,0,0,1,1,1);
+        assert(g_station_work.phase==STATION_LINK_READY && station_work_ready());
+        assert(Vision_WorkTask==0u && starts==round+1u);
+    }
+
+    /* A HELLO from a temporarily offline camera discards the completed session. */
+    assert(station_work_begin_visual(12,now_ms,false));
+    run_station(250,0,9999,1,1,1);
+    assert(station_work_cancel_scan());
+    run_station(300,0,9999,1,1,1);
+    assert(g_station_work.phase==STATION_LINK_DONE);
+    run_station(VISION_TIMEOUT_MS+500u,0,9999,0,1,1);
+    assert(g_station_work.phase==STATION_LINK_SYNC && !station_work_ready());
+    assert(!g_station_work.task && !g_station_work.station);
+    run_station(400,0,9999,1,1,1);
+    assert(station_work_ready() && starts==2u);
+
+    for(unsigned feedback_fault=0;feedback_fault<2u;++feedback_fault) {
+        request_station(12,1);
+        run_station(600,1,0,1,1,1);
+        assert(Vision_MotorPhase && g_station_work.hold);
+        station_work_abort(feedback_fault?WORK_RESULT_FEEDBACK:STATION_RESULT_CANCELLED);
+        station_work_rearm_idle(true);
+        assert(g_station_work.phase==STATION_LINK_FAULT && !station_work_ready());
+        assert(g_station_work.hold && !g_station_work.returned);
+        run_station(2500,0,9999,1,1,1);
+        assert(g_station_work.returned && !Vision_MotorPhase && Vision_Motor_VerifyReturned());
+        station_work_rearm_idle(false);
+        assert(g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold);
+        station_work_rearm_idle(true);
+        run_station(400,0,9999,1,1,1);
+        if(feedback_fault)
+            assert(g_station_work.phase==STATION_LINK_FAULT && g_station_work.hold && !station_work_ready());
+        else
+            assert(g_station_work.phase==STATION_LINK_READY && !g_station_work.hold && station_work_ready());
+    }
+    puts("STATION_MAP_RESTART_OK two_rounds_first_tree_new_task_idle_resync_return_and_feedback_interlock");
+}
 static void test_station_realign_after_return(void) {
     reset_station(0);
     request_station(1,1);
@@ -613,23 +675,25 @@ static void test_station_realign_after_return(void) {
 }
 
 static void test_station_stable_start(void) {
-    assert(STATION_VISION_CENTER_DX==1 && WORK_DX_CENTER==1 && STATION_VISION_STOP_PX==14);
+    assert(STATION_VISION_CENTER_DX==-12 && WORK_DX_CENTER==-12 && STATION_VISION_STOP_PX==14);
     reset_station(0);
     assert(station_work_begin(1,now_ms));
     run_station(100,1,0,1,1,1);
     assert(station_work_align(now_ms,true));
-    run_station(500,1,-10,1,1,1);
-    assert(g_station_work.aligned && g_station_work.visual_dx==-9);
+    run_station(500,1,-26-WORK_DX_CENTER,1,1,1);
+    assert(g_station_work.aligned && g_station_work.visual_dx==-26);
     assert(station_work_start(now_ms,true));
-    run_station(500,1,-16,1,1,1);
+    run_station(500,1,-27-WORK_DX_CENTER,1,1,1);
     assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
-    run_station(500,1,16,1,1,1);
+    assert(!station_work_start(now_ms,true));
+    run_station(500,1,3-WORK_DX_CENTER,1,1,1);
     assert(!starts && !Vision_MotorPhase && g_station_work.phase==STATION_LINK_ALIGN);
-    run_station(500,1,10,1,1,1);
+    assert(!station_work_start(now_ms,true));
+    run_station(500,1,2-WORK_DX_CENTER,1,1,1);
     assert(station_work_start(now_ms,true));
-    run_station(500,1,10,1,1,1);
-    assert(starts==1 && g_station_work.visual_dx==11);
-    puts("STRIKE_DX_GATE_OK center_1_raw_minus13_to_plus15_inclusive");
+    run_station(500,1,2-WORK_DX_CENTER,1,1,1);
+    assert(starts==1 && g_station_work.visual_dx==2);
+    puts("STRIKE_DX_GATE_OK center_minus12_raw_minus26_to_plus2_inclusive");
     reset_station(UINT32_MAX-300u);
     assert(station_work_begin(1,now_ms));
     run_station(100,1,0,1,1,1);
@@ -641,7 +705,31 @@ static void test_station_stable_start(void) {
     assert(!station_work_start(now_ms,true));
     run_station(20,1,0,1,1,1);
     assert(station_work_start(now_ms,true));
-    puts("STATION_STABLE_START_OK center_dx_1_200ms_continuous_stop_restarts_after_noise_tick_wrap");
+    puts("STATION_STABLE_START_OK center_dx_minus12_200ms_continuous_stop_restarts_after_noise_tick_wrap");
+}
+static void test_station_g1_first_strike_tree_dropout(void) {
+    for(unsigned trial=0u;trial<5u;++trial) {
+        reset_station(0);
+        request_station(1,4);
+        run_station(230,0,0,1,1,1);
+        assert(Vision_WorkState==VISION_WORK_CHECK && g_station_work.hold && starts==0u);
+        const uint32_t window_started=now_ms;
+        for(unsigned frame=0u;frame<2u;++frame)
+            run_station_period(90,4,13,1,1,1,90u); /* Raw DX +1, region 4. */
+        assert(starts==0u);
+        const unsigned missing_region=trial==2u?2u:trial==3u?0u:4u;
+        for(unsigned frame=0u;frame<(trial==1u?4u:2u);++frame) {
+            run_station_period(90,missing_region,9999,1,1,1,90u);
+            assert(starts==0u && Vision_MotorPhase==0u);
+        }
+        run_station_period(90,4,trial==4u?15:13,1,1,1,90u);
+        if(trial==0u) {
+            printf("G1_FIRST_STRIKE_DROPOUT_REPLAY elapsed_ms=%lu starts=%u\n",
+                (unsigned long)(now_ms-window_started),starts);
+            assert(starts==1u && Vision_MotorRegion==1u); /* Region 4 uses motor 1. */
+        } else assert(starts==0u && !Vision_MotorPhase);
+    }
+    puts("G1_FIRST_STRIKE_DROPOUT_OK no_missing_dx_region_change_long_gap_or_off_center_strike");
 }
 static void test_alignment_detector_dropouts(void) {
     reset_station(0);
@@ -863,19 +951,21 @@ static void test_station_visual_trigger(void) {
         reset_station(0);
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(800,0,0,1,1,0); /* Tree without green fruit. */
-        assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
+        assert(!g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
         reset_station(0);
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(800,1,9999,1,1,0); /* Gmg alone slows, but cannot park. */
         assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
+        run_station(400,0,9999,0,1,0); /* No camera frames cannot clear a slowdown. */
+        assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(300,1,-160*direction,1,1,0); /* A target already behind the car. */
         assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(300,1,160*direction,1,1,0);
         assert(g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(100,0,80*direction,1,1,0);
         assert(g_station_work.slow_requested && !g_station_work.stop_requested);
-        run_station(300,0,80*direction,1,1,0);
-        assert(g_station_work.slow_requested && !g_station_work.stop_requested);
+        run_station(350,0,80*direction,1,1,0);
+        assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
         run_station(300,1,80*direction,1,1,0);
         run_station(100,1,20*direction,1,1,0);
         assert(g_station_work.stop_requested && starts==0);
@@ -917,7 +1007,7 @@ static void test_station_visual_trigger(void) {
     run_station(300,0,0,0,1,1);
     assert(g_station_work.phase==STATION_LINK_DONE && g_station_work.returned);
     assert(g_station_work.result==WORK_RESULT_SKIPPED && starts==0);
-    puts("VISUAL_SCAN_GATE_OK tree_or_gmg_slows_green_required_for_stop_passed_tree_no_work_scan_cancel_ack");
+    puts("VISUAL_SCAN_GATE_OK gmg_only_slows_tree_qualifies_stop_green_expiry_passed_tree_scan_cancel_ack");
 }
 static void test_visual_acquisition_replay(void) {
     for(unsigned reverse=0;reverse<2u;++reverse) {
@@ -935,7 +1025,7 @@ static void test_visual_acquisition_replay(void) {
         assert(station_work_begin_visual(1,now_ms,!reverse));
         run_station(100,1,80*direction,1,1,0);
         run_station(400,0,80*direction,1,1,0);
-        assert(!g_station_work.stop_requested && g_station_work.slow_requested);
+        assert(!g_station_work.stop_requested && !g_station_work.slow_requested);
         run_station(100,1,80*direction,1,1,0);
         assert(!g_station_work.stop_requested); /* Long gap discards previous evidence. */
     }
@@ -1030,15 +1120,73 @@ static void test_station_g2_brake_hold(void) {
     puts("G2_SPARSE_BRAKE_REPLAY_OK stop_held_225ms_single_outlier_expired_and_passed_rejected_fresh_center_required");
 }
 
+static void test_g5_right_tree_departure_replay(void) {
+    /* G5 west tree left the view intermittently; the next tree arrived before
+     * 600 ms of uninterrupted no-tree frames. Replay the UART timing. */
+    const struct {unsigned elapsed_ms; int dx; unsigned region;} frames[]={
+        {57,-7,0}, {120,-7,0}, {211,-7,0}, {301,-11,0}, {392,-23,0}, {479,-43,0},
+        {729,-109,0}, {816,-150,0}, {884,-184,0}, {975,9999,0}, {1065,-259,0},
+        {1154,9999,0}, {1221,-302,0}, {1311,9999,0}, {1402,9999,0}, {1467,9999,0},
+        {1557,9999,2}, {1656,9999,0}, {1739,9999,2}, {1826,9999,2}, {1916,238,2},
+        {2006,193,0}, {2187,101,1}, {2274,53,1}, {2367,-10,1}, {2457,-60,1}, {2524,-108,1},
+    };
+    for(unsigned reverse=0;reverse<2u;++reverse) {
+        const int direction=reverse?-1:1;
+        for(unsigned old_tree_returns=0;old_tree_returns<2u;++old_tree_returns) {
+            reset_station(0);
+            assert(station_work_begin_visual(9,now_ms,!reverse));
+            run_station(400,2,80*direction,1,1,0);
+            run_station(100,2,0,1,1,1);
+            assert(station_work_align(now_ms,true));
+            run_station(450,2,0,1,1,1);
+            assert(station_work_start(now_ms,true));
+            run_station(600,2,0,1,1,1);
+            run_station(3000,0,0,1,1,1);
+            assert(starts==1u && g_station_work.phase==STATION_LINK_DONE);
+            assert(station_work_begin_visual(10,now_ms,!reverse));
+            unsigned elapsed=0;
+            for(unsigned i=0;i<sizeof(frames)/sizeof(frames[0]);++i) {
+                run_station_period(frames[i].elapsed_ms-elapsed-1,0,9999,0,1,0,1u);
+                int dx=frames[i].dx;
+                if(old_tree_returns && i==9u) dx=-7;
+                if(dx!=9999) dx=WORK_DX_CENTER+direction*(dx-WORK_DX_CENTER);
+                char report[40];
+                const int size=snprintf(report,sizeof(report),"$VIS,%u,%d\r\n",frames[i].region,dx);
+                Vision_Motor_Receive((const uint8_t*)report,(uint16_t)size);
+                run_station_period(1,0,9999,0,1,0,1u);
+                elapsed=frames[i].elapsed_ms;
+                if(i<16u) assert(Vision_WorkState==VISION_WORK_IDLE);
+                if(i==16u || i==19u) assert((Vision_WorkState==VISION_WORK_APPROACH)==!old_tree_returns);
+                if(i==25u) assert((Vision_WorkState==VISION_WORK_WAIT_STOP)==!old_tree_returns);
+            }
+            run_station_period(100,0,9999,0,1,0,1u);
+            assert(g_station_work.stop_requested==!old_tree_returns && starts==1u);
+            if(old_tree_returns) continue;
+            assert(!station_work_start(now_ms,false));
+            assert(station_work_align(now_ms,true));
+            run_station(250,1,9999,1,1,1);
+            assert(!station_work_start(now_ms,true) && starts==1u);
+            run_station(450,1,0,1,1,1);
+            assert(station_work_start(now_ms,true));
+            run_station(600,1,0,1,1,1);
+            assert(starts==2u);
+        }
+    }
+    puts("G5_RIGHT_TREE_REPLAY_OK brief_missing_preserves_departure_old_tree_reappearance_vetoes_fresh_alignment_required");
+}
+
 static void test_station_consecutive_acquisition(void) {
     reset_station(0);
     assert(station_work_begin_visual(7,now_ms,true));
+    run_station(30,0,9999,0,1,0);
     run_station(50,3,9999,1,1,0);
     run_station(100,0,9999,1,1,0);
-    assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
-    run_station(50,0,20,1,1,0);
+    assert(g_station_work.slow_requested && !g_station_work.stop_requested);
+    run_station(350,0,9999,1,1,0);
+    assert(!g_station_work.slow_requested);
+    run_station(100,0,20,1,1,0);
     run_station(100,0,9999,1,1,0);
-    assert(!g_station_work.slow_requested && !g_station_work.stop_requested);
+    assert(g_station_work.tree_slow_requested && !g_station_work.stop_requested);
     run_station(300,3,100,1,1,0);
     assert(g_station_work.slow_requested && !g_station_work.stop_requested);
     run_station(50,3,20,1,1,0);
@@ -1048,12 +1196,63 @@ static void test_station_consecutive_acquisition(void) {
     assert(!g_station_work.stop_requested);
     run_station(100,3,-10,1,1,0);
     assert(g_station_work.stop_requested && starts==0);
-    puts("STATION_CONSECUTIVE_ACQUISITION_OK isolated_tree_gmg_and_close_dx_do_not_latch");
+    puts("STATION_CONSECUTIVE_ACQUISITION_OK isolated_tree_gmg_slow_without_latching_stop");
+}
+static void test_g4_second_tree_preview_replay(void) {
+    /* Station 7 westbound: exact vision samples before the field overshoot. */
+    const struct { unsigned time_ms; int dx; unsigned region; } frames[]={
+        {1,-280,0}, {48,-254,0}, {113,-181,0}, {248,-61,1},
+        {317,-2,1}, {385,44,1}, {429,83,1}, {498,115,1}
+    };
+    reset_station(0);
+    assert(station_work_begin_visual(7,now_ms,false));
+    run_station(30,0,9999,0,1,0);
+    unsigned elapsed=0;
+    for(unsigned i=0;i<sizeof(frames)/sizeof(frames[0]);++i) {
+        run_station_period(frames[i].time_ms-elapsed-1,0,9999,0,1,0,1u);
+        char report[40];
+        const int size=snprintf(report,sizeof(report),"$VIS,%u,%d\r\n",frames[i].region,frames[i].dx);
+        Vision_Motor_Receive((const uint8_t*)report,(uint16_t)size);
+        run_station_period(1,0,9999,0,1,0,1u);
+        elapsed=frames[i].time_ms;
+        assert(g_station_work.tree_slow_requested==(i<3u));
+        assert(g_station_work.slow_requested==(i>=3u));
+        if(i<7u) {
+            assert(last_station_slow_result==(i<3u?STATION_SLOW_TREE_ONLY:WORK_RESULT_OK));
+            assert(!g_station_work.stop_requested);
+        }
+    }
+    assert(g_station_work.stop_requested && starts==0);
+
+    reset_station(0);
+    assert(station_work_begin_visual(7,now_ms,false));
+    run_station(120,0,-260,1,1,0);
+    assert(g_station_work.tree_slow_requested && last_station_slow_result==STATION_SLOW_TREE_ONLY);
+    run_station(450,0,9999,0,1,0);
+    assert(g_station_work.tree_slow_requested); /* A stale frame cannot confirm no green. */
+    run_station(550,0,-150,1,1,0);
+    assert(g_station_work.tree_slow_requested); /* A distant tree has not been inspected. */
+    run_station(250,0,-120,1,1,0);
+    assert(g_station_work.tree_slow_requested);
+    run_station(150,0,-120,1,1,0);
+    assert(!g_station_work.tree_slow_requested && !g_station_work.stop_requested);
+    run_station(350,0,-120,1,1,0);
+    assert(!g_station_work.tree_slow_requested); /* The checked tree cannot re-trigger. */
+    run_station(100,0,160,1,1,0);
+    run_station(100,0,-260,1,1,0);
+    assert(g_station_work.tree_slow_requested && last_station_slow_result==STATION_SLOW_TREE_ONLY);
+    run_station(50,1,9999,1,1,0);
+    assert(g_station_work.slow_requested && last_station_slow_result==WORK_RESULT_OK);
+    run_station(100,0,9999,1,1,0);
+    assert(g_station_work.slow_requested && !g_station_work.stop_requested && starts==0);
+    puts("G4_SECOND_TREE_PREVIEW_REPLAY_OK 247ms_before_green 316ms_before_old_slow far_tree_holds_near_fresh_clearance_same_tree_veto");
 }
 static void test_station_empty_and_limits(void) {
     /* 定时方案没有编码器故障分支，先跑视觉获取/对中/返回对中/手动恢复四组回放。 */
     test_visual_acquisition_replay();
     test_station_consecutive_acquisition();
+    test_g4_second_tree_preview_replay();
+    test_g5_right_tree_departure_replay();
     test_station_g2_brake_hold();
     test_station_visual_trigger();
     test_station_realign_after_return();
@@ -1248,7 +1447,9 @@ int main(void) {
         test_station_inflight_ready();
         test_alignment_hysteresis();
         test_station_sequence();
+        test_station_map_restart();
         test_station_stable_start();
+        test_station_g1_first_strike_tree_dropout();
         test_alignment_detector_dropouts();
         test_station_faults();
         test_station_replay_and_release_gate();

@@ -133,8 +133,8 @@ void OLED_Display(void)
     last_display = now;
     phase = Vision_MotorPhase;
     motor = Vision_MotorRegion;
-    const uint8_t extending = phase == VISION_MOTOR_EXTEND_FIRST || phase == VISION_MOTOR_EXTEND_SECOND;
-    const uint8_t returning = phase == VISION_MOTOR_RETURN_PARTIAL || phase == VISION_MOTOR_RETURN_FINAL;
+    const uint8_t extending = phase == VISION_MOTOR_EXTEND;
+    const uint8_t returning = phase == VISION_MOTOR_RETURN;
     pwm = (extending || returning) ? VISION_MOTOR_PWM : 0;
     direction = extending ? "HIT" : returning ? "BACK" :
                 phase == VISION_MOTOR_COOLDOWN ? "COOL" : phase == VISION_MOTOR_IDLE ? "STOP" : "PAUSE";

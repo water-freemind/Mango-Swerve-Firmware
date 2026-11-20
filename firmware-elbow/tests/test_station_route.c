@@ -93,6 +93,7 @@ static void route_with_work(const char* speed, const char* approach, int unresol
         input.work_failed = g_station_work.phase == STATION_LINK_FAULT;
         input.work_station = g_station_work.station;
         input.work_slow = g_station_work.slow_requested;
+        input.work_tree_slow = g_station_work.tree_slow_requested;
         input.work_wait = g_station_work.stop_requested;
         input.work_active = g_station_work.hold;
         input.work_done = g_station_work.phase == STATION_LINK_DONE;

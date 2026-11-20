@@ -9,14 +9,20 @@ bool auto_route_build(AutoRoute* r,float scale,float heading) {
     if(!r || !isfinite(scale)||scale<.5f||scale>2||!isfinite(heading)) return false;
     memset(r,0,sizeof(*r)); r->scale=scale;r->entry_y=-.5f*scale;
     float l=.2f*scale, right=2.8f*scale;
+    /* Leave extra braking and steering clearance from the north fence at G7. */
+    const float g7_y=4.38f*scale;
+    /* Leave room for steering at the west transfer between G4 and G3. */
+    const float g4_west_x=.212f*scale;
     unsigned k=0;
     r->segment[k++]=segment(l,r->entry_y,l,.2f*scale,heading,AUTO_ROUTE_ENTER,0,0);
-    r->segment[k++]=segment(l,.2f*scale,l,4.4f*scale,heading,AUTO_ROUTE_OUTBOUND,0,0);
+    r->segment[k++]=segment(l,.2f*scale,l,g7_y,heading,AUTO_ROUTE_OUTBOUND,0,0);
     for(int aisle=7;aisle>=1;--aisle) {
         float y=(.2f+.7f*(aisle-1))*scale;
-        float x0=aisle%2?l:right, x1=aisle%2?right:l;
-        r->segment[k++]=segment(x0,y,x1,y,heading,AUTO_ROUTE_SURVEY,aisle,aisle<7?aisle:0);
-        if(aisle>1) r->segment[k++]=segment(x1,y,x1,y-.7f*scale,heading,AUTO_ROUTE_SHIFT,0,0);
+        const float survey_y=aisle==7?g7_y:y;
+        const float x0=aisle==3?g4_west_x:aisle%2?l:right;
+        const float x1=aisle==4?g4_west_x:aisle%2?right:l;
+        r->segment[k++]=segment(x0,survey_y,x1,survey_y,heading,AUTO_ROUTE_SURVEY,aisle,aisle<7?aisle:0);
+        if(aisle>1) r->segment[k++]=segment(x1,survey_y,x1,y-.7f*scale,heading,AUTO_ROUTE_SHIFT,0,0);
     }
     r->segment[k++]=segment(right,.2f*scale,l,.2f*scale,heading,AUTO_ROUTE_RETURN,0,0);
     r->segment[k++]=segment(l,.2f*scale,l,-.5f*scale,heading,AUTO_ROUTE_PARK,0,0);

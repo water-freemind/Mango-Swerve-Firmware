@@ -42,7 +42,7 @@
 #define WORK_NO_TARGET_FRAMES 3U          // 无目标确认还需要至少 3 帧新图像。
 #define WORK_MAX_ATTEMPTS_PER_REGION 2U   // 同一棵树每个区域最多执行 2 次。
 #define WORK_STATION_MAX_ATTEMPTS_PER_REGION 4U // 定点联合作业同一区域最多执行4次。
-#define WORK_STATION_MAX_ATTEMPTS_PER_TREE 6U   // 一棵树累计最多打击6次；双次伸出后仍有余量，不再因4次耗尽漏作业。
+#define WORK_STATION_MAX_ATTEMPTS_PER_TREE 6U   // 一棵树累计最多执行6轮伸出、回收。
 #define WORK_TREE_TIMEOUT_MS 60000U       // 定点作业允许逐区域完整打击、返回及复检。
 #define WORK_STOP_TIMEOUT_MS 2000U        // 请求停车后 2 秒未收到 STOPPED，进入故障。
 #define WORK_VISION_WAIT_MS 2000U         // 停稳复检时连续 2 秒无有效树信息，进入视觉故障。
@@ -64,15 +64,13 @@ uint8_t Vision_Motor_Start(uint8_t region);                 // 空闲时锁定�
 uint32_t Vision_Motor_ReturnedAt(void);                     // 读取返回计时结束时刻，用于图像稳定等待。
 uint8_t Vision_Motor_VerifyReturned(void);
 
-/* ==================== 常用参数：主要修改下面五行 ====================
+/* ==================== 常用动作参数 ====================
  * 修改方法：只改右侧数字，保留数字后面的 U。U 是 C 语言的类型标记，不是单位。
  * 时间单位：毫秒，1000 毫秒 = 1 秒；500 = 0.5 秒；5000 = 5 秒。
  * 四路电机共用下面的占空比和时间，修改后需要重新编译并下载到 STM32。
  *
  * 检测到目标后的动作顺序：
- * 全速伸出 600 ms → 回收 300 ms → 再伸出 320 ms → 回收 600 ms 完成一次打击。
- * 四段均为 100% 占空比，段间直接换向不插入停顿，完成后停 50 ms。
- * 两次伸出让单次打击形成二次冲击，减少打不落导致的漏作业。
+ * 全速伸出 700 ms，直接换向全速回收 700 ms，完成后停 50 ms。
  * 编码器不参与位置闭环和软限位。
  * 实际机械方向取决于接线，方向调整在各区域的独立控制函数中完成。
  * 定时控制依赖实机检查最终回位。
@@ -80,10 +78,8 @@ uint8_t Vision_Motor_VerifyReturned(void);
 #define VISION_MOTOR_PWM 100U           // 打击和返回共用占空比；手动编码器测量模式的实际PWM为0。
                                      // 当前 TIM1 的 ARR=99，因此这里的数值对应百分比。
                                      // TB6612 由 10V 供电，100 就是满占空比、约 10V 加到电机上。
-#define VISION_CW_MS 600U            // 第一次全速伸出。
-#define VISION_PARTIAL_RETURN_MS 300U // 第一次回收，为第二次伸出蓄势。
-#define VISION_SECOND_EXTEND_MS 320U // 第二次伸出，形成二次冲击。
-#define VISION_CCW_MS 600U           // 最终回收回位。
+#define VISION_CW_MS 700U           // 全速伸出。
+#define VISION_CCW_MS 700U          // 全速回收。
 #define VISION_REVERSE_PAUSE_MS 10U  // 中途取消伸出时，换向回收前停 10 ms。
 #define VISION_RETRIGGER_DELAY_MS 50U // 一轮结束后等待，当前 50 毫秒，即 0.05 秒，再接收新区域指令。
 
@@ -126,12 +122,10 @@ extern volatile uint32_t Vision_BadFrameCount;  // 累计丢弃的格式错误�
 extern volatile uint8_t Vision_MotorRegion;  // 本次动作锁定的电机：0 无，1=A、2=B、3=C、4=D。
 enum {
     VISION_MOTOR_IDLE,
-    VISION_MOTOR_EXTEND_FIRST,
+    VISION_MOTOR_EXTEND,
     VISION_MOTOR_PAUSE_ABORT,
-    VISION_MOTOR_RETURN_PARTIAL,
+    VISION_MOTOR_RETURN,
     VISION_MOTOR_COOLDOWN,
-    VISION_MOTOR_EXTEND_SECOND,
-    VISION_MOTOR_RETURN_FINAL,
     VISION_MOTOR_PHASE_COUNT,
 };
 extern volatile uint8_t Vision_MotorPhase;

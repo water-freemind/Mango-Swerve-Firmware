@@ -52,11 +52,9 @@ typedef struct {
 } VisionMotorStep;
 
 static const VisionMotorStep motor_steps[VISION_MOTOR_PHASE_COUNT] = {
-    [VISION_MOTOR_EXTEND_FIRST] = {VISION_CW_MS, VISION_MOTOR_RETURN_PARTIAL, 1},
-    [VISION_MOTOR_RETURN_PARTIAL] = {VISION_PARTIAL_RETURN_MS, VISION_MOTOR_EXTEND_SECOND, -1},
-    [VISION_MOTOR_EXTEND_SECOND] = {VISION_SECOND_EXTEND_MS, VISION_MOTOR_RETURN_FINAL, 1},
-    [VISION_MOTOR_PAUSE_ABORT] = {VISION_REVERSE_PAUSE_MS, VISION_MOTOR_RETURN_FINAL, 0},
-    [VISION_MOTOR_RETURN_FINAL] = {VISION_CCW_MS, VISION_MOTOR_COOLDOWN, -1},
+    [VISION_MOTOR_EXTEND] = {VISION_CW_MS, VISION_MOTOR_RETURN, 1},
+    [VISION_MOTOR_PAUSE_ABORT] = {VISION_REVERSE_PAUSE_MS, VISION_MOTOR_RETURN, 0},
+    [VISION_MOTOR_RETURN] = {VISION_CCW_MS, VISION_MOTOR_COOLDOWN, -1},
     [VISION_MOTOR_COOLDOWN] = {VISION_RETRIGGER_DELAY_MS, VISION_MOTOR_IDLE, 0},
 };
 
@@ -113,23 +111,15 @@ static void stroke_record(uint32_t now)
     Vision_StrokeLastCounts = Encoder_Position[Vision_MotorRegion - 1U] - stroke_base;
 }
 
-/* 取消余下的伸出，只完成回收。已进行的回收时间计入回收预算。 */
+/* 中途取消伸出时进入回收流程，已经开始的回收沿用原计时。 */
 void Vision_Motor_RequestReturn(void)
 {
     uint32_t key = __get_PRIMASK();
     __disable_irq();
-    switch (Vision_MotorPhase) {
-    case VISION_MOTOR_EXTEND_FIRST:
-    case VISION_MOTOR_EXTEND_SECOND:
+    if (Vision_MotorPhase == VISION_MOTOR_EXTEND) {
         Motor_Stop();
         phase_started = HAL_GetTick();
         Vision_MotorPhase = VISION_MOTOR_PAUSE_ABORT;
-        break;
-    case VISION_MOTOR_RETURN_PARTIAL:
-        Vision_MotorPhase = VISION_MOTOR_RETURN_FINAL;
-        break;
-    default:
-        break;
     }
     __set_PRIMASK(key);
 }
@@ -409,7 +399,7 @@ uint8_t Vision_Motor_Start(uint8_t region)
     phase_started = HAL_GetTick();
     stroke_begin(phase_started);
     Motor_Run(Vision_MotorRegion, 1);
-    Vision_MotorPhase = VISION_MOTOR_EXTEND_FIRST;
+    Vision_MotorPhase = VISION_MOTOR_EXTEND;
     return 1;
 }
 

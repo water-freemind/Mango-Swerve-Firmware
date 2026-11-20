@@ -63,10 +63,9 @@ int main(void) {
     unsigned region;
     const unsigned motors[] = {0, 2, 4, 3, 1};
     uint32_t frames;
-    /* 四段均为满占空比，只有完整作业之间停 50 ms。 */
+    /* 伸出和回收均为满占空比，完整作业之间停 50 ms。 */
     assert(VISION_MOTOR_PWM == 100U);
-    assert(VISION_CW_MS == 600U && VISION_CCW_MS == 600U);
-    assert(VISION_PARTIAL_RETURN_MS == 300U && VISION_SECOND_EXTEND_MS == 320U);
+    assert(VISION_CW_MS == 700U && VISION_CCW_MS == 700U);
     if (ELBOW_TEST_MODE == 3)
     {
         Vision_Motor_Init();
@@ -90,10 +89,8 @@ int main(void) {
         return 0;
     }
     const struct { unsigned phase, ms; int direction; } sequence[] = {
-        {VISION_MOTOR_EXTEND_FIRST, 600, 1},
-        {VISION_MOTOR_RETURN_PARTIAL, 300, -1},
-        {VISION_MOTOR_EXTEND_SECOND, 320, 1},
-        {VISION_MOTOR_RETURN_FINAL, 600, -1},
+        {VISION_MOTOR_EXTEND, 700, 1},
+        {VISION_MOTOR_RETURN, 700, -1},
     };
     for (region = 1; region <= 4; region++) {
         Vision_Motor_Init();
@@ -117,7 +114,7 @@ int main(void) {
             ++tick;
             Vision_Motor_Task();
         }
-        assert((uint32_t)(tick-start) == 1820U && Vision_Motor_ReturnedAt() == tick);
+        assert((uint32_t)(tick-start) == 1400U && Vision_Motor_ReturnedAt() == tick);
         assert(Vision_MotorPhase == VISION_MOTOR_COOLDOWN && !Vision_MotorRegion);
         assert(!Vision_Motor_VerifyReturned());
         check_pwm(0);
@@ -128,9 +125,9 @@ int main(void) {
         ++tick;
         Vision_Motor_Task();
         assert(Vision_MotorPhase == VISION_MOTOR_IDLE && Vision_Motor_VerifyReturned());
-        assert((uint32_t)(tick-start) == 1870U && (uint32_t)(Vision_Motor_ReturnedAt()-start) == 1820U);
+        assert((uint32_t)(tick-start) == 1450U && (uint32_t)(Vision_Motor_ReturnedAt()-start) == 1400U);
     }
-    puts("TIMED_STRIKE_OK four_regions_100pct_600_300_320_600ms_50ms_between_cycles");
+    puts("TIMED_STRIKE_OK four_regions_100pct_700ms_extend_700ms_return_50ms_between_cycles");
     puts("MOTOR_MUTEX_OK single_channel_pwm_and_pause_outputs_zero");
 #if ELBOW_STROKE_END_MS > 0
     /* 编码器停走＝顶到机械限位：不等满时间上限就结束本段，避免长时间堵转。 */
@@ -142,7 +139,7 @@ int main(void) {
     tick += ELBOW_STROKE_END_MS - 1; Vision_Motor_Task();
     assert(Vision_MotorPhase == 1);
     tick += 1; Vision_Motor_Task();
-    assert(Vision_MotorPhase == VISION_MOTOR_RETURN_PARTIAL);
+    assert(Vision_MotorPhase == VISION_MOTOR_RETURN);
     check_pwm(motors[2]); check_direction(2, 0);
     assert(Vision_StrokeLastMs == 100 + ELBOW_STROKE_END_MS);
     assert(Vision_StrokeLastCounts == -120);
@@ -156,7 +153,7 @@ int main(void) {
     assert(Vision_MotorPhase == 1 && Vision_Motor_RemainingMs() == 1);
     check_pwm(motors[3]);
     tick += 1; Vision_Motor_Task();
-    assert(Vision_MotorPhase == VISION_MOTOR_RETURN_PARTIAL);
+    assert(Vision_MotorPhase == VISION_MOTOR_RETURN);
     check_pwm(motors[3]); check_direction(3, 0);
     assert(Vision_StrokeLastMs == VISION_CW_MS && Vision_StrokeLastCounts == 0);
     puts("TIMED_FULL_STROKE_OK dead_or_idle_encoder_still_runs_full_time");
@@ -180,7 +177,8 @@ int main(void) {
             const uint32_t cancel = tick;
             unsigned returned_drive_ms = 0;
             while (!Vision_Motor_VerifyReturned()) {
-                assert((uint32_t)(tick - cancel) < 670U);
+                assert((uint32_t)(tick - cancel) <
+                    VISION_REVERSE_PAUSE_MS + VISION_CCW_MS + VISION_RETRIGGER_DELAY_MS);
                 if (timer.CCR2) {
                     check_direction(1, 0);
                     ++returned_drive_ms;

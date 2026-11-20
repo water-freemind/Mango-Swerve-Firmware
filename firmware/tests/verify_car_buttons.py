@@ -6,7 +6,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 source = (root / "src/app/straight_test_app.c").read_text(encoding="utf-8")
 receive = source[source.index("static bool car_receive("):source.index("static ChassisTrace trace;")]
-dispatch = source[source.index("static uint8_t car_mode_error("):source.index("static void commands(")]
+dispatch = source[source.index("static bool map_drive_selected("):source.index("static void commands(")]
 stub = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -23,11 +23,11 @@ typedef struct { bool work_enabled; } FullMapInput;
 typedef struct { uint8_t len,data[8]; uint32_t rx_ms; } Can3Frame;
 typedef struct { int unused; } DriveVelocity;
 static struct { int phase; } test;
-static struct { int mode; } control_source;
+static struct { int mode; bool manual_armed; } control_source;
 static struct { bool hold; int phase; } g_station_work;
 static struct { int phase; uint32_t token; const char* reason; } full_map;
 static bool map_work_enabled,car_pending,car_reply_pending,reject_arm,reject_origin,reject_go;
-static bool work_ready=true, started_work;
+static bool work_ready=true, hardware_ready=true, started_work, camera_map_owner;
 static uint8_t car_inbox[8],car_reply[8];
 static uint32_t car_rx_ms,car_arm_token;
 static uint16_t car_last_seq;
@@ -48,6 +48,7 @@ static bool straight_command(void* t,const char* c,uint32_t n,StraightInput i) {
 static bool full_map_active(void* m) { (void)m;return full_map.phase==MAP_RUNNING || full_map.phase==MAP_ARMED; }
 static bool station_work_reset(bool stopped) { return stopped; }
 static bool station_work_ready(void) { return work_ready; }
+static bool hardware_healthy(void) { return hardware_ready; }
 static FullMapInput map_input(uint32_t now,StraightInput i) {
     (void)now;(void)i;return (FullMapInput){map_work_enabled};
 }

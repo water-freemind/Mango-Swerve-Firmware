@@ -274,7 +274,7 @@ static void endpoint_acceptance_tests(void) {
     AutoMotion motion;const AutoSegment line={{0,0},{1,0},0};
     assert(auto_motion_begin(&motion,&map.motion.config,line,0));
     for(unsigned now=10;now<=600;now+=10) {
-        AutoMotionInput sample={.pose={{1.015f,.015f,.04f},now,true},
+        AutoMotionInput sample={.pose={{1.010f,.015f,.03f},now,true},
             .healthy=true,.stationary=true,.aligned=true,.now_ms=now};
         auto_motion_step(&motion,sample);
     }
@@ -319,7 +319,11 @@ static FullMapInput setup_aisle(FullMapTest* m,unsigned segment,float x) {
     m->segment=segment;
     AutoPose p={x,m->route.segment[segment].line.start.y,1.570796327f};
     assert(field_pose_register(&m->localization,p,0,0));
-    const AutoMotionConfig config=m->motion.config;
+    AutoMotionConfig config=m->motion.config;
+    if(segment!=0u) {
+        config.position_tolerance=.020f;
+        config.finish_yaw_tolerance=.069813170f;
+    }
     assert(auto_motion_begin(&m->motion,&config,m->route.segment[segment].line,0));
     in.laser=ridge_scan(p,0);
     return in;
@@ -344,7 +348,8 @@ static void ridge_end_fence_y_rejection_test(void) {
 }
 static void g7_ridge_exit_test(void) {
     FullMapTest m;FullMapInput in=setup_aisle(&m,2,2.5f);
-    AutoPose actual={2.5f,4.4f,1.570796327f};AutoTwist v={0};
+    const float route_y=m.route.segment[2].line.start.y;
+    AutoPose actual={2.5f,route_y,1.570796327f};AutoTwist v={0};
     bool exited=false;
     for(unsigned now=10;now<30000;now+=10) {
         v.vx+=(m.command.vx-v.vx)*.25f;v.vy+=(m.command.vy-v.vy)*.25f;
@@ -365,7 +370,7 @@ static void g7_ridge_exit_test(void) {
         if(before==2u) assert(!(m.localization.used_mask&(1u<<AUTO_REAR)));
         assert(m.phase!=MAP_FAULT && m.phase!=MAP_PAUSED);
         if(m.segment==3u) {
-            assert(exited && fabsf(actual.y-4.4f)<.02f);
+            assert(exited && fabsf(actual.y-route_y)<.02f);
             assert(!m.aisle_correction.active && m.target_tree==0u);
             /* Mask is local to G7. Rear is still a collision input everywhere. */
             in.now+=10;in.laser=ridge_scan(actual,in.now);
@@ -379,6 +384,14 @@ static void g7_ridge_exit_test(void) {
 static void g7_steering_feedback_test(void) {
     FullMapTest map;
     full_map_init(&map,0);
+    const float setback_y=4.38f;
+    assert(fabsf(map.route.segment[1].line.end.y-setback_y)<.0001f);
+    assert(fabsf(map.route.segment[2].line.start.y-setback_y)<.0001f);
+    assert(fabsf(map.route.segment[2].line.end.y-setback_y)<.0001f);
+    assert(fabsf(map.route.segment[3].line.start.y-setback_y)<.0001f);
+    assert(fabsf(map.route.segment[3].line.end.y-3.70f)<.0001f);
+    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    assert(auto_route_clear(&map.route,body,.020f));
     AutoPose actual={.2f,-.5f,1.570796327f};
     AutoTwist measured={0};
     FullMapInput input={.healthy=true,.odom_ok=true,.stationary=true,.aligned=true,
@@ -391,6 +404,7 @@ static void g7_steering_feedback_test(void) {
     const float wheel_y[4]={.1244f,-.1244f,.1244f,-.1244f};
     bool gate=true,offset_injected=false;
     unsigned restarts=0;
+    float g7_min_gap=INFINITY;
     AutoMotionPhase previous=AUTO_MOTION_IDLE;
     for(unsigned now=10;now<45000;now+=10) {
         const AutoTwist drive=gate && map.motion.out.phase!=AUTO_MOTION_ALIGN ? map.command:(AutoTwist){0};
@@ -415,9 +429,16 @@ static void g7_steering_feedback_test(void) {
         else for(unsigned channel=0;channel<4u;++channel) input.laser.sample_age_ms[channel]+=10u;
         full_map_step(&map,input);
         assert(map.phase!=MAP_FAULT && map.phase!=MAP_PAUSED);
+        if(map.segment==2u) {
+            float south_gap,north_gap;
+            assert(auto_route_axis_clearance(&map.route,body,actual,1u,&south_gap,&north_gap));
+            g7_min_gap=fminf(g7_min_gap,fminf(south_gap,north_gap));
+        }
         if(map.segment==3u) {
             assert(offset_injected && restarts<=1u);
-            printf("G7_STEERING_FEEDBACK_OK restarts=%u elapsed_ms=%u\n",restarts,now);
+            assert(fabsf(actual.y-setback_y)<.020f && g7_min_gap>=.020f);
+            printf("G7_STEERING_FEEDBACK_OK restarts=%u elapsed_ms=%u exit_y_mm=%.1f min_gap_mm=%.1f\n",
+                restarts,now,actual.y*1000,g7_min_gap*1000);
             return;
         }
         if(map.segment==2u && previous==AUTO_MOTION_RUN && map.motion.out.phase==AUTO_MOTION_ALIGN)
@@ -958,6 +979,66 @@ static void g4_transfer_speed_and_wall_limit_test(void) {
     puts("G4_TRANSFER_SPEED_OK clear_cap_070_age_ramp_wallward_rejoin_cap_025");
 }
 
+static void recorded_g4_transfer_handoff_test(void) {
+    const struct {
+        float y, yaw_deg;
+        uint16_t east_mm;
+        bool stale, rolling, expect_handoff;
+    } cases[] = {
+        {2.3215f,88.10f,153u,false,false,true},
+        {2.3420f,88.10f,153u,false,false,false},
+        {2.3150f,88.10f,153u,false,false,false},
+        {2.3215f,86.80f,153u,false,false,false},
+        {2.3215f,88.10f,135u,false,false,false},
+        {2.3215f,88.10f,153u,true,false,false},
+        {2.3215f,88.10f,153u,false,true,false},
+        {2.3215f,88.10f,95u,false,false,false}
+    };
+    unsigned handoff_ms=0u;
+    for(unsigned trial=0;trial<sizeof(cases)/sizeof(cases[0]);++trial) {
+        FullMapTest m;
+        FullMapInput in=setup_aisle(&m,7,2.805f);
+        const AutoPose held={2.805f,cases[trial].y,cases[trial].yaw_deg*.01745329252f};
+        assert(field_pose_register(&m.localization,held,0,0));
+        m.phase=MAP_ARMED;m.arm_ms=0;m.token=1;
+        assert(full_map_command(&m,"MAP GO 1",in));
+        unsigned now;
+        for(now=10u;now<=600u && m.segment==7u;now+=10u) {
+            in.now=now;
+            in.aligned=false; /* Recorded turn/reverse steering handover repeatedly closed. */
+            in.imu_yaw=(now%200u>=100u?.15f:-.15f)*.01745329252f;
+            if(now%100u==10u) {
+                in.laser=scan(held,now);
+                in.laser.accepted_mm[AUTO_RIGHT]=cases[trial].east_mm;
+                in.laser.accepted_mm[AUTO_FRONT]=3320u;
+            } else {
+                for(unsigned ch=0;ch<4u;++ch) in.laser.sample_age_ms[ch]+=10u;
+                in.laser.updated_mask=0;
+            }
+            if(cases[trial].stale) {
+                in.laser.sample_age_ms[AUTO_RIGHT]=201u;
+                in.laser.updated_mask&=(uint8_t)~(1u<<AUTO_RIGHT);
+            }
+            in.stationary=!cases[trial].rolling;
+            in.wheel.vx=cases[trial].rolling?-.015f:0;
+            full_map_step(&m,in);
+            if(cases[trial].expect_handoff)
+                assert(m.command.vx==0 && m.command.vy==0 && m.command.wz==0);
+        }
+        if(cases[trial].expect_handoff) {
+            if(m.segment!=8u) fprintf(stderr,"G4_RECORDED_TRANSFER_STALLED phase=%u blockers=0x%x pose=%.4f,%.4f\n",
+                m.phase,m.motion.out.settle_blockers,m.localization.pose.pose.x,m.localization.pose.pose.y);
+            assert(m.phase==MAP_RUNNING && m.segment==8u && now<=300u);
+            handoff_ms=now-10u;
+        } else {
+            assert(m.segment==7u);
+            if(cases[trial].stale) assert(m.range_stale_mask&(1u<<AUTO_RIGHT));
+            if(cases[trial].east_mm<=95u) assert(m.range_near_mask&(1u<<AUTO_RIGHT));
+        }
+    }
+    printf("G4_RECORDED_TRANSFER_HANDOFF_OK elapsed_ms=%u real_limits_stale_rolling_hard_near_preserved\n",handoff_ms);
+}
+
 static void recorded_shift_approach_limit_test(void) {
     FullMapTest map;
     FullMapInput in=setup_aisle(&map,3,2.8f);
@@ -981,6 +1062,42 @@ static void recorded_shift_approach_limit_test(void) {
     full_map_step(&map,in);
     assert(map.phase==MAP_RUNNING && map.motion.config.vmax<=.22001f);
     puts("RIDGE_END_APPROACH_LIMIT_OK outer_fence_only_lookahead_shift_cap_survey_entry");
+}
+static void recorded_transfer_and_aisle_stutter_test(void) {
+    FullMapTest m;
+    FullMapInput in=setup_aisle(&m,8,2.50f);
+    const AutoPose g4={2.50f,2.335f,1.598721595f};
+    assert(field_pose_register(&m.localization,g4,0,0));
+    m.g4_entry_offset=true;
+    for(unsigned now=10;now<=150;now+=10) {
+        in.now=now;in.laser=scan(g4,now);
+        in.laser.accepted_mm[AUTO_REAR]=148u;
+        in.laser.accepted_mm[AUTO_FRONT]=866u;
+        full_map_step(&m,in);
+    }
+    fprintf(stderr,"G4_MARGIN_REPLAY along_cap=%.3f command=%.3f\n",m.along_speed_limit,m.command.vy);
+    assert(m.phase==MAP_RUNNING && m.along_speed_limit>=.080f && m.command.vy>.055f);
+    in.now+=10;
+    in.laser.sample_age_ms[AUTO_REAR]=201u;
+    full_map_step(&m,in);
+    assert(m.phase==MAP_RUNNING && m.along_speed_limit==.05f);
+    in.now+=10;in.laser=scan(g4,in.now);in.laser.accepted_mm[AUTO_REAR]=94u;
+    full_map_step(&m,in);
+    assert(m.phase==MAP_PAUSED && m.range_near_mask==(1u<<AUTO_REAR));
+
+    in=setup_aisle(&m,7,2.8f);
+    const AutoPose turn={2.813f,2.355f,1.556309692f};
+    assert(field_pose_register(&m.localization,turn,0,0));
+    m.motion.segment.end.y=2.33f;
+    m.motion.config.position_tolerance=.008f;
+    for(unsigned now=10;now<=150;now+=10) {
+        in.now=now;in.laser=scan(turn,now);in.aligned=false;
+        full_map_step(&m,in);
+    }
+    const AutoVec2 hint=auto_rotate((AutoVec2){m.hint.vx,m.hint.vy},turn.yaw);
+    fprintf(stderr,"G4_TRANSFER_REPLAY along=%.3f cross=%.3f\n",hint.y,hint.x);
+    assert(m.phase==MAP_RUNNING && hint.y<-.025f && fabsf(hint.x)<=.22f*fabsf(hint.y)+.0001f);
+    puts("RECORDED_TRANSFER_AND_AISLE_STUTTER_OK fresh_side_margin_stale_fallback_hard_near_guard_stable_turn_hint");
 }
 static void centering_hysteresis_test(void) {
     FullMapTest m;FullMapInput in=setup_aisle(&m,14,1);
@@ -1242,13 +1359,14 @@ static void entry_north_confirmation_test(void) {
     puts("ENTRY_NORTH_CONFIRMATION_OK cannot_turn_on_unobserved_y fresh_north_resumes");
 }
 static void entry_north_bias_recovery_test(void) {
-    for(unsigned scenario=0;scenario<7u;++scenario) {
-        FullMapTest m;FullMapInput in=setup_entry_observer(&m,4.109f);
+    for(unsigned scenario=0;scenario<8u;++scenario) {
+        const bool field_pause=scenario==7u;
+        FullMapTest m;FullMapInput in=setup_entry_observer(&m,field_pause?4.283f:4.109f);
         in.imu_yaw=0;m.localization.pose.pose.yaw=1.570796327f;
         m.phase=MAP_PAUSED;m.reason="ENTRY_NORTH_PAUSE";m.pause_ms=0;
         m.entry.left_observed=true;m.entry.left_sample_ms=0;
-        const float actual_y=scenario==5u?4.51f:scenario==6u?4.56f:4.348f;
-        const AutoPose actual={.2f,actual_y,scenario==4u?1.65f:1.570796327f};
+        const float actual_y=scenario==5u?4.51f:scenario==6u?4.56f:field_pause?4.438f:4.348f;
+        const AutoPose actual={.2f,actual_y,scenario==4u?1.65f:field_pause?1.6324f:1.570796327f};
         const float before=m.localization.pose.pose.y;
         for(unsigned now=10;now<=4500;now+=10) {
             in.now=now;in.stationary=scenario!=3u;
@@ -1260,9 +1378,10 @@ static void entry_north_bias_recovery_test(void) {
             full_map_step(&m,in);
             if(m.phase==MAP_RUNNING) break;
         }
-        if(scenario==0u) {
+        if(scenario==0u || field_pause) {
             assert(m.phase==MAP_RUNNING && m.entry.north_confirmed);
             assert(m.entry.recovery_m>0 && m.entry.recovery_m<=.25f);
+            if(field_pause) assert(in.now<1500u);
             assert(m.localization.constrained_ms[1]>0);
         } else {
             assert(m.entry.recovery_m==0);
@@ -1270,7 +1389,83 @@ static void entry_north_bias_recovery_test(void) {
             assert(m.phase!=MAP_RUNNING);
         }
     }
-    puts("ENTRY_NORTH_BIAS_RECOVERY_OK recorded_239mm_drift_reacquires_fresh_ray_missing_left_stale_moving_yaw_large_bias_near_rejected");
+    puts("ENTRY_NORTH_BIAS_RECOVERY_OK recorded_239mm_drift_and_3p53deg_121mm_pause_reacquire_missing_left_stale_moving_large_yaw_near_rejected");
+}
+static void replay_g7_entry_clearance(float yaw_offset) {
+    const float yaw=1.570796327f+yaw_offset;
+    FullMapTest m;
+    FullMapInput in=setup_entry_observer(&m,4.378f);
+    assert(field_pose_register(&m.localization,(AutoPose){.2f,4.378f,yaw},0,0));
+    m.entry.approaching=m.entry.north_confirmed=true;
+    m.entry.confirmations=3u;
+    m.motion.started=true;
+    in.imu_yaw=0;
+    AutoPose actual={.2f,4.432f,yaw};
+    AutoTwist measured={0};
+    bool backed_away=false,entered_g7=false;
+    for(unsigned now=10;now<=7000u;now+=10) {
+        measured.vx+=(m.command.vx-measured.vx)*.25f;
+        measured.vy+=(m.command.vy-measured.vy)*.25f;
+        measured.wz+=(m.command.wz-measured.wz)*.25f;
+        const AutoVec2 delta=auto_rotate((AutoVec2){measured.vx*.01f,measured.vy*.01f},actual.yaw);
+        actual.x+=delta.x;actual.y+=delta.y;actual.yaw+=measured.wz*.01f;
+        in.now=now;in.wheel=measured;in.imu_yaw=actual.yaw-yaw;
+        in.stationary=hypotf(measured.vx,measured.vy)<.01f && fabsf(measured.wz)<.02f;
+        if(now%100u==10u) {
+            in.laser=scan(actual,now);
+            in.laser.accepted_mm[AUTO_REAR]=in.laser.distance_mm[AUTO_REAR]=
+                (uint16_t)lroundf(2980.0f+(actual.y-4.432f)*1000.0f);
+            in.laser.sample_age_ms[AUTO_REAR]=0;
+            in.laser.valid_mask|=1u<<AUTO_REAR;
+            in.laser.updated_mask|=1u<<AUTO_REAR;
+        } else {
+            in.laser.updated_mask=0;
+            for(unsigned ch=0;ch<4u;++ch) in.laser.sample_age_ms[ch]+=10u;
+        }
+        full_map_step(&m,in);
+        assert(m.phase!=MAP_FAULT);
+        const uint16_t front=in.laser.accepted_mm[AUTO_FRONT];
+        if(front<165u) {
+            assert(m.segment==0u);
+            const AutoVec2 map_command=auto_rotate((AutoVec2){m.command.vx,m.command.vy},actual.yaw);
+            assert(map_command.y<=.001f && map_command.y>=-.051f);
+            backed_away|=map_command.y<-.005f;
+        }
+        if(m.segment==2u) {
+            assert(backed_away && front>=165u && in.stationary);
+            assert(fabsf(actual.y-m.route.segment[2].line.start.y)<.020f);
+            assert(fabsf(actual.yaw-1.570796327f)<=.03491f);
+            printf("G7_ENTRY_CLEARANCE_REPLAY_OK initial_yaw_deg=%.1f stopped_front_mm=%u elapsed_ms=%u actual_y=%.4f\n",
+                yaw_offset*57.29578f,front,now,actual.y);
+            entered_g7=true;
+            break;
+        }
+    }
+    assert(entered_g7);
+}
+static void recorded_g7_entry_clearance_test(void) {
+    replay_g7_entry_clearance(.034906585f);
+    replay_g7_entry_clearance(.061086524f);
+    for(unsigned trial=0;trial<2u;++trial) {
+        FullMapTest m;
+        FullMapInput in=setup_entry_observer(&m,4.379f);
+        m.entry.approaching=m.entry.north_confirmed=true;
+        m.entry.confirmations=3u;m.motion.started=true;in.imu_yaw=0;
+        for(unsigned now=10;now<=300u;now+=10) {
+            in.now=now;
+            in.laser=scan((AutoPose){.184f,4.379f,1.570796327f},now);
+            in.laser.accepted_mm[AUTO_FRONT]=trial==0u?95u:180u;
+            if(trial==1u) in.laser.sample_age_ms[AUTO_FRONT]=LASER_FRAME_TIMEOUT_MS+1u;
+            full_map_step(&m,in);
+            assert(m.segment==0u);
+            if(trial==0u) {
+                assert(m.phase==MAP_PAUSED && (m.range_near_mask&(1u<<AUTO_FRONT)));
+                assert(m.command.vx==0 && m.command.vy==0);
+                break;
+            }
+        }
+    }
+    puts("G7_ENTRY_CLEARANCE_GUARDS_OK stale_front_no_handoff 95mm_hard_stop");
 }
 static void tree_dwell_observation_hysteresis_test(void) {
     FullMapTest m;FullMapInput in=setup_aisle(&m,4,.644f);
@@ -1334,7 +1529,8 @@ static void entry_missing_north_closed_loop_test(void) {
             assert(0);
         }
         if(m.segment==2u) {
-            assert(bridged && fabsf(actual.x-.2f)<.03f && fabsf(actual.y-4.4f)<.03f);
+            const AutoVec2 target=m.route.segment[2].line.start;
+            assert(bridged && fabsf(actual.x-target.x)<.03f && fabsf(actual.y-target.y)<.03f);
             assert(now-m.localization.constrained_ms[1]<=500u);
             printf("ENTRY_MISSING_NORTH_CLOSED_LOOP_OK time_s=%.2f final_y=%.4f wheel_scale=1.032 gyro_disturbance=.01 no_pauses\n",now*.001,actual.y);
             return;
@@ -1402,6 +1598,65 @@ static void continuous_tree_alignment_test(void) {
     }
     assert(0);
 }
+static void recorded_g1_left_alignment_replay(void) {
+    FullMapTest map;
+    FullMapInput in=setup_aisle(&map,14,1.299f);
+    AutoPose actual={1.299f,.197f,1.536762407f};
+    assert(field_pose_register(&map.localization,actual,0,0));
+    map.target_tree=1;
+    map.visual_work=map.visual_stop=map.tree_hold=true;
+    map.visual_segment=14;
+    map.visual_stop_x=actual.x;
+    map.motion.segment.end=(AutoVec2){actual.x,actual.y};
+    map.motion.out.phase=AUTO_MOTION_DONE;
+    in.work_enabled=in.work_online=in.work_wait=in.work_align=true;
+    in.work_alignment_fresh=in.work_target_fresh=true;
+    in.work_station=1;
+    AutoTwist velocity={0};
+    unsigned centered_since=0,centered_frames=0;
+    int8_t off_center=0;
+    const float first_x=actual.x;
+    for(unsigned now=10;now<=6000u;now+=10) {
+        velocity.vx+=(map.command.vx-velocity.vx)*.075f;
+        velocity.vy+=(map.command.vy-velocity.vy)*.075f;
+        const AutoVec2 delta=auto_rotate((AutoVec2){velocity.vx*.01f,velocity.vy*.01f},actual.yaw);
+        actual.x+=delta.x;actual.y+=delta.y;
+        if(now%90u==10u) {
+            /* G1 had roughly one camera frame per 90 ms and 15 pixels per
+             * frame at the old 8 cm/s cap. Feed the held, quantized image back. */
+            const int dx=(int)lroundf(-38.0f+(first_x-actual.x)*2450.0f);
+            in.work_target_dx=(int16_t)(dx-STATION_VISION_CENTER_DX);
+            in.work_target_sample_ms=now;
+            ++in.work_align_frame;
+            in.work_align_direction=0;
+            if(abs(in.work_target_dx)<=STATION_VISION_STOP_PX) {
+                if(!centered_frames) centered_since=now;
+                ++centered_frames;
+                off_center=0;
+            } else {
+                centered_frames=0;
+                const int8_t direction=in.work_target_dx>0?1:-1;
+                if(abs(in.work_target_dx)>STATION_VISION_RESTART_PX || direction==off_center)
+                    in.work_align_direction=direction;
+                off_center=direction;
+            }
+            in.work_centered=centered_frames>=3u && now-centered_since>=STATION_VISION_STABLE_MS;
+        }
+        in.now=now;in.wheel=velocity;
+        in.stationary=hypotf(velocity.vx,velocity.vy)<.01f;
+        in.laser=ridge_scan(actual,now);
+        full_map_step(&map,in);
+        assert(map.phase==MAP_RUNNING);
+        if(map.tree_alignment.ready && map.tree_hold_stable && now-map.tree_hold_ms>=200u) {
+            fprintf(stderr,"G1_LEFT_ALIGN_REPLAY elapsed_ms=%u passes=%u dx=%d\n",
+                now,map.tree_alignment.steps,in.work_target_dx+STATION_VISION_CENTER_DX);
+            assert(map.tree_alignment.steps==1u && now<=1500u &&
+                abs(in.work_target_dx)<=STATION_VISION_STOP_PX);
+            return;
+        }
+    }
+    assert(0);
+}
 static void visual_stop_profile_continuity_test(void) {
     FullMapTest map;
     FullMapInput input=setup_aisle(&map,4,1.98f);
@@ -1461,7 +1716,7 @@ static void visual_stop_profile_continuity_test(void) {
 
 static void visual_speed_by_target_test(void) {
     const int16_t dx[]={-180,-115,-60,180,-180,-180};
-    const float expected[]={.30f,.276f,.175f,.20f,.20f,.15f};
+    const float expected[]={.30f,.276f,.165f,.20f,.20f,.15f};
     for(unsigned i=0u;i<sizeof(dx)/sizeof(dx[0]);++i) {
         FullMapTest map;
         FullMapInput in=setup_aisle(&map,4,2.4f);
@@ -1477,7 +1732,7 @@ static void visual_speed_by_target_test(void) {
         assert(map.phase==MAP_RUNNING && fabsf(map.motion.config.vmax-expected[i])<.00001f);
     }
     const int16_t align_dx[]={75,15,75,-75,30,55};
-    const float align_speed[]={.12f,.08f,.08f,.08f,.08f+.04f*14.0f/29.0f,.12f};
+    const float align_speed[]={.12f,.025f+.055f/31.0f,.08f,.08f,.025f+.055f*16.0f/31.0f,.12f};
     for(unsigned i=0u;i<sizeof(align_dx)/sizeof(align_dx[0]);++i) {
         FullMapTest map;
         FullMapInput in=setup_aisle(&map,4,1.88f);
@@ -1515,17 +1770,77 @@ static void visual_gmg_speed_transition_test(void) {
     in.work_slow=in.work_target_fresh=true;in.work_target_dx=-40;
     in.now+=10u;in.laser=ridge_scan(map.localization.pose.pose,in.now);
     full_map_step(&map,in);
-    assert(fabsf(map.visual_approach_limit-.13f)<.00001f);
+    assert(fabsf(map.visual_approach_limit-.11f)<.00001f);
     in.work_target_fresh=false;
     for(unsigned i=0;i<18u;++i) {
         in.now+=10u;in.laser=ridge_scan(map.localization.pose.pose,in.now);
         full_map_step(&map,in);
-        assert(fabsf(map.visual_approach_limit-.13f)<.00001f);
+        assert(fabsf(map.visual_approach_limit-.11f)<.00001f);
     }
     in.now+=10u;in.laser=ridge_scan(map.localization.pose.pose,in.now);
     full_map_step(&map,in);
-    assert(map.visual_approach_limit>.13f && map.visual_approach_limit<=.1331f);
+    assert(map.visual_approach_limit>.11f && map.visual_approach_limit<=.1131f);
     puts("VISUAL_GMG_SPEED_TRANSITION_OK gradual_gmg_brake_rise_close_tree_priority_and_dropout_hold");
+}
+
+static void recorded_g4_second_tree_speed_test(void) {
+    /* In the field, the second westbound tree appeared at DX -280, -254,
+     * -181 without green. Green first appeared 247 ms later at DX -61. */
+    const int16_t field_dx[]={-280,-254,-181,-61};
+    const uint32_t field_ms[]={20u,70u,130u,270u};
+    for(unsigned trial=0;trial<4u;++trial) {
+        FullMapTest map;
+        AutoPose actual={1.46f,2.30f,1.570796327f};
+        FullMapInput in=setup_aisle(&map,8,actual.x);
+        map.aisle_entry_qualified=true;
+        map.visual_work=true;map.visual_segment=8;map.target_tree=7;
+        map.visual_approach_limit=.60f;
+        map.motion.velocity_map=(AutoVec2){-.59f,0};
+        map.motion.started=true;map.motion.out.phase=AUTO_MOTION_RUN;
+        map.motion.out.command=(AutoTwist){0,.59f,0};
+        map.command=map.motion.out.command;
+        in.work_enabled=in.work_online=true;
+        in.work_station=trial==2u?8:7;
+        in.stationary=false;
+        float speed_at_green=0;
+        for(unsigned now=10u;now<=500u;now+=10u) {
+            in.now=now;
+            in.wheel=map.command;
+            actual.x-=in.wheel.vy*.01f;
+            in.laser=ridge_scan(actual,now);
+            in.work_tree_slow=trial!=3u && now>=field_ms[0] && (trial!=0u || now<=350u);
+            if(trial==0u && now==160u) {
+                /* The current DX may disappear while the elbow still leases slow. */
+                in.work_target_fresh=false;
+                in.work_target_missing=true;
+            }
+            for(unsigned frame=0u;frame<4u;++frame) if(now==field_ms[frame]) {
+                in.work_target_dx=field_dx[frame]-STATION_VISION_CENTER_DX;
+                in.work_target_sample_ms=trial==3u?0u:now;
+                in.work_target_fresh=trial!=3u;
+                in.work_target_missing=false;
+            }
+            if(trial==1u && now>=field_ms[3]) in.work_slow=true;
+            full_map_step(&map,in);
+            assert(map.phase==MAP_RUNNING && !map.visual_stop && !map.tree_hold);
+            assert(map.command.vy>0);
+            assert(in.wheel.vy-map.command.vy<=map.motion.config.decel*.01f+.0002f);
+            if(trial<=1u && now>=20u && now<(trial==0u?360u:270u)) {
+                assert(fabsf(map.visual_approach_limit-.35f)<.0001f);
+                assert(map.motion.config.vmax<=map.visual_approach_limit+.0001f);
+            }
+            if(trial==0u && now==360u)
+                assert(map.visual_approach_limit>.35f && map.visual_approach_limit<=.3531f);
+            if(trial==1u && now==270u) {
+                speed_at_green=in.wheel.vy;
+                assert(map.visual_approach_limit>=.1099f && map.visual_approach_limit<.15f);
+                assert(speed_at_green<.43f);
+            }
+            if(trial>=2u && now==270u) assert(fabsf(map.visual_approach_limit-.60f)<.0001f);
+        }
+        if(trial==1u) printf("G4_SECOND_TREE_SPEED_REPLAY speed_at_first_green_mps=%.3f\n",speed_at_green);
+    }
+    puts("G4_SECOND_TREE_ACQUISITION_OK gentle_tree_only_cap_live_lease_through_dx_gap_green_priority_slew_release_wrong_station_stale_dx_ignored");
 }
 
 static void work_front_correction_limit_test(void) {
@@ -1752,30 +2067,138 @@ static void station_work_gate_test(void) {
     puts("STATION_MAP_GATE_OK no_timer_release wrong_tree_done_short_pose_impulse_200ms_bound_90mm_immediate");
 }
 
-static void work_ridge_reference_test(void) {
+static void visual_work_station_pose_replay_test(void) {
+    for(unsigned test=0;test<2u;++test) {
+        const bool striking=test==0u;
+        FullMapTest map;
+        FullMapInput in=setup_aisle(&map,14,1.216f);
+        const AutoPose parked=map.localization.pose.pose;
+        AutoPose actual=parked;
+        actual.x=1.310f;
+        map.visual_work=map.visual_stop=map.tree_hold=true;
+        map.visual_segment=14;
+        map.target_tree=1;
+        map.visual_stop_x=parked.x;
+        map.motion.segment.end=(AutoVec2){parked.x,parked.y};
+        map.motion.out.phase=AUTO_MOTION_DONE;
+        in.work_enabled=in.work_online=in.work_wait=true;
+        in.work_active=striking;
+        in.work_station=1;
+        for(unsigned now=10u;now<=1200u;now+=10u) {
+            in.now=now;
+            in.laser=ridge_scan(actual,now);
+            in.laser.last_rx_ms=now-now%100u;
+            for(unsigned ch=0;ch<4u;++ch) in.laser.sample_age_ms[ch]=now%100u;
+            full_map_step(&map,in);
+            if(map.phase!=MAP_RUNNING || !map.tree_hold)
+                fprintf(stderr,"G1_PARK_REPLAY striking=%u t_ms=%u drift_mm=%.1f reason=%s\n",
+                    (unsigned)striking,now,(double)((map.localization.pose.pose.x-parked.x)*1000),map.reason);
+            assert(map.phase==MAP_RUNNING && map.tree_hold);
+            assert(map.command.vx==0 && map.command.vy==0 && map.command.wz==0);
+        }
+        assert(map.localization.pose.pose.x-parked.x>.045f);
+        assert(fabsf(map.localization.wheel_position.x-parked.x)<.00001f);
+        if(striking) {
+            in.stationary=false;
+            in.wheel.vy=-.060f;
+            /* Move the real vehicle toward +X with independent wheel feedback. */
+            for(unsigned now=1210u;now<=2200u && map.phase==MAP_RUNNING;now+=10u) {
+                actual.x+=.0006f;
+                in.now=now;
+                in.laser=ridge_scan(actual,now);
+                full_map_step(&map,in);
+            }
+            assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WORK_STATION_MOVED"));
+        } else {
+            in.now+=10u;
+            in.laser=ridge_scan(actual,in.now);
+            in.work_align=in.work_alignment_fresh=in.work_target_fresh=true;
+            in.work_align_direction=1;
+            in.work_align_frame=1;
+            in.work_target_dx=65;
+            full_map_step(&map,in);
+            assert(map.phase==MAP_RUNNING && !map.tree_hold);
+            assert(!strcmp(map.reason,"TREE_VISION_ADJUST"));
+            assert(fabsf(map.motion.segment.end.x-map.localization.pose.pose.x-.18f)<.00001f);
+        }
+    }
+    puts("G1_PARK_POSE_REPLAY_OK stationary_fusion_no_abort_true_wheel_motion_stops_fresh_realign_from_current_map_X");
+}
+
+static void recorded_g4_reposition_wheel_progress_test(void) {
     FullMapTest map;
-    FullMapInput in=setup_aisle(&map,8,1.26f);
-    const AutoPose parked={1.26f,2.317f,1.570796327f};
-    AutoPose actual={1.26f,2.270f,1.570796327f};
-    assert(field_pose_register(&map.localization,parked,0,0));
-    map.tree_hold=map.tree_hold_stable=true;
-    map.target_tree=7;map.motion.segment.end=(AutoVec2){1.26f,2.30f};
-    in.work_station=7;
-    in.work_enabled=in.work_online=in.work_wait=in.work_active=true;
-    for(unsigned now=10;now<=600;now+=10) {
+    FullMapInput in=setup_aisle(&map,8,1.16f);
+    AutoPose actual=map.localization.pose.pose;
+    const float start_x=actual.x;
+    const float target_x=start_x+.020f;
+    map.visual_work=map.visual_stop=map.tree_hold=true;
+    map.visual_segment=8;map.row_work_count=1;map.target_tree=7;
+    map.visual_stop_x=target_x;
+    map.motion.segment.end=(AutoVec2){target_x,actual.y};
+    map.motion.out.phase=AUTO_MOTION_DONE;
+    map.visual_hold=(MapVisualHold){.wheel={target_x,actual.y},.origin_wheel_x=target_x,
+        .active=true,.origin_valid=true};
+    in.work_enabled=in.work_online=in.work_wait=true;in.work_station=7;
+    in.now=10;
+    /* An over-tolerance heading triggers the local reposition. */
+    in.imu_yaw=.080f;
+    actual.yaw+=in.imu_yaw;
+    in.laser=ridge_scan(actual,in.now);
+    full_map_step(&map,in);
+    assert(map.phase==MAP_RUNNING && !map.tree_hold && !strcmp(map.reason,"TREE_REPOSITION"));
+    assert(map.motion.tangent.x>.99f);
+
+    /* Localization moved west by more than the wrong-direction threshold
+     * while the wheel position remained fixed, as on the second G4 tree. */
+    in.now=20;in.aligned=false;
+    map.localization.pose.pose.x-=.056f;
+    actual.x-=.056f;
+    in.laser=ridge_scan(actual,in.now);
+    full_map_step(&map,in);
+    assert(map.phase==MAP_RUNNING && fabsf(map.motion.out.progress)<.001f);
+    assert(fabsf(map.localization.wheel_position.x-start_x)<.00001f);
+
+    /* The same displacement measured by the wheels is real reverse travel. */
+    in.stationary=false;
+    in.wheel.vy=.06f;
+    for(unsigned now=30u;now<=1150u && map.phase==MAP_RUNNING;now+=10u) {
+        const AutoVec2 delta=auto_rotate((AutoVec2){0,in.wheel.vy*.01f},actual.yaw);
+        actual.x+=delta.x;actual.y+=delta.y;
         in.now=now;in.laser=ridge_scan(actual,now);
         full_map_step(&map,in);
-        assert(map.phase==MAP_RUNNING && map.tree_hold && map.command.vx==0 && map.command.vy==0);
-        assert(fabsf(map.localization.pose.pose.y-parked.y)<.001f);
     }
-    assert(map.work_ridge.front_surface && map.work_ridge.rear_surface);
-    actual.y+=.040f; /* External slip with no wheel rotation. */
-    for(unsigned now=610;now<=900 && map.phase==MAP_RUNNING;now+=10) {
-        in.now=now;in.laser=ridge_scan(actual,now);
-        full_map_step(&map,in);
+    assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WRONG_DIRECTION"));
+    puts("G4_REPOSITION_WHEEL_PROGRESS_OK 56mm_stationary_fusion_correction_ignored_actual_wrong_wheel_motion_faults");
+}
+
+static void work_ridge_reference_test(void) {
+    for(unsigned visual=0;visual<2u;++visual) {
+        FullMapTest map;
+        FullMapInput in=setup_aisle(&map,8,1.26f);
+        const AutoPose parked={1.26f,2.317f,1.570796327f};
+        AutoPose actual={1.26f,2.270f,1.570796327f};
+        assert(field_pose_register(&map.localization,parked,0,0));
+        map.tree_hold=map.tree_hold_stable=true;
+        map.visual_work=map.visual_stop=visual!=0u;
+        map.visual_stop_x=parked.x;
+        map.target_tree=7;map.motion.segment.end=(AutoVec2){1.26f,2.30f};
+        in.work_station=7;
+        in.work_enabled=in.work_online=in.work_wait=in.work_active=true;
+        for(unsigned now=10;now<=600;now+=10) {
+            in.now=now;in.laser=ridge_scan(actual,now);
+            full_map_step(&map,in);
+            assert(map.phase==MAP_RUNNING && map.tree_hold && map.command.vx==0 && map.command.vy==0);
+            assert(fabsf(map.localization.pose.pose.y-parked.y)<.001f);
+        }
+        assert(map.work_ridge.front_surface && map.work_ridge.rear_surface);
+        actual.y+=.040f; /* External slip with no wheel rotation. */
+        for(unsigned now=610;now<=900 && map.phase==MAP_RUNNING;now+=10) {
+            in.now=now;in.laser=ridge_scan(actual,now);
+            full_map_step(&map,in);
+        }
+        assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WORK_STATION_MOVED"));
     }
-    assert(map.phase==MAP_FAULT && !strcmp(map.reason,"WORK_STATION_MOVED"));
-    puts("WORK_RIDGE_REFERENCE_OK stationary_map_bias_allowed_measured_no_wheel_slip_stops");
+    puts("WORK_RIDGE_REFERENCE_OK fixed_and_visual_hold_detect_40mm_external_slip_without_wheel_motion");
 }
 
 static void recorded_g6_blind_exit_test(void) {
@@ -2055,6 +2478,52 @@ static void shift_far_return_change_test(void) {
     full_map_step(&m,in);assert(m.phase==MAP_PAUSED && !m.odom_range_mask);
     puts("SHIFT_FAR_RETURN_CHANGE_OK known_corridor_live_far_return_fresh_side_required_real_150mm_stop");
 }
+static void recorded_g4_shift_side_reference_test(void) {
+    enum { WALL_MATCH, REAR_NEAR, REAR_STALE, WALL_MISMATCH };
+    for(unsigned trial=WALL_MATCH;trial<=WALL_MISMATCH;++trial) {
+        FullMapTest map;
+        FullMapInput in=setup_aisle(&map,7,2.792f);
+        const AutoPose pose={2.792f,2.996f,1.6126842f};
+        assert(field_pose_register(&map.localization,pose,0,0));
+        map.motion.started=true;map.motion.out.phase=AUTO_MOTION_RUN;
+        map.motion.velocity_map=(AutoVec2){0,-.12f};
+        map.motion.out.command=(AutoTwist){-.12f,0,0};
+        map.command=map.motion.out.command;
+        in.stationary=false;in.wheel=map.command;
+        const uint16_t side_mm=trial==WALL_MISMATCH?205u:159u;
+        in.now=10;
+        in.laser=scan(pose,in.now);
+        in.laser.accepted_mm[AUTO_RIGHT]=side_mm;
+        in.laser.accepted_mm[AUTO_REAR]=4323;
+        full_map_step(&map,in);
+        assert(map.phase==MAP_RUNNING);
+
+        in.now=20;
+        in.laser=scan(pose,in.now);
+        in.laser.accepted_mm[AUTO_RIGHT]=side_mm;
+        in.laser.updated_mask&=(uint8_t)~(1u<<AUTO_RIGHT);
+        in.laser.accepted_mm[AUTO_REAR]=trial==REAR_NEAR?94u:2265u;
+        if(trial==REAR_STALE) in.laser.sample_age_ms[AUTO_REAR]=LASER_FRAME_TIMEOUT_MS+1u;
+        const uint32_t stale_fix=in.now-LASER_FRAME_TIMEOUT_MS-1u;
+        map.localization.constrained_ms[0]=stale_fix;
+        map.laser_motion.channel[AUTO_REAR].anchor.stamp=in.now-LASER_MOTION_MAX_MS-1u;
+        map.prediction=(LaserPrediction){0};
+        full_map_step(&map,in);
+        assert(map.localization.constrained_ms[0]==stale_fix);
+        const uint8_t rear_bit=1u<<AUTO_REAR;
+        if(trial==WALL_MATCH) {
+            assert(map.phase==MAP_RUNNING && (map.odom_range_mask&rear_bit));
+            assert(map.command.vx<0 && (map.laser_rejected_mask&rear_bit));
+            assert(map.range_control_mm[AUTO_REAR]<=2265u);
+        } else {
+            assert(map.phase==MAP_PAUSED && !(map.odom_range_mask&rear_bit));
+            if(trial==REAR_NEAR) assert(map.range_near_mask&rear_bit);
+            else assert(map.range_stale_mask&rear_bit);
+        }
+    }
+    puts("G4_SHIFT_LIVE_SIDE_REFERENCE_OK far_rear_jump_bridged_with_matching_side_near_stale_and_mismatch_stop");
+}
+
 static void entry_real_constraint_gap_test(void) {
     FullMapTest m;FullMapInput in=setup_entry_observer(&m,1.2f);in.imu_yaw=0;
     for(unsigned now=10;now<=400;now+=10) {
@@ -2173,6 +2642,53 @@ static void far_handover_boundaries_test(void) {
         if(trial<3u) assert(seen); else assert(!seen);
     }
     puts("FAR_HANDOVER_BOUNDARIES_OK G7_G5_G4_left_and_right_finite_budget_missing_opposite_and_board_never_bridge");
+}
+
+static void recorded_g4_midrow_range_jump_test(void) {
+    const uint16_t field_mm[4]={1474,808,168,185};
+    const AutoPose pose={2.153f,2.311f,1.49976f};
+    for(unsigned trial=0;trial<4u;++trial) {
+        FullMapTest m;FullMapInput in=setup_aisle(&m,8,pose.x);
+        assert(field_pose_register(&m.localization,pose,0,0));
+        in.imu_yaw=0;
+        for(unsigned now=10;now<=210u;now+=10) {
+            in.now=now;in.laser=ridge_scan(pose,now);
+            full_map_step(&m,in);
+            assert(m.phase==MAP_RUNNING);
+        }
+        in.now=220;in.laser=ridge_scan(pose,in.now);
+        m.laser_motion.channel[AUTO_LEFT].anchor.stamp=in.now-700u;
+        for(unsigned ch=0;ch<4u;++ch) in.laser.accepted_mm[ch]=field_mm[ch];
+        if(trial==1u) in.laser.accepted_mm[AUTO_REAR]=95;
+        if(trial==2u) in.laser.accepted_mm[AUTO_FRONT]=400;
+        if(trial==3u) in.laser.sample_age_ms[AUTO_REAR]=LASER_FRAME_TIMEOUT_MS+1u;
+        full_map_step(&m,in);
+        assert(m.laser_rejected_mask&(1u<<AUTO_LEFT));
+        if(trial==0u) {
+            assert(m.phase==MAP_RUNNING && (m.odom_range_mask&(1u<<AUTO_LEFT)));
+            assert(m.along_speed_limit>0 && m.along_speed_limit<=.15f);
+        } else {
+            assert(m.phase==MAP_PAUSED && !(m.odom_range_mask&(1u<<AUTO_LEFT)));
+            if(trial==1u) assert(m.range_near_mask&(1u<<AUTO_REAR));
+        }
+    }
+    puts("G4_MIDROW_RANGE_REPLAY_OK field_far_jump_uses_bounded_ridge_pair_close_mismatch_expired_still_stop");
+}
+
+static void recorded_g4_west_margin_yaw_test(void) {
+    FullMapTest m;FullMapInput in=setup_aisle(&m,8,.534f);
+    AutoPose pose={.534f,2.339f,1.53729f};
+    assert(field_pose_register(&m.localization,pose,0,0));
+    in.now=10;in.laser=ridge_scan(pose,in.now);
+    in.laser.accepted_mm[AUTO_REAR]=126;
+    full_map_step(&m,in);
+    assert(m.phase==MAP_RUNNING && m.along_speed_limit==.05f);
+    assert(m.hint.wz==0 && m.command.wz==0);
+    m.localization.pose.pose.y+=.005f;
+    in.now=20;in.laser=ridge_scan(pose,in.now);
+    full_map_step(&m,in);
+    assert(m.phase==MAP_FAULT && !strcmp(m.reason,"MAP_ENVELOPE"));
+    puts("G4_WEST_MARGIN_REPLAY_OK small_yaw_does_not_steer_close_to_ridge_envelope_fault_retained");
 }
 
 static void recorded_entry_urgent_jump_test(void) {
@@ -2383,6 +2899,59 @@ static void recorded_g5_entry_caution_test(void) {
     puts("G5_ENTRY_CAUTION_REPLAY_OK 130mm_before_pair_slows_median_confirms_away_stale_or_close_opposite_cannot_steer");
 }
 
+static void established_aisle_spike_test(void) {
+    FullMapTest m;
+    FullMapInput in=setup_aisle(&m,12,1.95f);
+    const AutoPose pose=m.localization.pose.pose;
+    const uint8_t rear=(uint8_t)(1u<<AUTO_REAR);
+    for(unsigned now=10;now<=310;now+=10) {
+        in.now=now;
+        if(now%100u==10u) in.laser=ridge_scan(pose,now);
+        else {
+            for(unsigned ch=0;ch<4u;++ch) in.laser.sample_age_ms[ch]+=10u;
+            in.laser.updated_mask=0;
+        }
+        full_map_step(&m,in);
+    }
+    assert(m.phase==MAP_RUNNING && m.aisle_entry_qualified);
+    const float cruise_limit=m.motion.config.vmax;
+    assert(cruise_limit>.22f);
+
+    in.now+=10u;in.laser=ridge_scan(pose,in.now);
+    in.laser.median_valid_mask=rear;
+    in.laser.median_mm[AUTO_REAR]=in.laser.accepted_mm[AUTO_REAR];
+    in.laser.median_age_ms[AUTO_REAR]=10u;
+    in.laser.accepted_mm[AUTO_REAR]=113u;
+    full_map_step(&m,in);
+    assert(m.phase==MAP_RUNNING && m.aisle_entry_qualified);
+    assert(m.motion.config.vmax>=cruise_limit-.001f);
+
+    in.now+=10u;in.laser.frame_count++;
+    in.laser.median_mm[AUTO_REAR]=113u;
+    full_map_step(&m,in);
+    assert(m.phase==MAP_RUNNING && !m.aisle_entry_qualified && m.motion.config.vmax<=.10001f);
+
+    in.now+=10u;in.laser.frame_count++;
+    in.laser.median_mm[AUTO_REAR]=159u;
+    in.laser.accepted_mm[AUTO_REAR]=90u;
+    full_map_step(&m,in);
+    assert(m.phase==MAP_PAUSED && m.range_near_mask==rear);
+    assert(m.command.vx==0 && m.command.vy==0 && m.hint.vx==0 && m.hint.vy==0);
+    for(unsigned tick=0;tick<9u;++tick) {
+        in.now+=10u;
+        in.laser.frame_count++; /* Repeated source sample on newer CAN frames. */
+        in.laser.sample_age_ms[AUTO_REAR]+=10u;
+        full_map_step(&m,in);
+        assert(m.command.vx==0 && m.command.vy==0 && m.hint.vx==0 && m.hint.vy==0);
+    }
+    for(unsigned tick=0;tick<25u;++tick) {
+        in.now+=10u;in.laser=ridge_scan(pose,in.now);
+        full_map_step(&m,in);
+    }
+    assert(m.phase==MAP_RUNNING && !m.near_recovery.active);
+    puts("AISLE_SPIKE_FILTER_OK soft_spike_filtered_confirmed_close_slows_90mm_stops_no_escape_on_repeated_sample");
+}
+
 static void g5_entry_with_lateral_slip_test(void) {
     FullMapTest m;
     FullMapInput in=setup_aisle(&m,6,.44f);
@@ -2448,8 +3017,9 @@ static void recorded_g5_late_steering_test(void) {
         in.aligned=now>=1600u;
         in.wheel.wz=now>=1600u?.03f:0;
         full_map_step(&m,in);
-        assert(m.phase==MAP_PAUSED && m.near_recovery.steering_requested);
-        assert(m.hint.vx<-.039f && m.command.vx==0 && m.command.vy==0);
+        assert(m.phase==MAP_PAUSED && m.command.vx==0 && m.command.vy==0);
+        assert(m.near_recovery.steering_requested==(now>10u));
+        assert(now==10u?m.hint.vx==0:m.hint.vx<-.039f);
     }
     in.now=1810;in.laser=ridge_scan(stopped,in.now);
     in.laser.accepted_mm[AUTO_FRONT]=94;in.laser.accepted_mm[AUTO_REAR]=242;
@@ -2475,7 +3045,8 @@ static void recorded_g5_escape_space_test(void) {
         in.now=now;in.laser=ridge_scan(p,now);
         in.laser.accepted_mm[AUTO_FRONT]=90;in.laser.accepted_mm[AUTO_REAR]=192;
         full_map_step(&m,in);assert(m.phase==MAP_PAUSED);
-        if(now==10u) assert(hypotf(m.hint.vx,m.hint.vy)>.01f);
+        if(now==10u) assert(m.hint.vx==0 && m.hint.vy==0);
+        if(now==20u) assert(hypotf(m.hint.vx,m.hint.vy)>.01f);
     }
     assert(m.command.vx<-.01f && m.command.vy==0 && m.command.wz==0);
     assert(m.localization.pose.pose.y>2.98f); /* No false near-fence pose fusion. */
@@ -2497,7 +3068,11 @@ static void near_recovery_test(void) {
      * obstacle. Independent fresh clearance must end the bounded recovery. */
     for(unsigned ch=0;ch<4u;++ch) {
         FullMapTest m;FullMapInput in=setup_aisle(&m,2,1.5f);
-        AutoPose actual=m.localization.pose.pose;float clearance=95;
+        AutoPose actual=m.localization.pose.pose;
+        /* Select a position with a full escape corridor on both sides. */
+        actual.y=4.39f;
+        assert(field_pose_register(&m.localization,actual,0,0));
+        float clearance=95;
         bool moved=false,cleared=false;
         for(unsigned now=10;now<=1400;now+=10) {
             in.wheel=m.command;
@@ -2697,6 +3272,104 @@ static void recorded_g4_east_entry_test(void) {
     }
     puts("G4_EAST_ENTRY_OBSTACLE_OK 80mm_rear_never_escapes_95mm_front_stops");
 }
+static void recorded_g2_east_entry_test(void) {
+    const AutoEnvelope body={.155f,.155f,.155f,.155f};
+    const struct {float speed;int rear_bias_mm;uint16_t rear_obstacle,front_obstacle;} cases[]={
+        {.90f,71,0,0},
+        {.50f,65,0,0},
+        {.50f,71,80,0},
+        {.90f,71,0,95},
+    };
+    for(unsigned trial=0;trial<sizeof(cases)/sizeof(cases[0]);++trial) {
+        const uint16_t rear_obstacle=cases[trial].rear_obstacle,front_obstacle=cases[trial].front_obstacle;
+        FullMapTest m;FullMapInput in=setup_aisle(&m,11u,2.80f);
+        m.speed=cases[trial].speed;
+        AutoPose actual=m.localization.pose.pose;
+        actual.yaw-=.040f;
+        AutoTwist measured={0};
+        uint32_t entry_ms=0,short_ms=0;
+        uint16_t min_rear=UINT16_MAX,min_front=UINT16_MAX;
+        float entry_y=0,max_blind_speed=0;
+        bool reached=false;
+        for(uint32_t now=10;now<=15000u;now+=10u) {
+            measured.vx+=(m.command.vx-measured.vx)*.12f;
+            measured.vy+=(m.command.vy-measured.vy)*.12f;
+            measured.wz+=(m.command.wz-measured.wz)*.12f;
+            const AutoVec2 delta=auto_rotate((AutoVec2){measured.vx*.01f,measured.vy*.01f},actual.yaw);
+            actual.x+=delta.x;actual.y+=delta.y;actual.yaw+=measured.wz*.01f;
+            in.now=now;in.wheel=measured;in.imu_yaw=actual.yaw-1.570796327f;
+            in.stationary=hypotf(measured.vx,measured.vy)<.01f && fabsf(measured.wz)<.02f;
+            const bool in_g2=m.segment==12u;
+            if(in_g2 && !entry_ms) {entry_ms=now;entry_y=actual.y;}
+            in.aligned=!in_g2 || now-entry_ms>=600u;
+            if(now%100u==0u) {
+                in.laser=ridge_scan(actual,now);
+                if(in_g2) {
+                    uint16_t rear=in.laser.accepted_mm[AUTO_REAR];
+                    uint16_t front=in.laser.accepted_mm[AUTO_FRONT];
+                    /* At x=2.58m the measured rear return changed from about
+                     * 0.83m to 88-94mm, with 199mm on the front. Keep short
+                     * return bias relative to physical Y so a new entry line
+                     * changes the replayed distance rather than skipping a sample. */
+                    if(actual.x<=2.585f && rear<250u && front<250u) {
+                        rear=(uint16_t)fmaxf(1,(int)rear-cases[trial].rear_bias_mm);
+                        if(!short_ms) short_ms=now;
+                    } else if(rear<250u && !short_ms) {
+                        rear=(uint16_t)lroundf(actual.y*1000)-61u;
+                    }
+                    if(front<250u) front+=40u;
+                    if(short_ms && rear_obstacle) rear=rear_obstacle;
+                    if(short_ms==now && front_obstacle) front=front_obstacle;
+                    min_rear=rear<min_rear?rear:min_rear;
+                    min_front=front<min_front?front:min_front;
+                    in.laser.accepted_mm[AUTO_REAR]=in.laser.distance_mm[AUTO_REAR]=rear;
+                    in.laser.accepted_mm[AUTO_FRONT]=in.laser.distance_mm[AUTO_FRONT]=front;
+                }
+            } else {
+                for(unsigned ch=0;ch<4u;++ch) in.laser.sample_age_ms[ch]+=10u;
+            }
+            full_map_step(&m,in);
+            if(short_ms==now && (rear_obstacle || front_obstacle)) {
+                const unsigned obstacle=rear_obstacle?AUTO_REAR:AUTO_FRONT;
+                assert(m.phase==MAP_PAUSED && m.range_near_mask==(1u<<obstacle));
+                assert(m.command.vx==0 && m.command.vy==0 && m.command.wz==0);
+                if(front_obstacle) {reached=true;break;}
+            }
+            if(short_ms && rear_obstacle) {
+                assert(m.command.vx==0 && m.command.vy==0 && m.command.wz==0);
+                if(m.phase==MAP_FAULT) {
+                    assert(!strcmp(m.reason,"NEAR_RECOVERY_TIMEOUT") ||
+                        !strcmp(m.reason,"NEAR_RECOVERY_TRAVEL_LIMIT"));
+                    reached=true;break;
+                }
+            } else if(in_g2 && m.phase!=MAP_RUNNING) {
+                fprintf(stderr,"G2_ENTRY_BLOCKED trial=%u x=%.3f y=%.3f rear_mm=%u front_mm=%u reason=%s\n",
+                    trial,actual.x,actual.y,min_rear,min_front,m.reason);
+                break;
+            }
+            if(in_g2 && m.phase==MAP_RUNNING) {
+                if(!auto_route_pose_clear(&m.route,body,actual,0))
+                    fprintf(stderr,"G2_ENTRY_BODY trial=%u x=%.4f y=%.4f yaw=%.4f fused=%.4f,%.4f rear=%u front=%u\n",
+                        trial,actual.x,actual.y,actual.yaw,m.localization.pose.pose.x,m.localization.pose.pose.y,
+                        in.laser.accepted_mm[AUTO_REAR],in.laser.accepted_mm[AUTO_FRONT]);
+                assert(auto_route_pose_clear(&m.route,body,actual,0));
+                if(!m.aisle_correction.active)
+                    max_blind_speed=fmaxf(max_blind_speed,hypotf(m.command.vx,m.command.vy));
+                else if(actual.x<=2.15f) {
+                    assert(!m.g2_entry_offset && short_ms && min_rear>95u && min_front>95u);
+                    assert(fabsf(entry_y-m.route.segment[12].line.start.y-.020f)<=.009f);
+                    assert(max_blind_speed<=.181f);
+                    reached=true;break;
+                }
+            }
+        }
+        if(!reached) fprintf(stderr,"G2_ENTRY_FAILED trial=%u segment=%u x=%.3f y=%.3f rear_mm=%u front_mm=%u reason=%s\n",
+            trial,m.segment,actual.x,actual.y,min_rear,min_front,m.reason);
+        assert(reached);
+        printf("G2_EAST_ENTRY_OK speed=%.2f min_rear_mm=%u min_front_mm=%u entry_ms=%u rear_obstacle=%u front_obstacle=%u\n",
+            m.speed,min_rear,min_front,in.now-entry_ms,rear_obstacle,front_obstacle);
+    }
+}
 static void entry_braking_plan_test(void) {
     const float speeds[5]={.5f,.6f,.7f,.8f,.9f};
     for(unsigned i=0;i<5u;++i) {
@@ -2718,10 +3391,13 @@ static void entry_braking_plan_test(void) {
 }
 
 int main(void) {
+    recorded_g1_left_alignment_replay();
+    recorded_transfer_and_aisle_stutter_test();
     continuous_tree_alignment_test();
     visual_stop_profile_continuity_test();
     visual_speed_by_target_test();
     visual_gmg_speed_transition_test();
+    recorded_g4_second_tree_speed_test();
     work_front_correction_limit_test();
     short_visual_alignment_gap_test();visual_target_loss_skip_test();
     visual_tree_alignment_travel_test();
@@ -2733,18 +3409,21 @@ int main(void) {
     entry_rear_start_test();
     origin_fresh_cached_front_test();
     recorded_entry_urgent_jump_test();endpoint_jitter_gate_test();endpoint_rejects_bad_evidence_test();route_cross_clearance_test();frozen_pair_reference_revoke_test();
-    recorded_pair_control_authority_test();recorded_g6_pair_loss_speed_test();
+    recorded_pair_control_authority_test();recorded_g6_pair_loss_speed_test();established_aisle_spike_test();
     recorded_g5_entry_caution_test();g5_entry_with_lateral_slip_test();
     recorded_g5_late_steering_test();recorded_g5_escape_space_test();
     uniform_near_threshold_test();near_recovery_test();recorded_g4_near_recovery_test();
-    recorded_g4_east_entry_test();entry_braking_plan_test();
+    recorded_g4_east_entry_test();recorded_g2_east_entry_test();entry_braking_plan_test();
     entry_raw_wall_source_test(.5f);entry_raw_wall_source_test(.6f);entry_raw_wall_source_test(.7f);
     opposite_wall_handover_test();
     far_handover_boundaries_test();
+    recorded_g4_midrow_range_jump_test();
+    recorded_g4_west_margin_yaw_test();
     tree_observer_settling_test();
     entry_real_constraint_gap_test();
     low_speed_wall_countersteer_test();
     shift_far_return_change_test();
+    recorded_g4_shift_side_reference_test();
     entry_near_fence_source_test();
     entry_single_wall_policy_test();
     entry_fresh_jump_fusion_test(.5f);entry_fresh_jump_fusion_test(.7f);
@@ -2757,6 +3436,7 @@ int main(void) {
     entry_observation_bridge_test();
     entry_north_confirmation_test();
     entry_north_bias_recovery_test();
+    recorded_g7_entry_clearance_test();
     tree_dwell_observation_hysteresis_test();
     tree_reposition_past_target_test();
     entry_missing_north_closed_loop_test();
@@ -2769,7 +3449,7 @@ int main(void) {
     tree_endpoint_centering_test(false);tree_endpoint_centering_test(true);
     centering_hysteresis_test();
     margin_and_collision_test();
-    field_shift_wall_recovery_test();g4_transfer_speed_and_wall_limit_test();
+    field_shift_wall_recovery_test();g4_transfer_speed_and_wall_limit_test();recorded_g4_transfer_handoff_test();
     recorded_shift_approach_limit_test();
     g4_exterior_wall_replay_test();
     g1_margin_recovery_test();
@@ -2781,7 +3461,9 @@ int main(void) {
         if(s.aisle==7) assert(s.row==0);
         if(s.aisle>=1&&s.aisle<=6) assert(s.row==s.aisle);
     }
-    station_work_gate_test();work_ridge_reference_test();recorded_g6_blind_exit_test();
+    station_work_gate_test();visual_work_station_pose_replay_test();
+    recorded_g4_reposition_wheel_progress_test();
+    work_ridge_reference_test();recorded_g6_blind_exit_test();
     work_slow_distance_test();
     localization_tests();command_tests();protection_tests();range_threshold_tests();endpoint_acceptance_tests();
     ridge_end_fence_y_rejection_test();

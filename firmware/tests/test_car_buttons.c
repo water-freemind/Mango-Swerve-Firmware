@@ -39,12 +39,14 @@ static void direct_start_tests(void) {
     command(50007,CAR_START_WORK,28);
     assert(go_calls==starts+1);
 
-    control_source.mode=0;
+    control_source.mode=0;control_source.manual_armed=true;
     command(50008,CAR_START_NAV,29);
     assert(car_reply[4]==3 && go_calls==starts+1);
-    control_source.mode=DRIVE_SOURCE_HOST;
+    control_source.manual_armed=false;control_source.mode=DRIVE_SOURCE_HOST;
     enqueue(50009,CAR_START_WORK,30);
+    hardware_ready=false;
     car_commands(30,(StraightInput){.stationary=true,.healthy=false});
+    hardware_ready=true;
     assert(car_reply[4]==10 && origin_calls==origins+1);
     enqueue(50010,CAR_START_WORK,31);
     car_commands(31,(StraightInput){.stationary=false,.healthy=true});
@@ -71,6 +73,25 @@ static void direct_start_tests(void) {
     command(30001,CAR_START_WORK,305);
     assert(car_reply[4]==0 && full_map.phase==MAP_RUNNING && started_work && map_work_enabled);
     assert(go_calls==starts+3);
+    command(30002,CAR_STOP,306);
+    control_source.mode=0;
+    enqueue(30003,CAR_START_WORK,307);
+    const StraightInput remote_offline={.stationary=true,.healthy=false};
+    car_commands(307,remote_offline);
+    assert(car_reply[4]==0 && full_map.phase==MAP_RUNNING && started_work && camera_map_owner);
+    assert(map_drive_selected() && map_drive_input(remote_offline).healthy);
+    hardware_ready=false;
+    assert(!map_drive_input(remote_offline).healthy);
+    hardware_ready=true;
+    command(30004,CAR_STOP,308);
+    assert(!camera_map_owner && !map_drive_selected() && !map_drive_input(remote_offline).healthy);
+    test.phase=ST_RUNNING;
+    command(30005,CAR_START_NAV,309);
+    assert(car_reply[4]==3 && !camera_map_owner);
+    test.phase=0;
+    command(30006,CAR_START_NAV,310);
+    assert(car_reply[4]==0 && full_map.phase==MAP_RUNNING && !started_work && camera_map_owner);
+    puts("CAR_BUTTON_NO_REMOTE_OK explicit_camera_start_continues_hardware_gate_stop_and_owner_conflict");
 }
 int main(void) {
     control_source.mode=DRIVE_SOURCE_HOST;full_map.reason="TEST";
@@ -83,7 +104,9 @@ int main(void) {
     control_source.mode=0;
     command(14,CAR_STOP,6);assert(stop_calls==1 && output_stops==1 && car_reply[4]==0);
     command(13,CAR_GO,7);assert(go_calls==1 && stop_calls==1); /* Old GO after STOP. */
+    control_source.manual_armed=true;
     command(15,CAR_WORK,8);assert(car_reply[4]==3);
+    control_source.manual_armed=false;
     control_source.mode=DRIVE_SOURCE_HOST;
     full_map.phase=MAP_RUNNING;
     command(16,CAR_NAV,9);assert(car_reply[4]==4);
