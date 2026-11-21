@@ -33,6 +33,7 @@ static uint8_t empty_frames, departed_frames, moving_timing, missing_timing;
 static uint8_t empty_timing, saw_movement;
 static uint32_t state_since, tree_since, stable_since, empty_since, frame_floor;
 static uint32_t check_since, check_delay, moving_since, missing_since, last_frame;
+static uint32_t station_target_seen_ms;
 static uint32_t empty_observed_ms, empty_sample_ms;
 static uint8_t test_latched_region; /* 独立测试中已动作的区域，避免同一目标连续打击。 */
 static uint8_t station_number;
@@ -40,12 +41,21 @@ static uint8_t alignment_centered, alignment_reply;
 static int8_t alignment_off_center;
 static uint32_t alignment_last_center_ms;
 static uint8_t station_visual_trigger, station_departure_pending, station_started, station_realign_pending, station_realign_sequence;
-static uint32_t station_target_seen_ms, station_green_seen_ms;
-static uint32_t station_tree_seen_ms, station_scan_frame_ms;
-static int8_t station_travel_direction;
-static uint8_t station_tree_eligible, station_tree_frames, station_brake_frames;
+static uint32_t station_green_seen_ms;
+static uint32_t station_tree_seen_ms, station_scan_frame_ms, station_brake_ms, station_departure_seen_ms;
+static int8_t station_travel_direction, station_departure_direction;
+static uint8_t station_tree_eligible, station_tree_frames, station_brake_frames, station_brake_confirmed;
+static uint8_t station_tree_previewed, station_green_latched, station_clear_frames;
+static uint32_t station_preview_tree_ms, station_clear_since;
+#define STATION_TREE_PREVIEW_PX 300
+#define STATION_TREE_INSPECT_PX 130
+#define STATION_CLEAR_CONFIRM_MS 300u
 #define STATION_SCAN_FRAME_GAP_MS 250u
+#define STATION_GREEN_DROP_MS 300u
+#define STATION_BRAKE_HOLD_MS 250u
+#define STATION_BRAKE_TRACK_PX (WORK_VISUAL_BRAKE_DX + 20)
 #define STATION_CHECK_TREE_GAP_MS 400u
+#define STATION_RETURN_TREE_GAP_MS 800u
 
 /* 切换作业阶段，同时清除不能跨阶段累计的无目标/离树计数。 */
 static void change_state(uint8_t state, uint32_t now)
@@ -97,16 +107,20 @@ void Work_Control_Init(void)
     moving_timing = missing_timing = saw_movement = 0;
     state_since = tree_since = stable_since = empty_since = frame_floor = 0;
     check_since = check_delay = moving_since = missing_since = last_frame = 0;
+    station_target_seen_ms = 0;
     test_latched_region = 0;
     station_number = 0;
     alignment_centered = 0;
     alignment_off_center = 0;
     alignment_reply = STATION_TRACKING;
     station_visual_trigger=station_departure_pending=station_started=station_realign_pending=station_realign_sequence=0;
-    station_target_seen_ms=station_green_seen_ms=0;
+    station_green_seen_ms=0;
     station_tree_eligible=0;
-    station_tree_frames=station_brake_frames=0;
-    station_tree_seen_ms=station_scan_frame_ms=0;
+    station_tree_frames=station_brake_frames=station_brake_confirmed=0;
+    station_tree_previewed=station_green_latched=station_clear_frames=0;
+    station_preview_tree_ms=station_clear_since=0;
+    station_tree_seen_ms=station_scan_frame_ms=station_brake_ms=station_departure_seen_ms=0;
+    station_departure_direction=0;
     memset(attempts, 0, sizeof(attempts));
     tree_attempts = 0;
 }
@@ -138,12 +152,22 @@ static void begin_check(uint32_t now, uint32_t frame_count, uint8_t returned)
  */
 static void update_target(uint32_t now, uint8_t new_frame, uint8_t tree_valid, int32_t offset)
 {
+    const uint8_t station_first_check = ELBOW_TEST_MODE == 2 && !tree_attempts;
+    if (station_first_check && stable_frames &&
+        (uint32_t)(now - station_target_seen_ms) > STATION_VISION_MAX_AGE_MS)
+        stable_region = stable_frames = 0;
+    /* A missing Tree box does not erase a still-visible green region during
+     * the first stationary check. It counts as no frame and renews no time. */
+    if (station_first_check && !tree_valid && Vision_Online && stable_frames &&
+        Vision_Region == stable_region)
+        return;
     if (!tree_valid || offset < -WORK_SLOW_DX || offset > WORK_SLOW_DX || !Vision_Region)
     {
         stable_region = stable_frames = 0;
         return;
     }
     if (!new_frame) return;
+    if (station_first_check) station_target_seen_ms = now;
     if (stable_region != Vision_Region)
     {
         stable_region = Vision_Region;
@@ -157,12 +181,15 @@ static void update_target(uint32_t now, uint8_t new_frame, uint8_t tree_valid, i
 static void process_check(uint32_t now, uint32_t frame_count,
                           uint8_t new_frame, uint8_t tree_valid, int32_t offset)
 {
+    /* 回收后偶尔漏检树时，保留本树已确认的无果帧。漏检期间不累计观察时间。 */
+    const uint32_t tree_gap_ms = ELBOW_TEST_MODE == 2 && tree_attempts && !Vision_MotorPhase ?
+        STATION_RETURN_TREE_GAP_MS : STATION_CHECK_TREE_GAP_MS;
     if (!tree_valid)
     {
         if (!missing_timing) { missing_timing = 1; missing_since = now; }
         empty_timing = 0;
         if (ELBOW_TEST_MODE != 2 || Vision_Region ||
-            (uint32_t)(now - missing_since) >= STATION_CHECK_TREE_GAP_MS)
+            (uint32_t)(now - missing_since) >= tree_gap_ms)
         {
             empty_frames = 0;
             empty_observed_ms = 0;
@@ -171,7 +198,7 @@ static void process_check(uint32_t now, uint32_t frame_count,
             fail(WORK_RESULT_VISION, now);
         return;
     }
-    if (missing_timing && (uint32_t)(now - missing_since) >= STATION_CHECK_TREE_GAP_MS)
+    if (missing_timing && (uint32_t)(now - missing_since) >= tree_gap_ms)
     {
         empty_frames = 0;
         empty_observed_ms = 0;
@@ -247,7 +274,7 @@ static void process_check(uint32_t now, uint32_t frame_count,
     if (ELBOW_TEST_MODE == 2)
     {
         const uint32_t gap = now - empty_sample_ms;
-        if (empty_frames && gap > STATION_CHECK_TREE_GAP_MS)
+        if (empty_frames && gap > tree_gap_ms)
         {
             empty_frames = 0;
             empty_observed_ms = 0;
@@ -503,6 +530,10 @@ static void process_station(uint32_t now, uint32_t frame_count)
             fail(WORK_RESULT_RESET, now);
         else if (Vision_Online && Vision_HomeConfirmed)
         {
+            if (Vision_WorkTask) {
+                /* A new map must acquire its first tree independently of the previous map. */
+                station_departure_pending = departed_frames = missing_timing = 0;
+            }
             paired = 1;
             Vision_WorkTask = 0;
             station_number = 0;
@@ -525,10 +556,12 @@ static void process_station(uint32_t now, uint32_t frame_count)
             alignment_centered = 0;
             alignment_reply = STATION_TRACKING;
             station_started=station_realign_pending=station_realign_sequence=0;
-            station_target_seen_ms=station_green_seen_ms=now;
+            station_green_seen_ms=now;
             station_tree_eligible=0;
-            station_tree_frames=station_brake_frames=0;
-            station_tree_seen_ms=station_scan_frame_ms=now;
+            station_tree_frames=station_brake_frames=station_brake_confirmed=0;
+            station_tree_previewed=station_green_latched=station_clear_frames=0;
+            station_preview_tree_ms=station_clear_since=now;
+            station_tree_seen_ms=station_scan_frame_ms=station_brake_ms=now;
             station_visual_trigger=(command.result&STATION_VISUAL_TRIGGER_FLAG)!=0u;
             station_travel_direction=(command.result&STATION_VISUAL_REVERSE_FLAG)?-1:1;
             missing_timing=0;
@@ -591,10 +624,10 @@ static void process_station(uint32_t now, uint32_t frame_count)
         if(!Vision_Motor_VerifyReturned())
             fail(Vision_MotorResult?Vision_MotorResult:STATION_RESULT_RETURN_NOT_READY,now);
         else {
-            if(Vision_WorkState==VISION_WORK_RELEASE) station_departure_pending=1;
-            if(Vision_WorkState==VISION_WORK_ALIGN) {
-                Vision_WorkResult=WORK_RESULT_SKIPPED;
+            if(Vision_WorkState==VISION_WORK_RELEASE || Vision_WorkState==VISION_WORK_ALIGN) {
+                if(Vision_WorkState==VISION_WORK_ALIGN) Vision_WorkResult=WORK_RESULT_SKIPPED;
                 station_departure_pending=1;
+                station_departure_direction=station_visual_trigger?station_travel_direction:0;
                 missing_timing=0;
             }
             change_state(VISION_WORK_LEAVING, now);
@@ -603,16 +636,23 @@ static void process_station(uint32_t now, uint32_t frame_count)
 
     if(station_visual_trigger && station_departure_pending && new_frame && Vision_Online)
     {
+        /* The departing tree can disappear for one or two frames at the
+         * image edge. That gap is not a new observation or a return to center. */
+        if((uint32_t)(now-station_departure_seen_ms)>STATION_SCAN_FRAME_GAP_MS)
+            departed_frames=0;
         if(Vision_TreeDX==9999)
         {
-            departed_frames=0;
             if(!missing_timing) {missing_timing=1;missing_since=now;}
             if((uint32_t)(now-missing_since)>=WORK_LEAVE_MISSING_MS) station_departure_pending=0;
         }
         else
         {
             missing_timing=0;
-            if(offset>=WORK_LEAVE_DX || offset<=-WORK_LEAVE_DX) {
+            const uint8_t behind=station_departure_direction?
+                offset*station_departure_direction<=-WORK_LEAVE_DX:
+                (offset>=WORK_LEAVE_DX || offset<=-WORK_LEAVE_DX);
+            if(behind) {
+                station_departure_seen_ms=now;
                 if(departed_frames<3u) ++departed_frames;
                 if(departed_frames>=3u) station_departure_pending=0;
             } else departed_frames=0;
@@ -629,24 +669,45 @@ static void process_station(uint32_t now, uint32_t frame_count)
         {
             if(new_frame && Vision_WorkState!=VISION_WORK_WAIT_STOP)
             {
-                const uint8_t valid_tree=Vision_TreeDX!=9999 && !station_departure_pending &&
+                const uint8_t tree_seen=Vision_TreeDX!=9999 && !station_departure_pending;
+                const uint8_t valid_tree=tree_seen &&
                     offset>=-STATION_VISUAL_SLOW_PX && offset<=STATION_VISUAL_SLOW_PX;
                 const uint8_t green=Vision_Region!=0 && !station_departure_pending;
-                if(!next_frame || (uint32_t)(now-station_scan_frame_ms)>STATION_SCAN_FRAME_GAP_MS)
-                    station_tree_frames=station_brake_frames=stable_frames=0;
+                const int32_t ahead=offset*station_travel_direction;
+                const uint8_t frame_gap=!next_frame ||
+                    (uint32_t)(now-station_scan_frame_ms)>STATION_SCAN_FRAME_GAP_MS;
+                if(frame_gap) {
+                    station_tree_frames=station_brake_frames=stable_frames=station_brake_confirmed=0;
+                    station_clear_frames=0;
+                }
                 station_scan_frame_ms=now;
+                if(tree_seen || frame_gap) station_preview_tree_ms=now;
+                if((tree_seen && ahead<=-WORK_LEAVE_DX) ||
+                   (!tree_seen && (uint32_t)(now-station_preview_tree_ms)>=WORK_LEAVE_MISSING_MS))
+                    station_tree_previewed=0;
+                const uint8_t preview=tree_seen && !station_tree_previewed &&
+                    ahead>=-WORK_STOP_DX && ahead<=STATION_TREE_PREVIEW_PX;
+                if(preview) station_tree_previewed=1;
                 if((uint32_t)(now-station_tree_seen_ms)>WORK_VISUAL_ACQUIRE_HOLD_MS ||
-                   (!green && (uint32_t)(now-station_green_seen_ms)>=300u))
+                   (!green && (uint32_t)(now-station_green_seen_ms)>=STATION_GREEN_DROP_MS))
                     station_tree_eligible=0;
+                /* Confirm the brake window on two consecutive tree frames. Keep
+                 * it briefly while GMG matures, even if a tree frame drops out. */
+                if(!station_tree_eligible || (uint32_t)(now-station_brake_ms)>STATION_BRAKE_HOLD_MS ||
+                   (Vision_TreeDX!=9999 && (ahead < -STATION_BRAKE_TRACK_PX || ahead > STATION_BRAKE_TRACK_PX)))
+                    station_brake_confirmed=0;
                 if(valid_tree) {
                     if(station_tree_frames<2u) ++station_tree_frames;
                     if(station_tree_frames>=2u) {
                         station_tree_seen_ms=now;
-                        if(offset*station_travel_direction>=-WORK_STOP_DX) station_tree_eligible=1;
+                        if(ahead>=-WORK_STOP_DX) station_tree_eligible=1;
                     }
-                    if((offset>=-WORK_VISUAL_BRAKE_DX && offset<=WORK_VISUAL_BRAKE_DX) ||
-                       offset*station_travel_direction<=0) {
+                    if(ahead<=WORK_VISUAL_BRAKE_DX) {
                         if(station_brake_frames<2u) ++station_brake_frames;
+                        if(station_tree_eligible && station_brake_frames>=2u && ahead>=-STATION_BRAKE_TRACK_PX) {
+                            station_brake_confirmed=1;
+                            station_brake_ms=now;
+                        }
                     } else station_brake_frames=0;
                 } else station_tree_frames=station_brake_frames=0;
                 if(green) {
@@ -655,17 +716,29 @@ static void process_station(uint32_t now, uint32_t frame_count)
                     station_green_seen_ms=now;
                 } else stable_frames=0;
 
-                /* Confirm Tree and GMG independently. A single near-tree
-                 * outlier must never latch the stop even with a confirmed GMG. */
-                if(station_tree_frames>=2u || stable_frames>=2u) {
-                    station_target_seen_ms=now;
-                    if(Vision_WorkState!=VISION_WORK_APPROACH) change_state(VISION_WORK_APPROACH,now);
-                } else if(Vision_WorkState==VISION_WORK_APPROACH &&
-                          (uint32_t)(now-station_target_seen_ms)>=300u) {
-                    change_state(VISION_WORK_IDLE,now);
+                /* A tree previews the approach. Green increases the brake demand
+                 * immediately, but only confirmed evidence can request a stop. */
+                if(preview || green) {
+                    station_green_latched|=green;
+                    station_clear_frames=0;
+                    if(Vision_WorkState!=VISION_WORK_APPROACH)
+                        change_state(VISION_WORK_APPROACH,now);
+                }
+                else if(tree_seen && ahead>STATION_TREE_INSPECT_PX) {
+                    /* A visible tree outside the inspection window is not clear. */
+                    station_clear_frames=0;
+                }
+                else if(Vision_WorkState==VISION_WORK_APPROACH) {
+                    /* Resume only on consecutive fresh frames without green. */
+                    if(!station_clear_frames) station_clear_since=now;
+                    if(station_clear_frames<3u) ++station_clear_frames;
+                    if(station_clear_frames>=3u && (uint32_t)(now-station_clear_since)>=STATION_CLEAR_CONFIRM_MS) {
+                        station_green_latched=0;
+                        change_state(VISION_WORK_IDLE,now);
+                    }
                 }
                 if(stable_frames>=3u && (uint32_t)(now-stable_since)>=WORK_TARGET_STABLE_MS &&
-                   station_tree_eligible && station_brake_frames>=2u)
+                   station_tree_eligible && (station_brake_frames>=2u || station_brake_confirmed))
                     change_state(VISION_WORK_WAIT_STOP,now);
             }
         }
@@ -770,6 +843,7 @@ static void process_station(uint32_t now, uint32_t frame_count)
     else
         Work_CAN_SetRequest(response, Vision_WorkTask, station_number,
             response == STATION_REALIGN ? station_realign_sequence :
+            response == STATION_SLOW && station_visual_trigger && !station_green_latched ? STATION_SLOW_TREE_ONLY :
             station_can_is_alignment(response) ? (uint8_t)frame_count : Vision_WorkResult);
 }
 

@@ -10,7 +10,7 @@ static AutoVec2 sensor_offset(unsigned ch, float yaw) {
     /* User CAD centre-to-sensor 40.98mm; effective optical origin still needs
      * field verification. This profile is not the former 153mm layout. */
     const float a=yaw+laser_yaw(ch);
-    return (AutoVec2){.04098f*cosf(a),.04098f*sinf(a)};
+    return (AutoVec2){FIELD_POSE_LASER_ORIGIN_M*cosf(a),FIELD_POSE_LASER_ORIGIN_M*sinf(a)};
 }
 static void hit(AutoVec2 p,AutoVec2 u,AutoVec2 n,float offset,float low,float high,
     unsigned id,AutoPlane* best,float* nearest) {

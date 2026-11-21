@@ -104,6 +104,7 @@ ImuStatus bmi088_get_attitude_debug(Bmi088AttitudeDebug* d) {
         .calib_count = 2000u, .calib_target = 2000u, .temperature = 33.0f};
     return IMU_STATUS_OK;
 }
+ImuStatus bmi088_set_zru_enabled(bool enabled) { (void)enabled; return IMU_STATUS_OK; }
 void remote_process(void) {}
 bool remote_get_state(RemoteState* r) {
     *r = (RemoteState){.online = fake_online, .manual_request = fake_swd == 2000u,
@@ -701,7 +702,47 @@ static void check_can_manual_recovery(void) {
     puts("CAN_MANUAL_RECOVERY_OK manual_takeover_zero_output_ack_IMU_independent_VRB_gate_bus_fault_blocks");
     puts("WORK_STOP_HYSTERESIS_OK strict_start_continuation_noise_band_all_wheels_bound");
 }
+static void check_entrance_imu_gate(void) {
+    const FullMapTest original_map=full_map;
+    const DriveSource original_source=control_source;
+    const uint32_t original_imu_age=imu_age_us;
+    const bool original_steering=imu_steering_stationary;
+    const StraightInput stopped={.healthy=true,.stationary=true};
+    full_map_init(&full_map,0);
+    full_map.phase=MAP_RUNNING;
+    full_map.segment=7;
+    full_map.motion.settled_s=.02f;
+    control_source.mode=DRIVE_SOURCE_HOST;
+    imu_steering_stationary=true;
+    imu_age_us=4000u;
+    assert(entrance_imu_calibration_allowed(stopped));
+    full_map.segment=0;
+    assert(entrance_imu_calibration_allowed(stopped));
+    full_map.segment=8;
+    assert(!entrance_imu_calibration_allowed(stopped));
+    full_map.segment=7;
+    assert(!entrance_imu_calibration_allowed((StraightInput){.healthy=true}));
+    assert(!entrance_imu_calibration_allowed((StraightInput){.stationary=true}));
+    imu_age_us=20001u;
+    assert(!entrance_imu_calibration_allowed(stopped));
+    imu_age_us=4000u;
+    full_map.motion.out.settle_blockers=256u;
+    assert(!entrance_imu_calibration_allowed(stopped));
+    full_map.motion.out.settle_blockers=0u;
+    imu_steering_stationary=false;
+    assert(!entrance_imu_calibration_allowed(stopped));
+    imu_steering_stationary=true;
+    full_map.phase=MAP_PAUSED;
+    assert(!entrance_imu_calibration_allowed(stopped));
+    full_map=original_map;
+    control_source=original_source;
+    imu_age_us=original_imu_age;
+    imu_steering_stationary=original_steering;
+    puts("ENTRANCE_IMU_GATE_TEST_OK initial_and_shift_settle_only_reject_motion_stale_and_pause");
+}
+
 int main(void) {
+    check_entrance_imu_gate();
     /* Recorded HOST offsets 1473/1523/1527 must not revoke permission. */
     g_test_tick_ms=100u;
     fake_ry=1473u; fake_rx=1527u;

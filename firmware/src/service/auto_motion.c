@@ -62,6 +62,7 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     if(in.hard_stop || !in.healthy) { fault(m,AUTO_MOTION_STOPPED_BY_SAFETY); return m->out; }
     uint32_t ms=(uint32_t)(in.now_ms-m->last_ms);
     if(ms>50u || !finite_twist(in.measured) || !isfinite(in.along_speed_limit) || in.along_speed_limit<0 ||
+       !isfinite(in.cross_to_along_ratio) || in.cross_to_along_ratio<0 ||
        (in.limit_cross && (!isfinite(in.cross_negative_limit)||!isfinite(in.cross_positive_limit)||
         in.cross_negative_limit<0||in.cross_positive_limit<0)) ||
        !isfinite(in.endpoint_stop_tolerance)||in.endpoint_stop_tolerance<0||
@@ -119,6 +120,9 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
     float lateral=correction(-m->out.cross_error,m->config.cross_tolerance,m->config.cross_kp,
         m->config.lateral_min,m->config.lateral_max,m->config.smooth_correction,&m->cross_correcting);
     if(in.limit_cross) lateral=fmaxf(-in.cross_negative_limit,fminf(in.cross_positive_limit,lateral));
+    const float moving_cross_limit=in.cross_to_along_ratio>0 && fabsf(along)>.01f?
+        in.cross_to_along_ratio*fabsf(along):INFINITY;
+    lateral=clamp(lateral,moving_cross_limit);
     float wz=correction(m->out.heading_error,m->config.yaw_tolerance,m->config.yaw_kp,
         m->config.wz_min,m->config.wz_max,m->config.smooth_correction,&m->yaw_correcting);
     /* A centering hold must keep correcting to cross_tolerance even inside
@@ -207,6 +211,7 @@ AutoMotionOutput auto_motion_step(AutoMotion* m,AutoMotionInput in) {
         if(fabsf(pa)>.00001f) scale=fminf(scale,pa*along<0?0:fabsf(along/pa));
         float cross_limit=fminf(m->config.lateral_max,
             fabsf(lateral)+m->config.cross_kp*m->config.cross_tolerance);
+        cross_limit=fminf(cross_limit,moving_cross_limit);
         if(in.limit_cross) cross_limit=fminf(cross_limit,pc<0?in.cross_negative_limit:in.cross_positive_limit);
         if(fabsf(pc)>.00001f) scale=fminf(scale,cross_limit/fabsf(pc));
         if(fabsf(reference.wz)>.00001f) scale=fminf(scale,fminf(m->config.wz_max,fabsf(wz))/fabsf(reference.wz));

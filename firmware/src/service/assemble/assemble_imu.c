@@ -32,6 +32,9 @@ SystemStatus assemble_imu(void) {
     bmi088_config.attitude.gyro_z_temp_coeff = 0.0f;
     bmi088_config.attitude.gyro_z_bias_offset = 0.0f;
     bmi088_config.attitude.gyro_z_bias_temp_coeff = 0.0f;
+    bmi088_config.attitude.zru_gyro_threshold = .015f;
+    bmi088_config.attitude.zru_min_static_us = 100000u;
+    bmi088_config.attitude.zru_bias_gain = 8.0f;
 #endif
 
     status = imu.init(&bmi088_config);

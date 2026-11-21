@@ -8,6 +8,11 @@
 
 #define IMU_ATTITUDE_PI                       3.14159265358979323846f
 #define IMU_ATTITUDE_2PI                      (2.0f * IMU_ATTITUDE_PI)
+#define IMU_ZRU_MAX_SAMPLE_GAP_US             25000u
+#define IMU_ZRU_ACC_TOLERANCE_MPS2            .30f
+#define IMU_ZRU_GYRO_VARIATION_RAD_S          .008f
+#define IMU_ZRU_MAX_UPDATE_RAD_S              .0015f
+#define IMU_ZRU_MAX_BOOT_DELTA_RAD_S          .0087f
 
 // ! ========================= 私 有 函 数 声 明 ========================= ! //
 
@@ -28,6 +33,61 @@ static bool imu_attitude_z_bias_model_enabled(const ImuAttitude* attitude);
 static ImuGyro imu_attitude_get_corrected_gyro(ImuAttitude* attitude, const ImuSample* sample);
 static void imu_attitude_update_complementary(ImuAttitude* attitude, const ImuSample* sample, float dt);
 static void imu_attitude_update_mahony(ImuAttitude* attitude, const ImuSample* sample, float dt);
+
+/* The caller supplies a verified stationary window. The IMU additionally
+ * rejects stale acceleration, vibration, rotation, and abrupt changes in tilt.
+ * Only the boot-mean Z bias is adapted; yaw and the quaternion are untouched. */
+static void imu_attitude_update_zru(ImuAttitude* attitude, const ImuSample* sample, uint32_t elapsed_us) {
+    const ImuAttitudeConfig* config=&attitude->config;
+    const float threshold=config->zru_gyro_threshold;
+    const ImuGyro residual={sample->gyro.x-attitude->gyro_bias.x,
+        sample->gyro.y-attitude->gyro_bias.y,sample->gyro.z-attitude->gyro_bias.z};
+    float acc_norm;
+    uint32_t acc_age;
+    if(elapsed_us>IMU_ZRU_MAX_SAMPLE_GAP_US || imu_attitude_z_bias_model_enabled(attitude) ||
+       !imu_attitude_acc_can_fuse(attitude,sample,&acc_norm,&acc_age) ||
+       fabsf(acc_norm-config->acc_norm)>IMU_ZRU_ACC_TOLERANCE_MPS2 ||
+       !(fabsf(residual.x)<=threshold && fabsf(residual.y)<=threshold && fabsf(residual.z)<=threshold)) {
+        attitude->zru_static_time_us=0;
+        attitude->zru_active=false;
+        return;
+    }
+    if(attitude->zru_static_time_us) {
+        const ImuAcc acc=attitude->zru_reference_acc;
+        const ImuGyro gyro=attitude->zru_reference_gyro;
+        if(fabsf(sample->acc.x-acc.x)>IMU_ZRU_ACC_TOLERANCE_MPS2 ||
+           fabsf(sample->acc.y-acc.y)>IMU_ZRU_ACC_TOLERANCE_MPS2 ||
+           fabsf(sample->acc.z-acc.z)>IMU_ZRU_ACC_TOLERANCE_MPS2 ||
+           fabsf(residual.x-gyro.x)>IMU_ZRU_GYRO_VARIATION_RAD_S ||
+           fabsf(residual.y-gyro.y)>IMU_ZRU_GYRO_VARIATION_RAD_S ||
+           fabsf(residual.z-gyro.z)>IMU_ZRU_GYRO_VARIATION_RAD_S) {
+            attitude->zru_static_time_us=0;
+            attitude->zru_active=false;
+            return;
+        }
+    } else {
+        attitude->zru_reference_acc=sample->acc;
+        attitude->zru_reference_gyro=residual;
+        attitude->zru_weighted_sum=0;
+        /* Start at the first qualified sample, with no claim about the gap
+         * since the previous sample before the stationary window opened. */
+        attitude->zru_static_time_us=1;
+        return;
+    }
+    attitude->zru_static_time_us+=elapsed_us;
+    attitude->zru_weighted_sum+=residual.z*(float)elapsed_us;
+    const uint32_t window_us=attitude->zru_static_time_us-1u;
+    if(window_us<config->zru_min_static_us) return;
+    const float mean=attitude->zru_weighted_sum/(float)window_us;
+    const float gain=fminf(1,config->zru_bias_gain*(float)window_us*1.0e-6f);
+    const float adjustment=fmaxf(-IMU_ZRU_MAX_UPDATE_RAD_S,fminf(IMU_ZRU_MAX_UPDATE_RAD_S,mean*gain));
+    const float boot=attitude->gyro_z_boot_bias;
+    attitude->gyro_bias.z=fmaxf(boot-IMU_ZRU_MAX_BOOT_DELTA_RAD_S,
+        fminf(boot+IMU_ZRU_MAX_BOOT_DELTA_RAD_S,attitude->gyro_bias.z+adjustment));
+    attitude->zru_static_time_us=0;
+    attitude->zru_active=true;
+    ++attitude->zru_updates;
+}
 
 // ! ========================= 接 口 函 数 实 现 ========================= ! //
 
@@ -74,14 +134,18 @@ ImuAttitudeStatus imu_attitude_update(ImuAttitude* attitude, const ImuSample* sa
         return IMU_ATTITUDE_STATUS_NOT_READY;
     }
 
-    dt = (float)(sample->gyro_timestamp_us - attitude->last_update_us) * 1.0e-6f;
-    attitude->last_update_us = sample->gyro_timestamp_us;
+    const uint32_t elapsed_us=sample->gyro_timestamp_us-attitude->last_update_us;
+    dt=(float)elapsed_us*1.0e-6f;
+    attitude->last_update_us=sample->gyro_timestamp_us;
 
-    if(dt <= 0.0f || dt > 0.1f) {
+    if(!elapsed_us) return IMU_ATTITUDE_STATUS_NOT_READY;
+    if(dt>0.1f) {
+        attitude->zru_active=false;
+        attitude->zru_static_time_us=0;
         return IMU_ATTITUDE_STATUS_NOT_READY;
     }
-
-    attitude->zru_active = false;
+    if(attitude->zru_enabled)
+        imu_attitude_update_zru(attitude,sample,elapsed_us);
 
     if(attitude->config.mode == IMU_ATTITUDE_COMPLEMENTARY) {
         imu_attitude_update_complementary(attitude, sample, dt);
@@ -482,7 +546,7 @@ static ImuAttitudeStatus imu_attitude_calibrate_gyro(ImuAttitude* attitude, cons
 
     attitude->gyro_bias.x = mean_x;
     attitude->gyro_bias.y = mean_y;
-    attitude->gyro_bias.z = mean_z;
+    attitude->gyro_bias.z = attitude->gyro_z_boot_bias = mean_z;
     attitude->gyro_z_temp_intercept = 0.0f;
     attitude->gyro_z_bias_effective = 0.0f;
     if(attitude->gyro_temp_count > 0U) {

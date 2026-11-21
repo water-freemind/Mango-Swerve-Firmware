@@ -54,9 +54,10 @@ typedef struct {
     float x;
 } MapEndpointFeedback;
 typedef struct {
-    bool active, preparing, prepared;
-    uint8_t mask, clear_frames, clear_updates;
-    uint32_t start_ms, last_ms, frame, sample_ms[4];
+    bool active, preparing, prepared, steering_requested, move_started;
+    uint8_t mask, wall_mask, clear_frames, clear_updates;
+    uint8_t near_seen_mask, near_confirmed_mask;
+    uint32_t start_ms, move_ms, last_ms, frame, sample_ms[4];
     float path_m;
     AutoTwist escape;
 } MapNearRecovery;
@@ -65,12 +66,13 @@ typedef struct {
     bool healthy, odom_ok, stationary, aligned;
     LaserSnapshot laser;
     bool work_enabled, work_online, work_ready, work_done, work_failed;
-    bool work_slow, work_wait, work_active;
+    bool work_slow, work_tree_slow, work_wait, work_active;
     uint8_t work_station, work_result;
     bool work_align, work_alignment_fresh, work_centered;
     bool work_can_skip_alignment, work_target_missing;
     bool work_target_fresh;
     int16_t work_target_dx;
+    uint32_t work_target_sample_ms;
     int8_t work_align_direction;
     uint32_t work_align_frame;
 } FullMapInput;
@@ -79,15 +81,24 @@ typedef struct {
     bool active, ready;
     uint8_t station, steps;
     int8_t direction;
-    uint32_t started_ms, frame;
+    uint32_t started_ms, frame, far_target_ms;
     float nominal_x, target_x;
-    bool target_missing, skip_pending;
+    bool far_target_seen, target_missing, skip_pending;
     uint32_t missing_since_ms;
 } MapTreeAlignment;
 typedef struct {
     float x;
     bool configured;
 } MapTreePosition;
+typedef struct {
+    uint32_t front_surface, rear_surface;
+    uint16_t front_mm, rear_mm;
+} MapWorkRidgeReference;
+typedef struct {
+    AutoVec2 wheel;
+    float origin_wheel_x, motion_wheel_offset_x;
+    bool active, origin_valid, motion_reference;
+} MapVisualHold;
 typedef struct {
     FullMapPhase phase; FieldPose localization; AutoRoute route; AutoMotion motion;
     LaserPrediction prediction;
@@ -100,6 +111,8 @@ typedef struct {
     MapNearRecovery near_recovery;
     MapEndpointFeedback endpoint;
     MapTreeAlignment tree_alignment;
+    MapWorkRidgeReference work_ridge;
+    MapVisualHold visual_hold;
     AutoTwist command, hint;
     uint32_t token, arm_ms, run_ms, last_ms, segment_ms, pause_ms, stable_ms, recovery_frame;
     unsigned segment, recovery_frames; uint8_t coverage, predicted_mask, required_mask, recovery_updates;
@@ -115,11 +128,13 @@ typedef struct {
     MapTreePosition trees[6][2]; /* row 1..6, tree 1 west / tree 2 east */
     uint16_t trees_done;
     uint16_t trees_unresolved; /* Stations skipped or still reporting fruit after the retry limit. */
-    bool aisle_entry_qualified;
+    bool aisle_entry_qualified, g4_entry_offset, g2_entry_offset, g2_wheel_guard;
+    float g2_wheel_offset_y;
     bool visual_work, visual_stop, visual_braking, work_request_pending, work_scan_ending;
     uint8_t visual_segment, row_work_count;
     uint32_t work_count, unresolved_work_count;
-    float visual_stop_x, visual_approach_limit;
+    float visual_stop_x, visual_approach_limit, visual_near_limit;
+    uint32_t visual_near_ms;
     uint8_t target_tree; /* 0 none; (row-1)*2 + local tree number */
     bool tree_hold, tree_hold_stable;
     uint32_t tree_hold_ms;

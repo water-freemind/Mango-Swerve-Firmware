@@ -1,14 +1,20 @@
 /* 本文件负责“视觉串口解析”和“肘击电机的分阶段定时运行”。
  * 是否允许开始肘击，由 work_control.c 统一判断。
- * 动作只用毫秒计时推进：打击 → 换向停顿 → 返回 → 打击后等待 → 空闲，
- * 与 RED_Demo 的分阶段计时一致，不使用编码器位置闭环。
+ * 毫秒计时驱动两次伸出和两次回收，段间直接换向。
+ * 无编码器位置闭环，可选编码器停走检测仍能提前结束当前段。
  * 编码器只保留在 fun.c 中做测速和手动换行程读数，不参与停车判断。
  * 调整打击/返回时间和占空比看 vision_motor.h，调整方向看下面四个区域函数。
  */
 #include "vision_motor.h"
 #include "tim.h"
 #include "work_control.h"
+#include <stdbool.h>
 #include <string.h>
+#include "car_button_protocol.h"
+volatile uint16_t Car_ButtonSeq;
+volatile uint8_t Car_ButtonOp;
+volatile uint16_t Car_AckSeq;
+volatile uint8_t Car_AckOp, Car_AckResult, Car_AckMode, Car_AckPhase;
 
 volatile uint8_t Vision_Region;
 volatile int32_t Vision_TreeDX = 9999;
@@ -38,6 +44,20 @@ static uint32_t motor_pwm = VISION_MOTOR_PWM;
 /* 数组下标是视觉区域，数组值是电机编号。0无目标，1区=B，2区=D，3区=C，4区=A。 */
 static const uint8_t region_to_motor[5] = {0, 2, 4, 3, 1};
 static uint32_t phase_started;
+
+typedef struct {
+    uint16_t duration_ms;
+    uint8_t next;
+    int8_t direction; /* +1 伸出，-1 回收，0 停止。 */
+} VisionMotorStep;
+
+static const VisionMotorStep motor_steps[VISION_MOTOR_PHASE_COUNT] = {
+    [VISION_MOTOR_EXTEND] = {VISION_CW_MS, VISION_MOTOR_RETURN, 1},
+    [VISION_MOTOR_PAUSE_ABORT] = {VISION_REVERSE_PAUSE_MS, VISION_MOTOR_RETURN, 0},
+    [VISION_MOTOR_RETURN] = {VISION_CCW_MS, VISION_MOTOR_COOLDOWN, -1},
+    [VISION_MOTOR_COOLDOWN] = {VISION_RETRIGGER_DELAY_MS, VISION_MOTOR_IDLE, 0},
+};
+
 /* 行程结束检测的状态：起点计数、上一次计数变化时刻、是否真的动过。 */
 static int32_t stroke_base, stroke_last;
 static uint32_t stroke_last_move_ms;
@@ -53,7 +73,7 @@ static void Motor_Stop(void)
     TIM1->CCR4 = 0;
 }
 
-/* 记录本段动作的编码器起点。打击和返回各调用一次。 */
+/* 记录本段动作的编码器起点。 */
 static void stroke_begin(uint32_t now)
 {
     stroke_base = Encoder_Position[Vision_MotorRegion - 1U];
@@ -91,17 +111,15 @@ static void stroke_record(uint32_t now)
     Vision_StrokeLastCounts = Encoder_Position[Vision_MotorRegion - 1U] - stroke_base;
 }
 
-/* 故障或中止时把正在打击的一路提前转入换向停顿，随后照常定时返回。
- * 已处于停顿、返回或空闲阶段时不做额外动作。 */
+/* 中途取消伸出时进入回收流程，已经开始的回收沿用原计时。 */
 void Vision_Motor_RequestReturn(void)
 {
     uint32_t key = __get_PRIMASK();
     __disable_irq();
-    if (Vision_MotorPhase == 1)
-    {
+    if (Vision_MotorPhase == VISION_MOTOR_EXTEND) {
         Motor_Stop();
         phase_started = HAL_GetTick();
-        Vision_MotorPhase = 2;
+        Vision_MotorPhase = VISION_MOTOR_PAUSE_ABORT;
     }
     __set_PRIMASK(key);
 }
@@ -207,6 +225,8 @@ static void Motor_Run(uint8_t motor_id, uint8_t striking)
 
 void Vision_Motor_Init(void)
 {
+    Car_ButtonSeq=Car_AckSeq=0;
+    Car_ButtonOp=Car_AckOp=Car_AckResult=Car_AckMode=Car_AckPhase=0;
     motor_pwm = VISION_MOTOR_PWM;
     Vision_MotorResult = 0;
     /* 定时动作没有编码器零位要求，上电即可应答底盘的 HOME 确认。 */
@@ -237,6 +257,20 @@ static uint8_t Parse_Frame(void)
 {
     uint8_t pos = 7, digits = 0, negative = 0;
     int32_t value = 0;
+    /* $CAR,序号,操作\r\n。操作8/9分别请求单独跑图和联合作业。 */
+    if(used>=10 && !memcmp(line,"$CAR,",5)) {
+        uint32_t seq=0; uint8_t p=5, count=0;
+        while(p<used && line[p]>='0' && line[p]<='9') {
+            if(++count>5) return 0;
+            seq=seq*10u+(uint8_t)(line[p++]-'0');
+        }
+        if(!count || !seq || seq>65535u || p+4u!=used || line[p]!=',' ||
+           line[p+1]<'0'+CAR_NAV || line[p+1]>'0'+CAR_START_WORK ||
+           line[p+2]!='\r' || line[p+3]!='\n') return 0;
+        Car_ButtonOp=(uint8_t)(line[p+1]-'0');
+        Car_ButtonSeq=(uint16_t)seq;
+        return 1;
+    }
     if (used < 10 || memcmp(line, "$VIS,", 5) != 0 ||
         line[5] < '0' || line[5] > '4' || line[6] != ',') return 0;
     if (line[pos] == '-') { negative = 1; pos++; }
@@ -325,59 +359,31 @@ void Vision_Motor_Task(void)
         Work_Control_Task(now, frame_count); /* 先检查是否允许开始新的肘击。 */
     now = HAL_GetTick();
 
-    /* 使用时间差推进动作，主循环无需停下来等待整段行程。
-     * 阶段 1 打击 → 2 换向停顿 → 3 返回 → 4 轮次等待 → 0 空闲。
-     * 阶段 1/3 既看时间上限，也看编码器是否已经停走，顶到限位就提前收尾。
-     * 时间差使用无符号减法，系统毫秒计数回绕时仍可计算经过时间。
-     */
-    switch (Vision_MotorPhase)
-    {
-    case 0: /* 空闲阶段，是否开始下一次动作由上面的 Work_Control_Task 决定。 */
-        break;
-    case 1:
-        /* 打到行程结束或到时间上限，先关 PWM，再进入换向停顿。 */
-        if (stroke_finished(now) || (uint32_t)(now - phase_started) >= VISION_CW_MS)
-        {
-            stroke_record(now);
-            Motor_Stop();
-            phase_started = now;
-            Vision_MotorPhase = 2;
-        }
-        break;
-    case 2: /* 换向前停止 PWM，等待设定的间隔，再开始返回。 */
-        if ((uint32_t)(now - phase_started) >= VISION_REVERSE_PAUSE_MS)
-        {
-            motor_pwm = VISION_MOTOR_PWM;
-            stroke_begin(now);
-            Motor_Run(Vision_MotorRegion, 0);
-            phase_started = now;
-            Vision_MotorPhase = 3;
-        }
-        break;
-    case 3:
-        /* 回到行程结束或到时间上限，关 PWM 并记录返回结束时刻。
-         * 这里依据编码器停走/时间推定返回结束，机构没有回位开关确认。
-         */
-        if (stroke_finished(now) || (uint32_t)(now - phase_started) >= VISION_CCW_MS)
-        {
-            stroke_record(now);
-            Motor_Stop();
-            Vision_MotorRegion = 0;
-            phase_started = now;
-            Vision_MotorPhase = 4;
-        }
-        break;
-    case 4: /* 一轮结束后的等待阶段，结束后接收新指令。 */
-        if ((uint32_t)(now - phase_started) >= VISION_RETRIGGER_DELAY_MS)
-        {
-            Vision_MotorPhase = 0;
-        }
-        break;
-    default:
+    const uint8_t phase = Vision_MotorPhase;
+    if (phase == VISION_MOTOR_IDLE) return;
+    if (phase >= VISION_MOTOR_PHASE_COUNT) {
         Motor_Stop();
         Vision_MotorRegion = Vision_MotorPhase = 0;
-        break;
+        return;
     }
+
+    /* 时间差可跨毫秒计数回绕。每次任务循环最多推进一段。 */
+    const VisionMotorStep step = motor_steps[phase];
+    const bool moving = step.direction != 0;
+    if (!(moving && stroke_finished(now)) && (uint32_t)(now - phase_started) < step.duration_ms)
+        return;
+    if (moving) {
+        stroke_record(now);
+        Motor_Stop();
+    }
+    const uint8_t next = step.next;
+    if (next == VISION_MOTOR_COOLDOWN) Vision_MotorRegion = 0;
+    if (next != VISION_MOTOR_IDLE) phase_started = now; /* 空闲时保留回收完成时刻。 */
+    if (motor_steps[next].direction) {
+        stroke_begin(now);
+        Motor_Run(Vision_MotorRegion, motor_steps[next].direction > 0);
+    }
+    Vision_MotorPhase = next;
 }
 
 /* 由作业控制器调用。仅接受区域 1～4，并且上一轮必须已完全结束。
@@ -393,7 +399,7 @@ uint8_t Vision_Motor_Start(uint8_t region)
     phase_started = HAL_GetTick();
     stroke_begin(phase_started);
     Motor_Run(Vision_MotorRegion, 1);
-    Vision_MotorPhase = 1;
+    Vision_MotorPhase = VISION_MOTOR_EXTEND;
     return 1;
 }
 
@@ -420,16 +426,10 @@ uint32_t Vision_Motor_ReturnedAt(void) { return phase_started; }
 /* 供 OLED 在主循环中读取当前阶段的剩余毫秒数。 */
 uint32_t Vision_Motor_RemainingMs(void)
 {
-    uint32_t duration, elapsed;
-    switch (Vision_MotorPhase)
-    {
-    case 1: duration = VISION_CW_MS; break;
-    case 2: duration = VISION_REVERSE_PAUSE_MS; break;
-    case 3: duration = VISION_CCW_MS; break;
-    case 4: duration = VISION_RETRIGGER_DELAY_MS; break;
-    default: return 0;
-    }
-    elapsed = (uint32_t)(HAL_GetTick() - phase_started);
+    const uint8_t phase = Vision_MotorPhase;
+    if (phase == VISION_MOTOR_IDLE || phase >= VISION_MOTOR_PHASE_COUNT) return 0;
+    const uint32_t duration = motor_steps[phase].duration_ms;
+    const uint32_t elapsed = (uint32_t)(HAL_GetTick() - phase_started);
     return elapsed >= duration ? 0 : duration - elapsed;
 }
 

@@ -26,6 +26,7 @@ typedef struct {
     bool endpoint_observation_unsettled; /* Continue control until a fresh estimator innovation converges. */
     float endpoint_stop_tolerance; /* Optional inner stop band; the configured tolerance remains the outer release band. */
     float along_speed_limit; /* Optional path-axis cap; zero uses config.vmax without suppressing cross correction. */
+    float cross_to_along_ratio; /* Optional steering-angle limit during translation. */
     bool limit_cross;
     float cross_negative_limit, cross_positive_limit; /* Speeds along segment.normal; zero is a real cap. */
     uint8_t blocked_directions; /* Missing orthogonal clearance: left/right/rear/front, bits0..3. */

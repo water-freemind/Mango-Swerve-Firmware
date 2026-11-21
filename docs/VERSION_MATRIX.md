@@ -1,8 +1,26 @@
 # 版本、命令组与测试索引
 
-> 2026-11-18：现场 H723 航向版已烧录校验。整合主分支后的 H723/F407 候选均已构建，待烧录与整图验收。镜像哈希见[版本清单](releases/20261118-field-navigation.json)，实车与仿真边界见[本轮记录](work/full-map/20261118-field-navigation.md)。
+## 11 月 21 日比赛版整合
 
-更新于 2026-11-18。用 Git 提交、构建模式、镜像 SHA256 和命令组版本分别追溯。
+| 现场源码 | 回溯标识 | 作业和导航差异 |
+| --- | --- | --- |
+| 稳定版 [PR #28](https://github.com/water-freemind/Mango-Swerve-Firmware/pull/28) | `6d58fda` · `stable-field-20261120` | 视觉屏启停、换垄退让、G6 西端预减速、无果复检 |
+| 优化版 [PR #29](https://github.com/water-freemind/Mango-Swerve-Firmware/pull/29) | `4bbd5b9` · `optimized-20261120` | 四段定时肘击、默认巡航 0.90 m/s、作业横向保护带 110 mm |
+| 比赛最终版 [PR #30](https://github.com/water-freemind/Mango-Swerve-Firmware/pull/30) | `3002545` · `final-20261121` | 单次伸出和回收各 700 ms，`dx=-12±14 px`，G7 中心线移至 Y=4.38 m |
+| 主线整合版 | 基于 `3002545` 与主线 `6eb9b9f` | 延续比赛版动作与路线，合入 G7 前激光定位及提前减速。遥控在线且 SWD=1000 时，视觉屏无法开始或继续发起运动 |
+
+三个标签位于队友的 fork，原始提交随整合进入主线。原 PR 中的镜像校验与实车记录对应各自的现场快照。主线整合版以本仓库源码重新构建，整车烧录和现场复测待进行。面板使用同提交的 [VOFA 7 组 33 条命令](COMMAND_CATALOG.md)。H723 与 F407 使用配套 FullMapWork，S21C 独立维护。
+
+G7 横移使用真实前激光校正 Y，130–155 mm 区间平滑调整横移上限，前激光失效暂停。入口转入 G7 前需确认前距至少 165 mm。近障 95 mm 和地图包络继续独立判断。联合作业和单独跑图分别验收。
+
+主线整合版通过完整主机回归（含 49 项 Python 测试）、视觉屏与 SWD 门控专项、33 条 VOFA 命令检查及双板 ARM GCC FullMapWork 编译。对应本次构建的 HEX SHA256 如下。
+
+| 板 | SHA256 |
+| --- | --- |
+| H723 | `8BDC33C24C08D3ECCBDDF245E0F019082C6A2562B14F4E8EB598BC8245E7D245` |
+| F407 | `F634A7D21D928B3C54DF091ACFA1FE751FCD4607EAA91FA7E4A96FA7D0B39C1A` |
+
+11 月 18 日的现场和候选镜像见[历史清单](releases/20261118-field-navigation.json)与[现场记录](work/full-map/20261118-field-navigation.md)。
 
 ## 11月17日交付记录
 
@@ -16,7 +34,7 @@
 | C9FAA、058B8D5A、411A0C6B等 | 历次底盘候选、回退与速度实测对照 | 见[历史记录](PROJECT_HISTORY.md)，旧版0.50m/s实测不能证明当前联合版本已验收 |
 | S21C独立修复候选 | F103四路激光解析/输出修复 | 历史GCC及主机测试通过；未烧录、未台架验收。本轮未修改激光板 |
 
-当前两板镜像、备份和命令源哈希见[部署清单](releases/20261117-timed-elbow.json)，操作记录见[部署说明](work/full-map/20261117-timed-elbow-deployment.md)。清单中的build路径为本机证据，不随Git上传；队友需在对应源码重新构建。
+11 月 17 日两板镜像、备份和命令源哈希见[部署清单](releases/20261117-timed-elbow.json)，操作记录见[部署说明](work/full-map/20261117-timed-elbow-deployment.md)。清单中的build路径为本机证据，不随Git上传；队友需在对应源码重新构建。
 
 ## 固件模式与命令匹配
 
@@ -47,7 +65,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File firmware/vofa/start-vofa
 
 VOFA：FireWater，UDP本地1347、远端127.0.0.1:1348。桥接独占COM19/921600，串口号按设备管理器核对；本轮COM21属于另一烧录器，不能直接替换。桥接不自动登记/准备/开始。安装器备份并同时更新软件旁及LocalAppData的命令文件；软件退出会保存配置，所以更新前先正常退出。
 
-## 验证层级与本轮结果
+## 11 月 17 日验证证据
 
 | 检查层级 | 本轮证据 | 能证明什么 |
 | --- | --- | --- |
