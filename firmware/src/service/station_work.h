@@ -13,7 +13,7 @@ typedef struct {
     StationLinkPhase phase;
     uint32_t task, rx_count, tx_count, rejected_count;
     uint8_t station, result;
-    bool online, hold, returned, slow_requested, stop_requested;
+    bool online, hold, returned, slow_requested, tree_slow_requested, stop_requested;
     bool align_seen, aligned;
     bool home_pending;
     int8_t align_direction;
@@ -44,6 +44,7 @@ bool station_work_align(uint32_t now, bool stationary);
 bool station_work_alignment_fresh(uint32_t now);
 bool station_work_confirm_home(bool stationary);
 bool station_work_reset(bool stationary);
+void station_work_rearm_idle(bool stationary);
 void station_work_abort(uint8_t result);
 /* End the old task and resynchronize after the peer confirms it has returned. */
 void station_work_request_manual_recovery(void);

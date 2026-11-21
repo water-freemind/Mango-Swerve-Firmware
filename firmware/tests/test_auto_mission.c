@@ -25,7 +25,9 @@ static void route_tests(void) {
         AutoRouteSegment s=c.route.segment[i];distance+=hypotf(s.line.end.x-s.line.start.x,s.line.end.y-s.line.start.y);
         if(s.kind==AUTO_ROUTE_SURVEY) assert(s.aisle==k--);
     }
-    assert(k==0&&fabsf(distance-30.6f)<.0001f);
+    assert(k==0&&fabsf(distance-30.536f)<.0001f);
+    assert(fabsf(c.route.segment[8].line.end.x-.212f)<.0001f);
+    assert(fabsf(c.route.segment[9].line.start.x-c.route.segment[10].line.start.x)<.0001f);
     c.route.segment[2].aisle=6;assert(!auto_route_valid(&c.route));
     c=auto_fixture();c.route.segment[4]=c.route.segment[2];assert(!auto_route_valid(&c.route));
     c=auto_fixture();auto_route_build(&c.route,.95f,.7853981634f);

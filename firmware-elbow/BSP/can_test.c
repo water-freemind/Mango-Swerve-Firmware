@@ -7,6 +7,28 @@
 #include "can.h"
 #include "work_can.h"
 #include "vision_motor.h"
+#include "car_button_protocol.h"
+static uint16_t car_sent_seq;
+static uint8_t car_sent_op;
+static uint32_t car_started_ms, car_sent_ms;
+static void car_send(uint32_t now) {
+    uint16_t seq; uint8_t op;
+    const uint32_t mask=__get_PRIMASK(); __disable_irq();
+    seq=Car_ButtonSeq; op=Car_ButtonOp; __set_PRIMASK(mask);
+    if(!seq) return;
+    if(seq!=car_sent_seq || op!=car_sent_op) {
+        car_sent_seq=seq;
+        car_sent_op=op;
+        car_started_ms=now;
+        car_sent_ms=now-100u;
+    }
+    if(now-car_started_ms>1500u || now-car_sent_ms<100u ||
+       (Car_AckSeq==seq && Car_AckOp==op) || HAL_CAN_GetTxMailboxesFreeLevel(&hcan2)<2u) return;
+    uint8_t data[8]={0xc1,op,(uint8_t)seq,(uint8_t)(seq>>8),0,0,0,0};
+    CAN_TxHeaderTypeDef tx={0}; uint32_t box;
+    data[7]=car_checksum(data);tx.StdId=CAR_REQUEST_ID;tx.IDE=CAN_ID_STD;tx.RTR=CAN_RTR_DATA;tx.DLC=8;
+    if(HAL_CAN_AddTxMessage(&hcan2,&tx,data,&box)==HAL_OK) car_sent_ms=now;
+}
 
 volatile uint32_t CAN_Test_TxCount, CAN_Test_RxCount, CAN_Test_ErrorCount;
 volatile uint32_t CAN_Test_LastHalError;
@@ -58,6 +80,7 @@ static void send_visual_diagnostic(void)
 void CAN_Test_Init(void)
 {
     CAN_FilterTypeDef filter = {0};
+    car_sent_seq=0;car_sent_op=0;car_started_ms=car_sent_ms=0;
     ready = have_reply = tx_pending = 0;
     dirty = 1;
     last_tx = last_rx = 0;
@@ -89,6 +112,9 @@ void CAN_Test_Init(void)
     }
     filter.FilterBank = 15;
     filter.FilterIdHigh = CAN_LASER_ID << 5;
+    if (HAL_CAN_ConfigFilter(&hcan2, &filter) != HAL_OK) { record_error(2); return; }
+    filter.FilterBank = 16;
+    filter.FilterIdHigh = CAR_REPLY_ID << 5;
     if (HAL_CAN_ConfigFilter(&hcan2, &filter) != HAL_OK ||
         HAL_CAN_Start(&hcan2) != HAL_OK)
     {
@@ -168,6 +194,13 @@ void CAN_Test_Task(void)
         }
         if (rx.IDE != CAN_ID_STD || rx.RTR != CAN_RTR_DATA || rx.DLC != 8)
             continue;
+        if(rx.StdId==CAR_REPLY_ID) {
+            if(car_valid(data)) {
+                Car_AckOp=data[1]; Car_AckResult=data[4]; Car_AckMode=data[5]; Car_AckPhase=data[6];
+                Car_AckSeq=(uint16_t)(data[2]|((uint16_t)data[3]<<8));
+            }
+            continue;
+        }
         if (rx.StdId == CAN_LASER_ID)
         {
             /* 激光采用大端：高字节在前，低字节在后。
@@ -240,6 +273,7 @@ void CAN_Test_Task(void)
      */
     /* 独立测试保留激光/状态接收，收帧后返回，不向底盘发布作业请求。
      * 定时方案不再发送编码器位置诊断，只保留视觉状态诊断。 */
+    car_send(now);
     send_visual_diagnostic();
     if (ELBOW_TEST_MODE == 0 || ELBOW_TEST_MODE == 2)
     {

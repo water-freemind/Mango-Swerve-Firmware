@@ -28,6 +28,53 @@ ImuStatus bmi088_make_config(Bmi088Config* c, const Bmi088PortOps* ops, uint16_t
         .gyro_z_temp_coeff = 0.000038f, .gyro_z_bias_offset = 0.00090f};
     return IMU_STATUS_OK;
 }
+#if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
+static void test_entrance_bias(ImuAttitude* attitude, ImuSample sample) {
+    assert(imu_attitude_reset_yaw(attitude,1.4f)==IMU_ATTITUDE_STATUS_OK);
+    const float boot=attitude->gyro_bias.z;
+    sample.gyro.z=boot-.0021f;
+    attitude->zru_enabled=true;
+    for(unsigned i=0;i<29u;++i) {
+        sample.gyro_timestamp_us+=4000u;
+        sample.acc_timestamp_us=sample.gyro_timestamp_us;
+        const float yaw=attitude->angle.yaw;
+        assert(imu_attitude_update(attitude,&sample)==IMU_ATTITUDE_STATUS_OK);
+        assert(fabsf(attitude->angle.yaw-yaw)<.000015f);
+        assert(imu_attitude_update(attitude,&sample)==IMU_ATTITUDE_STATUS_NOT_READY);
+    }
+    assert(attitude->zru_updates==1u && attitude->zru_active);
+    assert(fabsf(boot-attitude->gyro_bias.z-.0015f)<.000001f);
+    /* Stale acceleration and motion interrupt this window. */
+    for(unsigned i=0;i<90u;++i) {
+        sample.gyro_timestamp_us+=4000u;
+        sample.acc_timestamp_us=sample.gyro_timestamp_us-(i<30u?25000u:0u);
+        sample.gyro.z=boot+(i>=30u && i<60u?.04f:-.0021f);
+        sample.acc.x=i>=60u && i%2u==0u?.4f:0;
+        assert(imu_attitude_update(attitude,&sample)==IMU_ATTITUDE_STATUS_OK);
+        assert(attitude->zru_updates==1u && !attitude->zru_active);
+    }
+    sample.acc.x=0;
+    for(unsigned i=0;i<29u;++i) {
+        sample.gyro_timestamp_us+=4000u;
+        sample.acc_timestamp_us=sample.gyro_timestamp_us;
+        assert(imu_attitude_update(attitude,&sample)==IMU_ATTITUDE_STATUS_OK);
+    }
+    assert(attitude->zru_updates==2u && fabsf(attitude->gyro_filtered.z)<.00013f);
+    const float calibrated=attitude->gyro_bias.z;
+    attitude->zru_enabled=false;
+    const float yaw=attitude->angle.yaw;
+    sample.gyro.z=calibrated+.10f;
+    for(unsigned i=0;i<100u;++i) {
+        sample.gyro_timestamp_us+=4000u;
+        sample.acc_timestamp_us=sample.gyro_timestamp_us;
+        assert(imu_attitude_update(attitude,&sample)==IMU_ATTITUDE_STATUS_OK);
+    }
+    assert(attitude->gyro_bias.z==calibrated && attitude->zru_updates==2u);
+    assert(fabsf(attitude->angle.yaw-yaw-.040f)<.0001f);
+    puts("ENTRANCE_IMU_ZRU_TEST_OK two_windows_residual_below_0p008_deg_s_continuous_yaw_reject_stale_and_motion");
+}
+#endif
+
 int main(void) {
     assert(assemble_imu() == SYSTEM_STATUS_OK);
 #if APP_RUN_MODE == APP_MODE_STRAIGHT_TEST
@@ -57,6 +104,7 @@ int main(void) {
     assert(fabsf(change) < 0.0001f);
     assert(fabsf(attitude.gyro_filtered.z) < 1.0e-6f);
     puts("IMU_BOOT_BIAS_TEST_OK (mode 6 measured startup mean, 30s stationary simulation)");
+    test_entrance_bias(&attitude,sample);
 #else
     assert(fabsf(change) > 0.09f);
     puts("IMU_LEGACY_POLICY_TEST_OK (other modes keep existing temperature model)");

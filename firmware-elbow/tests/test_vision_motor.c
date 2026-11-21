@@ -63,9 +63,9 @@ int main(void) {
     unsigned region;
     const unsigned motors[] = {0, 2, 4, 3, 1};
     uint32_t frames;
-    /* 与 elbow-controller 一致的纯定时：打击 650 ms、换向停 10 ms、返回 650 ms、100% 占空比。 */
+    /* 伸出和回收均为满占空比，完整作业之间停 50 ms。 */
     assert(VISION_MOTOR_PWM == 100U);
-    assert(VISION_CW_MS == 650U && VISION_CCW_MS == 650U);
+    assert(VISION_CW_MS == 700U && VISION_CCW_MS == 700U);
     if (ELBOW_TEST_MODE == 3)
     {
         Vision_Motor_Init();
@@ -88,43 +88,46 @@ int main(void) {
         puts("MANUAL_ENCODER_MODE_OK all_outputs_zero_visual_and_api_cannot_start_counts_preserved");
         return 0;
     }
-    /* 四个区域按时间动作：打击 650 ms → 停 10 ms → 返回 650 ms → 等 50 ms。
-     * 全程使用毫秒差计时，并把系统计数回绕点作为起点。 */
+    const struct { unsigned phase, ms; int direction; } sequence[] = {
+        {VISION_MOTOR_EXTEND, 700, 1},
+        {VISION_MOTOR_RETURN, 700, -1},
+    };
     for (region = 1; region <= 4; region++) {
         Vision_Motor_Init();
-        assert(Vision_HomeConfirmed);          /* 定时方案上电即视为已收回。 */
-        assert(Vision_Motor_VerifyReturned());
+        assert(Vision_HomeConfirmed && Vision_Motor_VerifyReturned());
         tick = UINT32_MAX - 100;
+        const uint32_t start = tick;
         assert(Vision_Motor_Start((uint8_t)region));
-        assert(!Vision_Motor_Start(1));
+        feed("$VIS,0,9999\r\n");
+        for (unsigned i = 0; i < sizeof(sequence)/sizeof(sequence[0]); ++i) {
+            assert(Vision_MotorPhase == sequence[i].phase);
+            assert(Vision_MotorRegion == motors[region] && !Vision_Motor_VerifyReturned());
+            assert(!Vision_Motor_Start(1));
+            assert(Vision_Motor_RemainingMs() == sequence[i].ms);
+            const unsigned powered = sequence[i].direction ? motors[region] : 0;
+            check_pwm(powered);
+            if (powered) check_direction(region, sequence[i].direction > 0);
+            tick += sequence[i].ms - 1;
+            Vision_Motor_Task();
+            check_pwm(powered);
+            assert(Vision_MotorPhase == sequence[i].phase && Vision_Motor_RemainingMs() == 1);
+            ++tick;
+            Vision_Motor_Task();
+        }
+        assert((uint32_t)(tick-start) == 1400U && Vision_Motor_ReturnedAt() == tick);
+        assert(Vision_MotorPhase == VISION_MOTOR_COOLDOWN && !Vision_MotorRegion);
         assert(!Vision_Motor_VerifyReturned());
-        check_pwm(motors[region]); check_direction(region, 1);
-        assert(Vision_Motor_RemainingMs() == VISION_CW_MS);
-        feed("$VIS,0,9999\r\n"); check_pwm(motors[region]);
-        tick += VISION_CW_MS - 1; Vision_Motor_Task(); check_pwm(motors[region]);
-        tick += 1; Vision_Motor_Task(); check_pwm(0);
-        assert(Vision_MotorPhase == 2 && Vision_MotorRegion == motors[region]);
-        tick += VISION_REVERSE_PAUSE_MS - 1; Vision_Motor_Task(); check_pwm(0);
-        tick += 1; Vision_Motor_Task();
-        check_pwm(motors[region]); check_direction(region, 0);
-        assert(Vision_MotorPhase == 3 && Vision_Motor_RemainingMs() == VISION_CCW_MS);
-        tick += VISION_CCW_MS - 1; Vision_Motor_Task(); check_pwm(motors[region]);
-        tick += 1; Vision_Motor_Task(); check_pwm(0);
-        assert(Vision_MotorPhase == 4 && !Vision_MotorRegion);
-        assert(Vision_Motor_ReturnedAt() == tick);
-        tick += VISION_RETRIGGER_DELAY_MS; Vision_Motor_Task();
-        assert(Vision_MotorPhase == 0 && Vision_Motor_VerifyReturned());
+        check_pwm(0);
+        tick += VISION_RETRIGGER_DELAY_MS - 1;
+        Vision_Motor_Task();
+        assert(!Vision_Motor_Start((uint8_t)region));
+        check_pwm(0);
+        ++tick;
+        Vision_Motor_Task();
+        assert(Vision_MotorPhase == VISION_MOTOR_IDLE && Vision_Motor_VerifyReturned());
+        assert((uint32_t)(tick-start) == 1450U && (uint32_t)(Vision_Motor_ReturnedAt()-start) == 1400U);
     }
-    puts("TIMED_STRIKE_OK four_regions_100pct_650ms_pause_10ms_pure_timing_wrap");
-    /* 每次只有一路 PWM，其它三路保持 0；换向停顿期间四路全停。 */
-    Vision_Motor_Init(); tick = 1000;
-    assert(Vision_Motor_Start(4));
-    check_duty(1, VISION_MOTOR_PWM);
-    tick += VISION_CW_MS; Vision_Motor_Task(); check_pwm(0);
-    tick += VISION_REVERSE_PAUSE_MS; Vision_Motor_Task();
-    check_duty(1, VISION_MOTOR_PWM);
-    tick += VISION_CCW_MS; Vision_Motor_Task();
-    check_duty(0, VISION_MOTOR_PWM);
+    puts("TIMED_STRIKE_OK four_regions_100pct_700ms_extend_700ms_return_50ms_between_cycles");
     puts("MOTOR_MUTEX_OK single_channel_pwm_and_pause_outputs_zero");
 #if ELBOW_STROKE_END_MS > 0
     /* 编码器停走＝顶到机械限位：不等满时间上限就结束本段，避免长时间堵转。 */
@@ -136,8 +139,8 @@ int main(void) {
     tick += ELBOW_STROKE_END_MS - 1; Vision_Motor_Task();
     assert(Vision_MotorPhase == 1);
     tick += 1; Vision_Motor_Task();
-    assert(Vision_MotorPhase == 2);                  /* 计数停走 ELBOW_STROKE_END_MS 后提前收尾 */
-    check_pwm(0);
+    assert(Vision_MotorPhase == VISION_MOTOR_RETURN);
+    check_pwm(motors[2]); check_direction(2, 0);
     assert(Vision_StrokeLastMs == 100 + ELBOW_STROKE_END_MS);
     assert(Vision_StrokeLastCounts == -120);
     puts("STROKE_END_DETECT_OK encoder_stall_ends_phase_before_time_cap");
@@ -150,7 +153,8 @@ int main(void) {
     assert(Vision_MotorPhase == 1 && Vision_Motor_RemainingMs() == 1);
     check_pwm(motors[3]);
     tick += 1; Vision_Motor_Task();
-    assert(Vision_MotorPhase == 2); check_pwm(0);
+    assert(Vision_MotorPhase == VISION_MOTOR_RETURN);
+    check_pwm(motors[3]); check_direction(3, 0);
     assert(Vision_StrokeLastMs == VISION_CW_MS && Vision_StrokeLastCounts == 0);
     puts("TIMED_FULL_STROKE_OK dead_or_idle_encoder_still_runs_full_time");
     if (ELBOW_TEST_MODE == 2) {
@@ -160,18 +164,33 @@ int main(void) {
         assert(Vision_Motor_Start(1));
         assert(!Vision_Motor_VerifyReturned());
         assert(!Vision_Motor_ConfirmHome()); /* 动作中不能再次登记。 */
-        /* 故障中止：打击中请求返回，提前结束打击并按时返回。 */
-        tick += 200; Vision_Motor_Task();
-        Vision_Motor_RequestReturn();
-        assert(Vision_MotorPhase == 2); check_pwm(0);
-        tick += VISION_REVERSE_PAUSE_MS; Vision_Motor_Task();
-        assert(Vision_MotorPhase == 3); check_pwm(2);
-        tick += VISION_CCW_MS; Vision_Motor_Task();
-        assert(Vision_MotorPhase == 4 && !Vision_Motor_VerifyReturned());
-        tick += VISION_RETRIGGER_DELAY_MS; Vision_Motor_Task();
-        assert(Vision_MotorPhase == 0 && Vision_Motor_VerifyReturned());
-        assert(!Vision_MotorResult);
-        puts("TIMED_HOME_AND_FAULT_RETURN_OK no_encoder_zero_strike_cut_by_request_return");
+        /* 任何一段收到取消后都只能停顿或向后回收。 */
+        for (unsigned cancel_at = 0; cancel_at < sizeof(sequence)/sizeof(sequence[0]); ++cancel_at) {
+            Vision_Motor_Init();
+            tick = 5000;
+            assert(Vision_Motor_Start(1));
+            for (unsigned i = 0; i < cancel_at; ++i) {
+                tick += sequence[i].ms;
+                Vision_Motor_Task();
+            }
+            Vision_Motor_RequestReturn();
+            const uint32_t cancel = tick;
+            unsigned returned_drive_ms = 0;
+            while (!Vision_Motor_VerifyReturned()) {
+                assert((uint32_t)(tick - cancel) <
+                    VISION_REVERSE_PAUSE_MS + VISION_CCW_MS + VISION_RETRIGGER_DELAY_MS);
+                if (timer.CCR2) {
+                    check_direction(1, 0);
+                    ++returned_drive_ms;
+                }
+                Vision_Motor_RequestReturn();
+                ++tick;
+                Vision_Motor_Task();
+            }
+            assert(returned_drive_ms == VISION_CCW_MS);
+            check_pwm(0);
+        }
+        puts("TIMED_HOME_AND_FAULT_RETURN_OK every_phase_skips_remaining_extension");
         /* 空闲时请求返回不产生动作。 */
         Vision_Motor_RequestReturn();
         assert(Vision_MotorPhase == 0); check_pwm(0);
@@ -223,6 +242,24 @@ int main(void) {
     assert(Vision_Online && Vision_Region == 4 && Vision_FrameCount == 2);
     check_pwm(0);
     puts("VISION_OFF_FILTER_OK short_gap_uart_error_no_false_off_exact_timeout_wrap_fresh_recovery");
+    {
+        extern volatile uint16_t Car_ButtonSeq;
+        extern volatile uint8_t Car_ButtonOp;
+        uint32_t frames=Vision_FrameCount, bad=Vision_BadFrameCount;
+        feed("$CAR,123,"); feed("2\r\n");
+        assert(Car_ButtonSeq==123 && Car_ButtonOp==2);
+        assert(Vision_FrameCount==frames && Vision_BadFrameCount==bad);
+        feed("$CAR,65535,6\r\n");
+        assert(Car_ButtonSeq==65535 && Car_ButtonOp==6);
+        feed("$CAR,7,"); feed("8\r\n");
+        assert(Car_ButtonSeq==7 && Car_ButtonOp==8);
+        feed("$CAR,8,9\r\n");
+        assert(Car_ButtonSeq==8 && Car_ButtonOp==9);
+        feed("$CAR,65536,5\r\n"); feed("$CAR,0,1\r\n"); feed("$CAR,2,0\r\n");
+        assert(Car_ButtonSeq==8 && Car_ButtonOp==9 && Vision_BadFrameCount==bad+3);
+        assert(Vision_FrameCount==frames);
+        puts("CAR_UART_FRAGMENT_BOUNDS_AND_VISION_ISOLATION_OK");
+    }
     puts("VISION_UART_PARSER_DIRECTION_TIMING_WRAP_TEST_OK");
     return 0;
 }

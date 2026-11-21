@@ -75,7 +75,7 @@ bool station_work_confirm_home(bool stationary) {
     g_station_work.phase=STATION_LINK_SYNC;
     g_station_work.task=0u;g_station_work.station=0u;
     g_station_work.home_pending=true;
-    g_station_work.slow_requested=g_station_work.stop_requested=false;
+    g_station_work.tree_slow_requested=g_station_work.slow_requested=g_station_work.stop_requested=false;
     g_station_work.align_seen=g_station_work.aligned=false;
     g_station_work.align_direction=0;
     g_station_work.align_updates=0;
@@ -112,12 +112,21 @@ bool station_work_reset(bool stationary) {
     g_station_work.station = 0u;
     g_station_work.result = WORK_RESULT_OK;
     g_station_work.online = g_station_work.hold = false;
-    g_station_work.returned = g_station_work.slow_requested = g_station_work.stop_requested = false;
+    g_station_work.returned = g_station_work.tree_slow_requested = g_station_work.slow_requested = g_station_work.stop_requested = false;
     pending = seen_peer = task_acknowledged = false;
     manual_recovery_pending=false;
     visual_scan=scan_cancel_pending=false;realign_sequence=0;
     dirty = true;
     return true;
+}
+
+void station_work_rearm_idle(bool stationary) {
+    const uint8_t result=g_station_work.result;
+    const bool recoverable=g_station_work.phase==STATION_LINK_FAULT && g_station_work.online &&
+        g_station_work.returned && (result==STATION_RESULT_CANCELLED ||
+        result==WORK_RESULT_LINK || result==WORK_RESULT_RESET);
+    if(g_station_work.phase==STATION_LINK_DONE || recoverable)
+        (void)station_work_reset(stationary);
 }
 
 bool station_work_begin(uint8_t station, uint32_t now) {
@@ -129,7 +138,7 @@ bool station_work_begin(uint8_t station, uint32_t now) {
     g_station_work.phase = STATION_LINK_APPROACH;
     g_station_work.hold = false;
     g_station_work.returned = false;
-    g_station_work.slow_requested = g_station_work.stop_requested = false;
+    g_station_work.tree_slow_requested = g_station_work.slow_requested = g_station_work.stop_requested = false;
     g_station_work.align_seen = g_station_work.aligned = false;
     g_station_work.align_direction = 0;
     g_station_work.align_updates = 0;
@@ -154,7 +163,7 @@ bool station_work_cancel_scan(void) {
         return false;
     if(scan_cancel_pending) return true;
     scan_cancel_pending=true;
-    g_station_work.slow_requested=g_station_work.stop_requested=false;
+    g_station_work.tree_slow_requested=g_station_work.slow_requested=g_station_work.stop_requested=false;
     g_station_work.aligned=g_station_work.align_seen=false;
     g_station_work.align_direction=0;
     dirty=true;
@@ -195,7 +204,7 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
     if(packet.state == STATION_HOME_READY && packet.task == 0u && packet.region == 0u &&
        g_station_work.phase == STATION_LINK_SYNC && g_station_work.home_pending) {
         g_station_work.home_pending=false;
-        g_station_work.slow_requested=g_station_work.stop_requested=false;
+        g_station_work.tree_slow_requested=g_station_work.slow_requested=g_station_work.stop_requested=false;
         g_station_work.hold=false;
         g_station_work.returned=true;
         g_station_work.result=WORK_RESULT_OK;
@@ -206,10 +215,8 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
         } else if(g_station_work.hold || g_station_work.phase == STATION_LINK_APPROACH ||
            g_station_work.phase == STATION_LINK_ALIGN)
             station_work_abort(WORK_RESULT_RESET);
-        else if(g_station_work.phase != STATION_LINK_FAULT) {
-            g_station_work.phase = STATION_LINK_SYNC;
-            dirty = true;
-        }
+        else if(g_station_work.phase != STATION_LINK_FAULT && !station_work_reset(true))
+            return false;
     } else if(packet.state == STATION_READY && packet.task == 0u && packet.region == 0u) {
         if(g_station_work.home_pending) return false;
         /* An idle READY may already be in flight when APPROACH is created.
@@ -232,8 +239,11 @@ static bool accept_reply(WorkCanPacket packet, uint32_t stamp) {
             packet.state == STATION_WAIT)) {
             task_acknowledged = true;
             if(!scan_cancel_pending) {
+                g_station_work.tree_slow_requested=visual_scan && packet.state==STATION_SLOW &&
+                    packet.result==STATION_SLOW_TREE_ONLY;
                 g_station_work.slow_requested = (!visual_scan && g_station_work.slow_requested) ||
-                    packet.state == STATION_SLOW || packet.state == STATION_WAIT;
+                    (packet.state == STATION_SLOW && !g_station_work.tree_slow_requested) ||
+                    packet.state == STATION_WAIT;
                 g_station_work.stop_requested = g_station_work.stop_requested || packet.state == STATION_WAIT;
             }
         } else if(packet.state == STATION_REALIGN && !scan_cancel_pending &&

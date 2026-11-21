@@ -2,6 +2,8 @@
 #define MANGO_FIELD_POSE_H
 #include "auto_geometry.h"
 #include "laser.h"
+
+#define FIELD_POSE_LASER_ORIGIN_M .04098f
 #include "auto_route.h"
 
 typedef struct {
